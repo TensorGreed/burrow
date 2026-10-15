@@ -181,6 +181,37 @@ one is decided in an issue, with the same three parts.
     grew it. Changes rule 6 for such a release. *Does not cover:* a release that closes no live
     leak, which keeps rule 6 as it was; and the headroom policy itself.
 
+19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
+    output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
+    one). It is enough to merge a slice. Before redaction is un-held, the same property needs an
+    independent reader as well, and that reader gates #136's last slice, S9 (the un-hold), beside
+    R10. *Decided:* owner, 2026-10-15, for slice 2b's ink removal: re-walking the ink merges 2b,
+    and the PDFium ink read-back (after #344) gates S9. *Does not cover:* a check that is already
+    independent of the walk, such as the removed image's bytes being absent from the output, which
+    stands on its own.
+
+20. **When a deploy gate fails, compare the live site with the build run's own artifact first.**
+    If it now matches, the failure was propagation lag, and the failed jobs get one re-run. If
+    the same job fails again, stop and bring the owner the failing asset and both hashes, built
+    and served. *Decided:* owner, 2026-10-15, after v0.1.8's live-routes check failed during edge
+    propagation (#351). The site was byte-identical 10 minutes later (48 of 48 files), and the
+    re-run succeeded. *Does not cover:* a live site that still differs from the artifact (an edge
+    rewriting HTML, say), which is a stop at once with no re-run; and the check's own fix, which
+    is #351.
+
+21. **A ceiling in front of an engine call nothing can interrupt is set against a named cost of
+    that call, counted as the engine incurs it, and from measurement.** The count covers every
+    stream the engine parses, every repeat (a form once per draw), and everything the engine loads
+    that burrow's walk does not enter. A depth or a maximum is not such a count. The census maximum
+    and the fixture maximum are recorded beside the constant, and each part of the count has its
+    own fixture, a near-miss twin and an asserted mutation (rule 7). *Decided:* owner, 2026-10-15,
+    accepting #206's `MAX_MARKED_WORK` (1,000,000; census maximum 18,962, fixture maximum 32),
+    whose cost is marked-content work: the `BDC`/`BMC` depth summed over every operation PDFium
+    parses at the page load. It replaced a depth cap after review found three ways past it.
+    *Does not cover:* the load's other costs (its total time, and memory that does not grow with
+    nesting), which this constant does not cap: time is cooperative and memory is detected (ADR
+    0007); and the same engine's loads elsewhere (render, previews), which it does not cap at all.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new acceptance rule from here (rule 17): **before writing code**, give the
