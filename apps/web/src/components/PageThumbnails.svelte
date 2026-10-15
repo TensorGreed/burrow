@@ -35,6 +35,7 @@
   import { CANCELLED } from "../host/worker-host.js";
   import { ENGINE_PAUSED, LIMITS, RENDER, createToolHost, hostKind } from "./tool-host.js";
   import { createEndGate, discardStale } from "./strip-lifecycle.js";
+  import { releaseTiles, zeroPixels } from "./strip-release.js";
   import { evictable, outstanding as outstandingPages, releasedState } from "./strip-schedule.js";
   import type { TileState } from "./strip-schedule.js";
   import { LIVE_THUMBNAIL_WINDOW, THUMBNAIL_CSS_HEIGHT, thumbnailBox } from "./thumbnail-policy.js";
@@ -112,12 +113,11 @@
    * as long as the worker lives, and nothing reaches into it, so a worker never serves a second
    * document: it ends when the document changes and when the page is left -- and before an
    * operation runs, which `paused` already did. A tile's pixels are zeroed when the tile lets go of
-   * them: evicted from the live window, the document changed, the page left or the strip unmounted.
-   * The canvas is cleared in the same moment (`paint`, given `null`).
+   * them: evicted from the live window, the document changed, the page left or the strip unmounted
+   * -- the four `releaseTiles` sites, which `strip-release.test.ts` holds and
+   * `page-thumbnails.test.ts` pins. The canvas is cleared in the same moment (`paint`, given
+   * `null`, or its `destroy`).
    */
-  function wipe(list: readonly Tile[]) {
-    for (const tile of list) tile.data?.data.fill(0);
-  }
 
   /** End the worker: now, once the render in flight settles, or at the deadline. */
   function endWorker() {
@@ -133,7 +133,7 @@
     const chosen = file;
     // THE OLD DOCUMENT'S PIXELS, zeroed before the tiles holding them go. Read untracked: reading
     // `tiles` here would make this effect re-run on every tile it draws.
-    untrack(() => wipe(tiles));
+    untrack(() => releaseTiles(tiles, "document"));
     if (chosen !== drawnFor) {
       drawnFor = chosen;
       untrack(endWorker);
@@ -282,9 +282,14 @@
       running = false;
       // THE DEFERRED RELEASE: an operation started while this render was in flight, and the
       // render has now settled, so the engine can go without terminating anything mid-run.
-      if (paused) host.discardWorker();
-      // And an end the document change or the page leave asked for (`ending`).
-      ending.settled();
+      // And an end the document change or the page leave asked for (`ending`) -- which the pause's
+      // own release has just carried out, so it is cancelled rather than done twice.
+      if (paused) {
+        host.discardWorker();
+        ending.cancel();
+      } else {
+        ending.settled();
+      }
       // A NEW DOCUMENT'S TILES asked while this one ran; ask again for them, on a fresh worker.
       if (mine !== generation && !paused) void pump();
     }
@@ -377,7 +382,11 @@
   /** Take one page's pixels and put them in its tile, releasing the oldest if the window is full. */
   function accept(page: number, width: number, height: number, pixels: ArrayBuffer) {
     const tile = tiles[page - 1];
-    if (!tile) return;
+    // A PAGE WITH NO TILE: its pixels go nowhere, so they are zeroed rather than left (#199, L2).
+    if (!tile) {
+      zeroPixels(pixels);
+      return;
+    }
 
     // THE WINDOW. ADR 0027 §3, and the eviction rule is `strip-schedule.ts`'s rather than a
     // shift from the front: pushing out a tile that is still on screen and then re-requesting
@@ -388,11 +397,14 @@
       live = live.filter((p) => p !== out);
       const stale = tiles[out - 1];
       if (stale?.state === "drawn") {
-        stale.data?.data.fill(0);
-        tiles[out - 1] = { ...stale, state: releasedState(out, wanted), data: null };
+        const [released] = releaseTiles([stale], "evict", releasedState(out, wanted));
+        if (released) tiles[out - 1] = released;
       }
     }
 
+    // A TILE REDRAWN while it still held a picture: the old one is zeroed before it is replaced
+    // (#199, L3).
+    zeroPixels(tile.data?.data);
     tiles[page - 1] = {
       ...tile,
       state: "drawn",
@@ -448,10 +460,7 @@
     const onPageHide = () => {
       hidden = true;
       generation += 1;
-      wipe(tiles);
-      tiles = tiles.map((tile) =>
-        tile.state === "drawn" ? { ...tile, state: "waiting" as const, data: null } : tile,
-      );
+      tiles = releaseTiles(tiles, "pagehide");
       live = [];
       endWorker();
     };
@@ -469,7 +478,9 @@
 
   onDestroy(() => {
     observer?.disconnect();
-    wipe(tiles);
+    // The gate's deadline, if armed, would otherwise fire after the strip has gone.
+    ending.cancel();
+    releaseTiles(tiles, "unmount");
     host.dispose();
   });
 </script>

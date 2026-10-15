@@ -1395,6 +1395,32 @@ describe("a rendered strip", () => {
     expect(reply.ok).toBe(true);
   });
 
+  test("a page for a request no longer in flight is zeroed, not left (#199, D4)", async () => {
+    // Rendered pixels are decoded content. A page that arrives after its request settled has no
+    // caller to hand it to, and dropping the reference would leave the picture to the collector.
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const seen: number[] = [];
+    const running = host.run(renderOperation, { onPage: (page) => seen.push(page.number) });
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+    worker.reply({ id: request.id, ok: true, kind: "", message: "", pages: 0 });
+    await running;
+
+    const late = new Uint8Array([7, 7, 7, 7]);
+    worker.reply({
+      id: request.id,
+      page: { number: 1, index: 0, of: 1, width: 1, height: 1 },
+      pixels: late.buffer,
+    });
+    await settle();
+    expect(seen, "a late page reached the caller").toEqual([]);
+    expect([...late], "a late page's pixels were left as they arrived").toEqual([0, 0, 0, 0]);
+  });
+
   test("a page carrying no pixels is an Internal, and the worker is discarded", async () => {
     // The bundle violating the protocol. Delivered as an empty tile it would look exactly like
     // a working strip of blank pages -- which is the failure a missing `js_name` on

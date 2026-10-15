@@ -344,13 +344,24 @@ review of any change to the worker, the bridges or the binding checks it**. What
 and when, is tested. The wasm heaps are to be held by a canary test, not yet written. Both are #199's discharge, a ship blocker
 for the redaction page (`docs/ROADMAP.md`).
 
-**Where the code stands (2026-10-08).** For the two qpdf workers (base and redaction),
-`src/worker/input-wipe.test.ts` holds the following, each line shown to fail under mutation:
+**Where the code stands (2026-10-15).** For the two qpdf workers (base and redaction), and since
+#136 S5 for the render worker, `src/worker/input-wipe.test.ts` holds the following, each line shown
+to fail under mutation:
 
 - each worker zeroes its input and password once the Rust call returns, including when the call
   throws, the request is refused, or a later file cannot be read;
 - the bridge zeroes qpdf's buffers of decoded content, and of stream data it copied in, before
-  freeing them, and every copy it hands to Rust (`__burrow_wipe_handed_out`).
+  freeing them, and every copy it hands to Rust (`__burrow_wipe_handed_out`);
+- the render worker (`render-main.js`) zeroes its input and password in the same way, and the
+  PDFium bridge (`bridge-pdfium.js`) zeroes every copy it hands to Rust through the same
+  `__burrow_wipe_handed_out`, which the render worker calls once the call returns.
+
+The page-picture strip (`PageThumbnails.svelte`) zeroes the pixels it holds when it lets go of
+them -- evicted from the live window, the document changed, the page left, the strip unmounted --
+through `releaseTiles` (`strip-release.ts`), whose four call sites `page-thumbnails.test.ts` pins;
+a page that arrives for a document no longer shown, or for a request the host no longer holds, is
+zeroed on arrival. **One document per render worker**: it ends when the document changes, when the
+page is left, and before an operation runs (`strip-lifecycle.ts`), so PDFium's heap goes with it.
 
 The binding zeroes the copies it owns: redaction's input and merge's buffer (`Zeroizing`), and
 every password's `Box`. Only the password's wipe has a test (`bindings/burrow-wasm/src/lib.rs`).
@@ -380,9 +391,15 @@ in (2,001 copies left). A page whose output reuses the freed blocks hides a miss
 header records the near shapes that did. The allocator is held natively too
 (`core/burrow-engines/tests/wipe_on_free.rs`).
 
-**Still not true of the code:** the render worker (`render-main.js`, `bridge-pdfium.js`) zeroes
-neither its input nor its password, and the pixels it posts are the page as drawn. It is in #199's
-scope only if the redaction page previews through it, which #136's plan decides.
+**Still not true of the code:** PDFium's own heap is not zeroed and no canary scans it; it is
+released only by ending the worker, which the strip does on the rules above. That end waits for a
+render in flight to settle (terminating mid-render crashed Firefox, #361), for at most
+`END_DEADLINE_MS`; a strip request is every waiting tile at once, so an honest heavy document can
+still be rendering when the deadline fires, and the end then terminates it mid-render anyway --
+whether to batch requests or re-arm the deadline per page is with the owner. The pixels the worker
+posts are the page as drawn, by design; what holds them on the main thread after the strip lets go
+(the canvas's own backing store, a `putImageData` copy) is cleared by setting the canvas to 0×0,
+not shown to be wiped.
 
 ## Design
 

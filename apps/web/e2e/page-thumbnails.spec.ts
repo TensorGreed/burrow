@@ -20,6 +20,7 @@ import { expect, test, type Page, type Worker } from "@playwright/test";
 import { isPinnedArtifact, mark, since } from "./request-log";
 
 import { STRIP_WITHDRAWN } from "../src/components/strip-copy.js";
+import { END_DEADLINE_MS } from "../src/components/strip-lifecycle.js";
 
 // SKIPPED WHENEVER THE STRIP IS WITHDRAWN, AND DERIVED FROM THE FLAG RATHER THAN COMMENTED OUT.
 //
@@ -263,4 +264,77 @@ test("an operation ends the render worker before it runs (#199)", async ({ page 
   await page.getByRole("button", { name: "Turn pages" }).click();
   await closed;
   await expect(page.locator(".result a.download")).toBeVisible({ timeout: 45_000 });
+});
+
+test("a document chosen while a render is in flight is drawn once it settles, and the old is not (#199)", async ({
+  page,
+}) => {
+  // A RENDER KNOWN TO BE IN FLIGHT, held by the harness rather than hoped for: the render worker's
+  // PDFium download is held, so the strip's first request for `pages-10.pdf` cannot settle until
+  // the test lets it. The document is changed inside that window, which is the path the strip's
+  // `finally` exists for: the end waits for the render to settle (`ending`, never mid-render,
+  // #361), the old pages are discarded as stale, and `pump` is asked again for the new document's
+  // tiles -- nothing else will ask, since their intersection already found `running` set.
+  let held: (() => Promise<void>) | null = null;
+  const arrived = new Promise<void>((resolve) => {
+    void page.route(/\/pdfium\.[0-9a-f]+\.wasm$/, (route) => {
+      if (held !== null) return route.continue();
+      held = () => route.continue();
+      resolve();
+    });
+  });
+  // EVERY PAINT COUNTED, so what was drawn before the old worker closed can be read back.
+  await page.addInitScript(() => {
+    const original = CanvasRenderingContext2D.prototype.putImageData;
+    const scope = globalThis as unknown as { __paints: number };
+    scope.__paints = 0;
+    CanvasRenderingContext2D.prototype.putImageData = function (
+      this: CanvasRenderingContext2D,
+      ...args: unknown[]
+    ) {
+      scope.__paints += 1;
+      return (original as (...a: unknown[]) => void).apply(this, args);
+    } as typeof original;
+  });
+
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await arrived;
+  const first = await renderWorker(page);
+  let paintsAtClose: number | null = null;
+  let closedYet = false;
+  const closed = new Promise<void>((resolve) =>
+    first.on("close", () => {
+      closedYet = true;
+      void page
+        .evaluate(() => (globalThis as unknown as { __paints: number }).__paints)
+        .then((n) => {
+          paintsAtClose = n;
+          resolve();
+        });
+    }),
+  );
+
+  const changed = Date.now();
+  await choose(page, "mixed-rotation-4page.pdf");
+  // The new document's tiles, not yet drawn: the held render is still in flight.
+  await expect(page.locator(".strip__tile")).toHaveCount(4);
+  await expect(page.locator(".strip__canvas")).toHaveCount(0);
+  // RELEASED SHORT OF `END_DEADLINE_MS`, and the old worker still alive: so the end this test
+  // reaches is the one that waits for the render to settle, not the deadline's.
+  await page.waitForTimeout(300);
+  expect(closedYet, "the old worker ended before its render settled").toBe(false);
+  expect(Date.now() - changed, "the hold ran into the end deadline").toBeLessThan(END_DEADLINE_MS);
+  await held!();
+
+  // THE OLD WORKER CLOSES, once its render settled.
+  await closed;
+  // AND NO OLD TILE SHOWED: every picture the old worker produced arrived for a document nobody
+  // shows any more. Read as the paint count when its `close` reached the test, which is before a
+  // new worker could have compiled PDFium and drawn (about 190 ms measured, S5).
+  expect(paintsAtClose, "a page of the previous document was painted").toBe(0);
+  // THE NEW DOCUMENT IS DRAWN, on a worker of its own: the re-pump.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the second document was drawn by the first document's worker").not.toBe(first);
 });

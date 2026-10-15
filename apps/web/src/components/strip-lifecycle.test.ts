@@ -81,6 +81,17 @@ describe("the strip's render worker ends one document after another (#199, D1)",
     expect(t.discards()).toBe(0);
   });
 
+  it("a cancel drops a waiting end and its deadline, ending nothing", () => {
+    const t = gate();
+    t.g.request(true);
+    t.g.cancel();
+    expect(t.g.pending()).toBe(false);
+    expect(t.timers(), "the deadline outlived the cancel").toBe(0);
+    t.advance(END_DEADLINE_MS * 2);
+    t.g.settled();
+    expect(t.discards(), "a cancelled end was carried out").toBe(0);
+  });
+
   it("is a few seconds, said as a number", () => {
     expect(END_DEADLINE_MS).toBe(3_000);
   });

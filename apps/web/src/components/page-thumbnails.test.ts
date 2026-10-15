@@ -147,7 +147,7 @@ describe("the page-picture strip", () => {
       /if \(!running\) host\.$/.test(source.slice(at - 25, at)),
     );
     const settled = discards.filter((at) =>
-      /finally \{\s*running = false;\s*if \(paused\) host\.$/.test(source.slice(at - 400, at)),
+      /finally \{\s*running = false;\s*if \(paused\) \{\s*host\.$/.test(source.slice(at - 600, at)),
     );
     const gated = discards.filter((at) =>
       /createEndGate\(\{\s*discard: \(\) => host\.$/.test(source.slice(at - 80, at)),
@@ -158,6 +158,37 @@ describe("the page-picture strip", () => {
     // AND THE GATE IS TOLD WHETHER A RENDER IS IN FLIGHT, and told when it settles.
     expect(source).toMatch(/ending\.request\(running\)/);
     expect(source).toMatch(/finally \{[\s\S]{0,600}ending\.settled\(\)/);
+    // AND NOT TWICE: when the pause's own release has just ended the worker, a waiting end is
+    // cancelled rather than carried out on top of it.
+    expect(source).toMatch(
+      /if \(paused\) \{\s*host\.discardWorker\(\);\s*ending\.cancel\(\);\s*\} else \{\s*ending\.settled\(\);\s*\}/,
+    );
+    // And the gate's deadline does not outlive the strip.
+    expect(source).toMatch(/onDestroy\(\(\) => \{[\s\S]{0,200}ending\.cancel\(\)/);
+  });
+
+  it("lets go of a tile's pixels only through releaseTiles, at its four sites (#199, D4)", () => {
+    // What releasing does -- zero, then drop -- is `strip-release.test.ts`'s. What this pins is
+    // that the component goes through it at every one of the four places a tile lets go, and
+    // nowhere zeroes by hand, so a fifth site cannot appear without this count moving.
+    const sites = [...source.matchAll(/releaseTiles\(([^)]*)\)/g)].map((m) => m[1]!);
+    expect(sites.map((args) => /"(\w+)"/.exec(args)?.[1]).sort()).toEqual([
+      "document",
+      "evict",
+      "pagehide",
+      "unmount",
+    ]);
+    // Each at its own place: the document change (untracked), eviction from the window, the
+    // pagehide handler (whose result replaces the tiles), and unmount.
+    expect(source).toMatch(/untrack\(\(\) => releaseTiles\(tiles, "document"\)\)/);
+    expect(source).toMatch(/releaseTiles\(\[stale\], "evict", releasedState\(out, wanted\)\)/);
+    expect(source).toMatch(/tiles = releaseTiles\(tiles, "pagehide"\)/);
+    expect(source).toMatch(/onDestroy\(\(\) => \{[\s\S]{0,200}releaseTiles\(tiles, "unmount"\)/);
+    expect(source, "pixels zeroed by hand, outside releaseTiles").not.toMatch(/\.fill\(0\)/);
+    // PIXELS WITH NOWHERE TO GO, in `accept`: no tile for the page, and a tile redrawn over a
+    // picture it still held (#199, L2 and L3).
+    expect(source).toMatch(/if \(!tile\) \{\s*zeroPixels\(pixels\);\s*return;\s*\}/);
+    expect(source).toMatch(/zeroPixels\(tile\.data\?\.data\);\s*tiles\[page - 1\] = \{/);
   });
 
   it("zeroes a previous document's picture on arrival and never shows it (#199, D4)", () => {
