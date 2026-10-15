@@ -1974,6 +1974,68 @@ fn check_type_three<O: PdfObject>(
     Ok(image_fonts)
 }
 
+/// The marked-content work of every Type 3 glyph procedure the fonts `drawn` name, for #206's
+/// second reading ([`crate::pdfsyntax::geometry::marked_work`]).
+///
+/// PDFium parses a Type 3 glyph's procedure when it loads the page that draws the glyph, and the
+/// geometry walk does not enter one, so the walk's own count misses it. This counts **every**
+/// procedure of every drawn Type 3 font -- a superset of the ones PDFium parses, which are the
+/// drawn codes' -- once per font object and once per procedure object, as PDFium caches a font's
+/// glyphs per document. Font and procedure identities are deduplicated as [`check_type_three`]'s
+/// are; an inline font or `/CharProcs` is counted every time it is met, which over-counts.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] naming `type-three-unreadable` for a procedure whose data does not decode;
+/// whatever [`crate::pdfsyntax::geometry::marked_work`] refuses; the deadline; reading the keys.
+pub(super) fn type_three_marked_work<O: PdfObject>(
+    resources: &PageResources<O>,
+    drawn: &BTreeSet<ScopedFont>,
+    watch: &Watch<'_>,
+) -> Result<u64> {
+    const TYPE_THREE: Name = Name::literal(b"/Type3\0");
+    const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
+
+    let mut fonts_counted: BTreeSet<u64> = BTreeSet::new();
+    let mut procedures_counted: BTreeSet<u64> = BTreeSet::new();
+    let mut work: u64 = 0;
+    for font_name in drawn {
+        watch.tick()?;
+        let font = resources.font_in_scope(font_name)?;
+        let object = font.object()?;
+        if object != (0, 0) && !fonts_counted.insert(pack(object)) {
+            continue;
+        }
+        if super::resources::subtype_of(&font)? != Some(TYPE_THREE) {
+            continue;
+        }
+        let procs = font.key(&CHAR_PROCS);
+        if procs.type_code() != object_type::DICTIONARY {
+            continue;
+        }
+        for key in crate::pdfsyntax::dict::top_level_keys(&procs.unparse())? {
+            watch.tick()?;
+            let entry = procs.key(&Name::from_stripped(&key)?);
+            if entry.type_code() != object_type::STREAM {
+                continue;
+            }
+            // A STREAM IS ALWAYS INDIRECT, so its identity is never the shared `(0, 0)`.
+            if !procedures_counted.insert(pack(entry.object()?)) {
+                continue;
+            }
+            let Some(procedure) = entry.stream_data()? else {
+                return Err(Error::Malformed(
+                    "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose data \
+                     burrow could not decode"
+                        .to_owned(),
+                ));
+            };
+            work = work.saturating_add(crate::pdfsyntax::geometry::marked_work(&procedure, watch)?);
+        }
+    }
+    Ok(work)
+}
+
 /// What `check_type_three` has already learned, across fonts: each procedure's image extent, and
 /// each `/CharProcs` dictionary's image extents.
 #[derive(Default)]

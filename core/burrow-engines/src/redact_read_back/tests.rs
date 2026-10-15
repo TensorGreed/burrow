@@ -109,7 +109,7 @@ fn agreement(glyphs: usize) -> Agreement {
         walked: Walked {
             frame: letter(),
             glyphs,
-            marked_depth: 3,
+            marked_work: 3,
         },
         promised_pages: 2,
     }
@@ -521,7 +521,7 @@ fn no_text_reading_function_is_declared() {
 fn a_page_nested_past_the_ceiling_is_refused_before_it_is_loaded() {
     let fake = Fake::honest();
     let mut expected = agreement(2);
-    expected.walked.marked_depth = MAX_MARKED_DEPTH + 1;
+    expected.walked.marked_work = MAX_MARKED_WORK + 1;
     assert_eq!(rule_of(verdict(&fake, &expected)), "second-reading-nesting");
     assert_eq!(
         fake.asked.get(),
@@ -534,7 +534,7 @@ fn a_page_nested_past_the_ceiling_is_refused_before_it_is_loaded() {
 fn a_page_nested_to_the_ceiling_is_read() {
     let fake = Fake::honest();
     let mut expected = agreement(2);
-    expected.walked.marked_depth = MAX_MARKED_DEPTH;
+    expected.walked.marked_work = MAX_MARKED_WORK;
     assert_eq!(rule_of(verdict(&fake, &expected)), "Ok");
     assert_eq!(fake.asked.get(), 2);
 }

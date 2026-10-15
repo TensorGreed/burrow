@@ -3030,13 +3030,19 @@ struct Budget<'w> {
     /// [`ScopedFont`] resolves by. Shared, and rebuilt only at a `Do`, so a glyph costs a
     /// reference count rather than a copy of the route.
     route: Arc<[Vec<u8>]>,
-    /// How many marked-content sequences (`BDC`, `BMC`) are open, counted ACROSS forms: a form's
-    /// own marks are added to the ones open where it is drawn, which is never less than a
-    /// renderer's count for the same point. An unmatched `EMC` does not take it below zero.
-    marked_depth: usize,
-    /// The deepest [`Self::marked_depth`] reached anywhere in the walk. See
-    /// [`glyphs_and_marked_depth_in`] for who reads it.
-    deepest_mark: usize,
+    /// How many marked-content sequences (`BDC`, `BMC`) are open where the walk is. A form starts
+    /// with the count open where it is drawn, and its own marks add to it.
+    marked_depth: u64,
+    /// The [`Self::marked_depth`] at which the stream being walked started: its `EMC`s close only
+    /// its own marks, never the caller's, as a renderer keeps a mark stack per stream. Without
+    /// this floor, a form of bare `EMC`s drawn after a run of `BMC`s took the count back to zero
+    /// at every draw while the page's real nesting grew by the run each time (#206's review).
+    marked_floor: u64,
+    /// The marked-content work of the walk: the sum, over every operation read, of the
+    /// [`Self::marked_depth`] in force when it was read -- every stream, and every form once per
+    /// `Do`, since a renderer parses a form again at each draw. See
+    /// [`glyphs_and_marked_work_in`] for who reads it and why it is a sum.
+    marked_work: u64,
 }
 
 /// A Form XObject, resolved.
@@ -3424,23 +3430,60 @@ pub fn glyphs_in(
     Ok(walk_page(content, resources, watch)?.0)
 }
 
-/// As [`glyphs_in`], with the deepest marked-content nesting the walk reached, forms included.
+/// As [`glyphs_in`], with the walk's marked-content work: the sum, over every operation read in
+/// the page and in every form it draws (once per `Do`), of the marked-content depth in force
+/// when it was read.
 ///
 /// For #206's second reading, which loads the page in PDFium: PDFium's page load grows with
-/// nesting depth, so the reading is refused before the load above a ceiling
-/// (`redact_read_back::MAX_MARKED_DEPTH`). The count is a bound, not a model of PDFium's: see
-/// the walk's `marked_depth`.
+/// marked-content nesting, and it parses a form again at every draw, so the reading is refused
+/// before the load above a ceiling (`redact_read_back::MAX_MARKED_WORK`). A SUM, NOT A DEPTH:
+/// a cap on the deepest point is passed by a shallow form drawn many times, each draw under the
+/// cap, and nothing caps the total.
+///
+/// What it counts, as a renderer's mark stacks would: a form starts at the depth open where it
+/// is drawn, its `EMC`s never close the caller's marks, and the caller's depth is restored when
+/// it returns. It does not count a Type 3 glyph procedure, which the walk does not enter; the
+/// caller adds those ([`marked_work`]).
 ///
 /// # Errors
 ///
 /// The same as [`glyphs_in`].
-pub fn glyphs_and_marked_depth_in(
+pub fn glyphs_and_marked_work_in(
     content: &[u8],
     resources: &dyn Resources,
     watch: &Watch<'_>,
-) -> Result<(Vec<Glyph>, usize)> {
-    let (glyphs, _, deepest) = walk_page(content, resources, watch)?;
-    Ok((glyphs, deepest))
+) -> Result<(Vec<Glyph>, u64)> {
+    let (glyphs, _, work) = walk_page(content, resources, watch)?;
+    Ok((glyphs, work))
+}
+
+/// The marked-content work of one content stream read on its own, as
+/// [`glyphs_and_marked_work_in`] counts it: the sum, over every operation, of the `BDC`/`BMC`
+/// depth in force when it is read, with an `EMC` never taking the depth below zero.
+///
+/// For a Type 3 glyph procedure, which PDFium parses when it loads the page that draws the glyph
+/// and which the walk does not enter. A procedure starts at depth zero: PDFium parses it apart
+/// from the page.
+///
+/// # Errors
+///
+/// Whatever [`super::ops::operations`] refuses; [`Error::LimitExceeded`] once `watch`'s
+/// deadline has passed.
+pub fn marked_work(content: &[u8], watch: &Watch<'_>) -> Result<u64> {
+    let operations = super::ops::operations(content)?;
+    watch.now()?;
+    let mut depth: u64 = 0;
+    let mut work: u64 = 0;
+    for operation in &operations {
+        watch.tick()?;
+        work = work.saturating_add(depth);
+        match operation.operator.as_slice() {
+            b"BDC" | b"BMC" => depth = depth.saturating_add(1),
+            b"EMC" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(work)
 }
 
 /// Walk a content stream and return both the glyphs it draws and the non-text-ink boxes it
@@ -3461,13 +3504,13 @@ pub fn glyphs_and_ink_in(
     Ok((glyphs, ink))
 }
 
-/// The one walk of a page's content behind every entry above: glyphs, ink, and the deepest
-/// marked-content nesting.
+/// The one walk of a page's content behind every entry above: glyphs, ink, and the
+/// marked-content work.
 fn walk_page(
     content: &[u8],
     resources: &dyn Resources,
     watch: &Watch<'_>,
-) -> Result<(Vec<Glyph>, Vec<InkBox>, usize)> {
+) -> Result<(Vec<Glyph>, Vec<InkBox>, u64)> {
     let mut out = Vec::new();
     let mut ink = Vec::new();
     let mut budget = Budget {
@@ -3477,7 +3520,8 @@ fn walk_page(
         in_form: None,
         route: Arc::from(Vec::new()),
         marked_depth: 0,
-        deepest_mark: 0,
+        marked_floor: 0,
+        marked_work: 0,
     };
     walk(
         content,
@@ -3496,7 +3540,7 @@ fn walk_page(
         &mut out,
         &mut ink,
     )?;
-    Ok((out, ink, budget.deepest_mark))
+    Ok((out, ink, budget.marked_work))
 }
 
 /// One numeric operand, refused rather than defaulted.
@@ -3673,6 +3717,9 @@ fn walk(
         // THE DEADLINE, INSIDE THE WALK (#175). Before it, a form drawn 4,000 times walked for
         // 17.9 s against a 100 ms budget, because nothing here could see the clock.
         budget.watch.tick()?;
+        // THE MARKED-CONTENT WORK (#206), before anything below can `continue` past it: every
+        // operation read, at the depth in force. See `glyphs_and_marked_work_in`.
+        budget.marked_work = budget.marked_work.saturating_add(budget.marked_depth);
         // THE INK CEILING (#125), the counterpart of `MAX_GLYPHS` for a path-only page. `ink`
         // accumulates across every form draw, so it is bounded here where the form recursion also
         // passes, not only per stream.
@@ -4006,12 +4053,12 @@ fn walk(
                 path_ctm_shifted = false;
             }
             // MARKED-CONTENT NESTING, counted for the second reading's ceiling and for nothing
-            // else: no glyph is placed or refused by it. (`BDC` naming `/OC` refused above.)
-            b"BDC" | b"BMC" => {
-                budget.marked_depth = budget.marked_depth.saturating_add(1);
-                budget.deepest_mark = budget.deepest_mark.max(budget.marked_depth);
+            // else: no glyph is placed or refused by it. (`BDC` naming `/OC` refused above.) An
+            // `EMC` closes only this stream's marks: see `Budget::marked_floor`.
+            b"BDC" | b"BMC" => budget.marked_depth = budget.marked_depth.saturating_add(1),
+            b"EMC" if budget.marked_depth > budget.marked_floor => {
+                budget.marked_depth = budget.marked_depth.saturating_sub(1);
             }
-            b"EMC" => budget.marked_depth = budget.marked_depth.saturating_sub(1),
             _ => {}
         }
     }
@@ -4111,6 +4158,10 @@ fn draw_form(
         Some(chain) => chain,
         None => resources,
     };
+    // THE FORM'S OWN MARK STACK (#206): it starts at the caller's depth, cannot close below it,
+    // and leaves the caller's depth as it found it, however its own marks balance.
+    let caller_depth = budget.marked_depth;
+    let caller_floor = std::mem::replace(&mut budget.marked_floor, caller_depth);
     let result = walk(
         &form.content,
         inner,
@@ -4122,6 +4173,8 @@ fn draw_form(
         out,
         ink,
     );
+    budget.marked_depth = caller_depth;
+    budget.marked_floor = caller_floor;
     budget.in_form = enclosing;
     budget.route = enclosing_route;
     budget.open_forms.pop();

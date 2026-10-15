@@ -1997,10 +1997,10 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 /// comparisons. Grouping once gives 0.72 s.
 ///
 /// Since #206 every native redaction is read a second time, and a page nested past
-/// `redact_read_back::MAX_MARKED_DEPTH` is refused before PDFium loads it -- PDFium's page load
+/// `redact_read_back::MAX_MARKED_WORK` is refused before PDFium loads it -- PDFium's page load
 /// grows with nesting depth. So the large cases now end in `[second-reading-nesting]`, after the
-/// walk and the rewrite have run in full, and the clock still measures those; the ceiling and the
-/// level just under it redact, and carry the report that shows the work was done.
+/// walk and the rewrite have run in full, and the clock still measures those; the cases under the
+/// ceiling redact, and carry the report that shows the work was done.
 ///
 /// So: 8k, 16k and 60k, and the bound is wall clock because that is what was wrong. The margin
 /// is wide (roughly 14x the measured 0.72 s) so an ordinary slow machine does not fail it, and a
@@ -2048,10 +2048,10 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
     }
 
     const CEILING: std::time::Duration = std::time::Duration::from_secs(10);
-    let cap = burrow_engines::redact_read_back::MAX_MARKED_DEPTH;
-    // AT AND JUST UNDER THE SECOND READING'S NESTING CEILING (#206): these redact, and the work
-    // is witnessed by the report.
-    for n in [cap - 1, cap] {
+    // UNDER THE SECOND READING'S NESTING CEILING (#206): these redact, and the work is witnessed
+    // by the report. The ceiling is on marked-content WORK (`redact_read_back::MAX_MARKED_WORK`),
+    // and `n` nested carriers around `n` shows is about `4 n^2` of it, so 100 and 400 are under.
+    for n in [100usize, 400] {
         let (_, report) = redact(&page(n)).unwrap_or_else(|error| {
             panic!("{n} nested carriers, within the nesting ceiling, should redact: {error:?}")
         });
@@ -2065,8 +2065,9 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
     }
     // PAST IT, the operation still walks and rewrites every carrier -- that is what the clock
     // measures -- and the second reading then refuses the output by name before PDFium loads the
-    // page, whose load grows with nesting depth. One past the ceiling is the near-miss.
-    for n in [cap + 1, 8_000usize, 16_000, 60_000] {
+    // page, whose load grows with nesting. The boundary itself is pinned by the read-back's own
+    // tests; here 1,000 is the nearest case past it.
+    for n in [1_000usize, 8_000, 16_000, 60_000] {
         let pdf = page(n);
         let started = std::time::Instant::now();
         let outcome = redact(&pdf);

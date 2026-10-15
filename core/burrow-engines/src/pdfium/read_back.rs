@@ -12,8 +12,8 @@
 //!   display list and `FPDFText_LoadPage` the text layer, in two calls nothing can checkpoint;
 //!   the only lever on them is refusing to begin, which is what render does too.
 //! - **The measured memory check after them**, which detects rather than bounds (ADR 0007).
-//! - **[`crate::redact_read_back::MAX_MARKED_DEPTH`], before any of it.** PDFium's page load
-//!   grows with nesting depth; capped before it, by the rules, which refuse before
+//! - **[`crate::redact_read_back::MAX_MARKED_WORK`], before any of it.** PDFium's page load
+//!   grows with marked-content nesting; capped before it, by the rules, which refuse before
 //!   `read_page` is asked.
 //! - **[`crate::redact_read_back::MAX_CHARS`]**: a page reporting more characters is refused
 //!   before any is read.

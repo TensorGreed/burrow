@@ -194,19 +194,20 @@ pub trait ClearedWitness {
     /// a document burrow wrote and cannot walk is one it should not hand back.
     fn glyphs_on(&self, read: &Self::Read, page: usize) -> Result<Vec<Glyph>>;
 
-    /// As [`Self::glyphs_on`], with the deepest marked-content nesting the same walk reached on
-    /// `page`, forms included (`pdfsyntax::geometry::glyphs_and_marked_depth_in`). The second
-    /// reading refuses above a ceiling before PDFium loads the page (#206). Required rather than
-    /// defaulted to zero: a witness that reported no nesting would switch the ceiling off.
+    /// As [`Self::glyphs_on`], with the marked-content work of loading `page`: the same walk's
+    /// (`pdfsyntax::geometry::glyphs_and_marked_work_in`, every form once per draw) plus every
+    /// Type 3 glyph procedure the drawn fonts carry. The second reading refuses above a ceiling
+    /// before PDFium loads the page (#206). Required rather than defaulted to zero: a witness that
+    /// reported no work would switch the ceiling off.
     ///
     /// # Errors
     ///
     /// As [`Self::glyphs_on`].
-    fn glyphs_and_marked_depth_on(
+    fn glyphs_and_marked_work_on(
         &self,
         read: &Self::Read,
         page: usize,
-    ) -> Result<(Vec<Glyph>, usize)>;
+    ) -> Result<(Vec<Glyph>, u64)>;
 
     /// How many codes the fonts `cut` names still **map** -- in `/ToUnicode` or `/Differences` --
     /// that `drawn` says they no longer draw.
@@ -279,8 +280,9 @@ pub struct Walked {
     pub frame: PageFrame,
     /// How many glyphs the walk placed on the output page, in the region or not.
     pub glyphs: usize,
-    /// The deepest marked-content nesting the walk reached on the output page, forms included.
-    pub marked_depth: usize,
+    /// The marked-content work of loading the output page, as
+    /// [`ClearedWitness::glyphs_and_marked_work_on`] counts it.
+    pub marked_work: u64,
 }
 
 /// As [`region_is_cleared`], returning what the walk read so a second reading can be held to it.
@@ -301,8 +303,8 @@ pub fn region_is_cleared_reporting<W: ClearedWitness>(
         .map_err(|error| wrapped("it cannot be read back", error))?;
 
     // 1. NOTHING THE REGION REACHES IS STILL DRAWN.
-    let (glyphs, marked_depth) = fresh
-        .glyphs_and_marked_depth_on(&read, expected.page)
+    let (glyphs, marked_work) = fresh
+        .glyphs_and_marked_work_on(&read, expected.page)
         .map_err(|error| {
             wrapped(
                 &format!("its page {} cannot be walked", expected.page),
@@ -372,7 +374,7 @@ pub fn region_is_cleared_reporting<W: ClearedWitness>(
     Ok(Walked {
         frame,
         glyphs: glyphs.len(),
-        marked_depth,
+        marked_work,
     })
 }
 
@@ -473,11 +475,11 @@ mod tests {
             Ok(self.glyphs.clone())
         }
 
-        fn glyphs_and_marked_depth_on(
+        fn glyphs_and_marked_work_on(
             &self,
             read: &Self::Read,
             page: usize,
-        ) -> crate::Result<(Vec<Glyph>, usize)> {
+        ) -> crate::Result<(Vec<Glyph>, u64)> {
             Ok((self.glyphs_on(read, page)?, 0))
         }
 
@@ -823,11 +825,11 @@ mod limit_tests {
             })
         }
 
-        fn glyphs_and_marked_depth_on(
+        fn glyphs_and_marked_work_on(
             &self,
             read: &Self::Read,
             page: usize,
-        ) -> Result<(Vec<Glyph>, usize)> {
+        ) -> Result<(Vec<Glyph>, u64)> {
             Ok((self.glyphs_on(read, page)?, 0))
         }
 

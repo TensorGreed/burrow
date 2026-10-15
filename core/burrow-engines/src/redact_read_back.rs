@@ -41,9 +41,9 @@
 //!   with burrow's frame, is the region on the page PDFium shows.
 //! - **R4, `[second-reading-page-count]`.** PDFium's page count of the output equals the count the
 //!   operation promised, which is qpdf's count of the input.
-//! - **`[second-reading-nesting]`, before any page is loaded.** The output page nests marked
-//!   content deeper than [`MAX_MARKED_DEPTH`]: PDFium's page load grows with nesting depth, so
-//!   it is capped before it rather than measured after.
+//! - **`[second-reading-nesting]`, before any page is loaded.** The output page's marked-content
+//!   work is past [`MAX_MARKED_WORK`]: PDFium's page load grows with nesting, so it is capped
+//!   before it rather than measured after.
 //! - **R5, `[second-reading-input-page-count]`.** PDFium's page count of the input equals qpdf's
 //!   -- #111's half, here for redaction only.
 //!
@@ -117,21 +117,40 @@ pub const TOLERANCE_PT: f64 = 0.05;
 /// is a refusal.
 pub const MAX_CHARS: usize = 2 * crate::pdfsyntax::geometry::MAX_GLYPHS;
 
-/// The deepest marked-content nesting (`BDC`/`BMC`, counted across forms by the walk) on a page
-/// the second reading will load.
+/// The most marked-content work a page the second reading loads may carry: the sum, over every
+/// operation PDFium parses at the load, of the `BDC`/`BMC` depth in force when it is read
+/// ([`crate::redact_verify::ClearedWitness::glyphs_and_marked_work_on`]).
 ///
-/// PDFium's page load grows with nesting depth, and nothing interrupts it once it starts, so the
-/// page is refused before the load rather than measured after it (`[second-reading-nesting]`).
+/// PDFium's page load grows with marked-content nesting, and nothing interrupts it once it
+/// starts, so the page is refused before the load rather than measured after it
+/// (`[second-reading-nesting]`).
+///
+/// # A sum, and what it counts
+///
+/// The first version capped the deepest nesting, and review found three ways past it: a form's
+/// unmatched `EMC`s lowered the page's count, a Type 3 glyph procedure was not counted at all,
+/// and a cap on depth says nothing about a form drawn thousands of times, each draw under it. So
+/// it counts work, in three parts, each held by its own test:
+///
+/// - **a mark stack per stream**: a form starts at the depth open where it is drawn, its `EMC`s
+///   cannot close the caller's marks, and the caller's depth is restored after it;
+/// - **every form once per `Do`**, since PDFium parses a form again at each draw;
+/// - **every Type 3 procedure** of every drawn Type 3 font, which PDFium parses at the load and
+///   the walk does not enter -- a superset of the ones it parses.
+///
+/// What it does not count: content PDFium does not parse at the load (annotation appearances,
+/// pattern cells and soft-mask groups, which it parses when it renders). Render and previews
+/// load pages too and are not capped by this.
 ///
 /// # The number, and what it was chosen against
 ///
-/// Measured before it was set (2026-10-15), as the walk counts it on every OUTPUT page that
-/// reached this check: **at most 2** over the census (282 inputs at open and 4,824 tiles; 3,655
-/// readings), and **at most 3** over every committed fixture the workspace suite redacts (1,191
-/// readings, the one stress test built to exceed this ceiling excluded). 1,000 is over 300 times
-/// the deepest real page, so the ceiling refuses no document burrow has seen; a page past it
+/// Measured before it was set (2026-10-15), as the witness counts it on every OUTPUT page that
+/// reached this check: **at most 18,962** over the census (282 inputs at open and 4,824 tiles;
+/// 3,655 readings), and **at most 32** over every committed fixture the workspace suite redacts
+/// (1,191 readings, the tests built to cross this ceiling excluded). 1,000,000 is over 50 times
+/// the heaviest real page, so the ceiling refuses no document burrow has seen; a page past it
 /// refuses with its own rule, and the cost of a wrong guess is a refusal, never a leak.
-pub const MAX_MARKED_DEPTH: usize = 1_000;
+pub const MAX_MARKED_WORK: u64 = 1_000_000;
 
 /// One character as the second reading places it. Page space, as the content stream draws it.
 ///
@@ -225,12 +244,12 @@ pub fn agrees<R: SecondReading>(
     }
 
     // THE NESTING CEILING, BEFORE PDFIUM LOADS THE PAGE. PDFium's page load grows with
-    // marked-content nesting depth, and nothing interrupts it once it starts; so a page nested
-    // past [`MAX_MARKED_DEPTH`] is refused here, before `read_page` asks for the load.
-    if expected.walked.marked_depth > MAX_MARKED_DEPTH {
+    // marked-content nesting, and nothing interrupts it once it starts; so a page whose work is
+    // past [`MAX_MARKED_WORK`] is refused here, before `read_page` asks for the load.
+    if expected.walked.marked_work > MAX_MARKED_WORK {
         return Err(rejected(format!(
-            "[second-reading-nesting] page {} nests marked content deeper than the second reading \
-             loads ({MAX_MARKED_DEPTH} levels)",
+            "[second-reading-nesting] page {} carries more marked-content nesting than the second \
+             reading loads",
             expected.page
         )));
     }

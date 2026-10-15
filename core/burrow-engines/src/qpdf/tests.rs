@@ -2109,33 +2109,208 @@ mod second_reading {
         assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
     }
 
-    /// `depth` nested `BMC` sequences around the plain page's text.
-    fn nested(depth: usize) -> String {
+    /// As [`document`], with `fonts` added to the page's `/Font` (beside `/F1`), `xobjects` as its
+    /// `/XObject`, and `extra` as objects 7 onwards. Every fixture below draws plain visible
+    /// text; what varies is how its marked content is nested, and where.
+    fn document_with(content: &str, fonts: &str, xobjects: &str, extra: &[String]) -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 5 0 R {fonts}>> /XObject << {xobjects}>> >> \
+                 /Contents 4 0 R >>"
+            ),
+            stream("", content),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        objects.extend(extra.iter().cloned());
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{object}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    /// A stream object holding `data`, with `dictionary`'s entries before its `/Length`.
+    fn stream(dictionary: &str, data: &str) -> String {
         format!(
-            "{}{PLAIN}{}",
+            "<< {dictionary} /Length {} >>\nstream\n{data}endstream",
+            data.len()
+        )
+    }
+
+    /// As [`redact`], over [`document_with`]; and how many times PDFium loaded the page.
+    fn redact_with(
+        content: &str,
+        fonts: &str,
+        xobjects: &str,
+        extra: &[String],
+    ) -> (String, usize) {
+        reset();
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        let pdf = document_with(content, fonts, xobjects, extra);
+        let result = Qpdf
+            .redact_page(&pdf, 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes);
+        let read = readings();
+        reset();
+        (rule_of(result), read)
+    }
+
+    /// `depth` nested `BMC` sequences around `inner`.
+    fn wrapped_in(depth: usize, inner: &str) -> String {
+        format!(
+            "{}{inner}{}",
             "/Span BMC\n".repeat(depth),
             "EMC\n".repeat(depth)
         )
     }
 
+    /// Visible text outside the region, as a form draws it.
+    const FORM_TEXT: &str = "BT /F1 12 Tf 300 300 Td (K) Tj ET\n";
+
+    /// A Form XObject over the whole page drawing `data`, as object 7, which the page names `/Fm0`.
+    const FORM_RESOURCES: &str = "/Fm0 7 0 R ";
+    fn form(data: &str) -> Vec<String> {
+        vec![stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+            data,
+        )]
+    }
+
+    /// The outcome of redacting `content` alone, and whether PDFium loaded the page.
+    fn verdict(content: &str) -> (String, usize) {
+        redact_with(content, "", "", &[])
+    }
+
     #[test]
     fn a_page_nested_past_the_ceiling_is_refused_before_pdfium_loads_it() {
-        let cap = crate::redact_read_back::MAX_MARKED_DEPTH;
-        // THE TWIN: nested exactly to the ceiling, read and redacted.
-        reset();
-        let twin = redact(&nested(cap));
-        let twin_read = readings();
-        reset();
-        assert_eq!(rule_of(twin), "Ok", "nested to the ceiling");
-        assert_eq!(twin_read, 1, "the page at the ceiling is read");
-
-        let past = redact(&nested(cap + 1));
-        let read = readings();
-        reset();
-        assert_eq!(rule_of(past), "second-reading-nesting");
+        // THE TWIN: the plain page nested 300 deep, about 90,000 of marked-content work against
+        // the ceiling's 1,000,000, is read and redacted.
         assert_eq!(
-            read, 0,
+            verdict(&wrapped_in(300, PLAIN)),
+            ("Ok".to_owned(), 1),
+            "nested 300 deep, under the ceiling"
+        );
+        // 1,500 deep is about 2,250,000, past it.
+        assert_eq!(
+            verdict(&wrapped_in(1_500, PLAIN)),
+            ("second-reading-nesting".to_owned(), 0),
             "the page past the ceiling must never reach PDFium's page load"
+        );
+    }
+
+    #[test]
+    fn a_form_cannot_close_the_marks_open_where_it_is_drawn() {
+        // THE PER-STREAM FLOOR. The page opens 500 marks and draws a form whose first act is to
+        // close 500. PDFium keeps a mark stack per stream, so the form cannot close the page's,
+        // and every operation after its `EMC`s is still read 500 deep. A count the form could
+        // close read them at depth zero.
+        let page = format!("{PLAIN}{}", wrapped_in(500, "/Fm0 Do\n"));
+        let closing = |shows: usize| {
+            form(&format!(
+                "{}{}",
+                "EMC\n".repeat(500),
+                FORM_TEXT.repeat(shows)
+            ))
+        };
+        // THE TWIN: 100 shows after the `EMC`s, 500 operations at depth 500 -- about 750,000 in
+        // all -- is read and redacted.
+        assert_eq!(
+            redact_with(&page, "", FORM_RESOURCES, &closing(100)),
+            ("Ok".to_owned(), 1),
+            "100 shows"
+        );
+        // 600 shows is 3,000 operations at depth 500 -- about 2,000,000, past the ceiling. With
+        // the form able to close the page's marks, the same page counts about 375,000.
+        assert_eq!(
+            redact_with(&page, "", FORM_RESOURCES, &closing(600)),
+            ("second-reading-nesting".to_owned(), 0),
+            "600 shows after the form's EMCs must be counted at the page's depth"
+        );
+    }
+
+    #[test]
+    fn every_draw_of_a_form_is_counted() {
+        // TOTAL WORK ACROSS DRAWS. PDFium parses a form again at every `Do`, so the work of a
+        // form nested 300 deep -- about 91,500 -- is paid once per draw. A count of the form's
+        // first draw only, or of its deepest point, sees one draw however many there are.
+        let nested = form(&wrapped_in(300, FORM_TEXT));
+        let page = |draws: usize| format!("{PLAIN}{}", "/Fm0 Do\n".repeat(draws));
+        assert_eq!(
+            redact_with(&page(5), "", FORM_RESOURCES, &nested),
+            ("Ok".to_owned(), 1),
+            "5 draws, about 457,500"
+        );
+        assert_eq!(
+            redact_with(&page(20), "", FORM_RESOURCES, &nested),
+            ("second-reading-nesting".to_owned(), 0),
+            "20 draws, about 1,830,000, must be counted as 20"
+        );
+    }
+
+    #[test]
+    fn every_type_three_procedure_of_a_drawn_font_is_counted() {
+        // TYPE 3 PROCEDURES. PDFium parses a Type 3 glyph's procedure when it loads the page, and
+        // the walk never enters one. A font of `procedures` procedures, each nested 150 deep --
+        // about 22,500 apiece -- and one of its glyphs drawn, outside the region, beside the
+        // plain page's text.
+        fn font(procedures: usize) -> Vec<String> {
+            let names: String = (0..procedures)
+                .map(|i| format!("/g{i} {} 0 R ", 8 + i))
+                .collect();
+            let mut objects = vec![format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {names}>> \
+                 /Encoding << /Type /Encoding /Differences [97 /g0] >> \
+                 /FirstChar 97 /LastChar 97 /Widths [1000] >>"
+            )];
+            for _ in 0..procedures {
+                objects.push(stream("", &format!("1000 0 d0\n{}", wrapped_in(150, ""))));
+            }
+            objects
+        }
+        let page = format!("{PLAIN}BT /T3 12 Tf 300 300 Td (a) Tj ET\n");
+        let run = |procedures: usize| redact_with(&page, "/T3 7 0 R ", "", &font(procedures));
+        assert_eq!(
+            run(10),
+            ("Ok".to_owned(), 1),
+            "10 procedures, about 225,000"
+        );
+        assert_eq!(
+            run(60),
+            ("second-reading-nesting".to_owned(), 0),
+            "60 procedures, about 1,350,000, must each be counted"
         );
     }
 
