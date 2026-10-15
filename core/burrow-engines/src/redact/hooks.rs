@@ -152,3 +152,32 @@ pub(crate) fn second_reading_page(page: usize) -> usize {
         .with(std::cell::Cell::get)
         .unwrap_or(page)
 }
+
+// THE POST-LAUNCH ANNOTATION REMOVAL, FOR ITS OWN TESTS (#136 D3). For launch the operation
+// refuses an annotation in the region; the tests of the removal it will do afterwards (#239,
+// #229, #240) switch it back on, per test, with [`removing_annotations`]. Production never can:
+// this module is test-only.
+thread_local! {
+    pub(crate) static ANNOTATIONS_REMOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the operation removes an annotation in the region rather than refusing it.
+pub(crate) fn annotations_removed() -> bool {
+    ANNOTATIONS_REMOVED.with(std::cell::Cell::get)
+}
+
+/// Switch the post-launch removal on until the guard drops.
+#[must_use = "the removal is switched off again when the guard drops"]
+pub(crate) fn removing_annotations() -> RemovingAnnotations {
+    ANNOTATIONS_REMOVED.with(|flag| flag.set(true));
+    RemovingAnnotations
+}
+
+/// See [`removing_annotations`].
+pub(crate) struct RemovingAnnotations;
+
+impl Drop for RemovingAnnotations {
+    fn drop(&mut self) {
+        ANNOTATIONS_REMOVED.with(|flag| flag.set(false));
+    }
+}

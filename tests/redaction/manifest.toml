@@ -487,12 +487,12 @@ pages = 1
   [[fixture.placement]]
   channel = "annotation /Contents and its /AP /N appearance"
   canary = "BURROW-CARRIER-11"
-  verdict = "handle"
+  verdict = "refuse"
   adr = "§2, §3"
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
-  expect_after = "gone"
-  notes = "Removed entirely; pruning /Contents and keeping the appearance is two chances to miss one. Invisible to burrow's own render, which passes flags = 0."
+  expect_after = "refused"
+  notes = "Removed entirely, post-launch; pruning /Contents and keeping the appearance is two chances to miss one. Invisible to burrow's own render, which passes flags = 0. Refused for launch (owner, 2026-10-15, #136 D3): an annotation the region reaches refuses as [annotation-in-region], and the removal described here is post-launch; its own tests switch it on."
 
 [[fixture]]
 name = "acroform-field"
@@ -3142,12 +3142,13 @@ pages = 1
   [[fixture.placement]]
   channel = "the /Contents of an annotation over the region, whose Popup in the margin names it as /Parent — evasion"
   canary = "BURROW-EVADE-POPUP-OF-REMOVED"
-  verdict = "handle"
+  verdict = "refuse"
   adr = "§3"
   witness_before = "raw-file"
   witness_observes = "canary"
-  expect_after = "gone"
+  expect_after = "refused"
   notes = """
+Refused for launch (owner, 2026-10-15, #136 D3): an annotation the region reaches refuses as [annotation-in-region], and the removal described here is post-launch; its own tests switch it on. The dependents rule this probes (#239) still holds the removal path, in the lib tests that switch it on.
 The Popup's /Parent wrote the removed annotation into the output: Ok with its /Contents in the bytes, measured. The Popup goes with its parent, and nothing kept names either, so neither is written (#239).
 """
 
@@ -3161,12 +3162,13 @@ pages = 1
   [[fixture.placement]]
   channel = "the /Contents of an annotation over the region, named by a reply's /IRT — evasion"
   canary = "BURROW-EVADE-REPLY-TO-REMOVED"
-  verdict = "handle"
+  verdict = "refuse"
   adr = "§3"
   witness_before = "raw-file"
   witness_observes = "canary"
-  expect_after = "gone"
+  expect_after = "refused"
   notes = """
+Refused for launch (owner, 2026-10-15, #136 D3): an annotation the region reaches refuses as [annotation-in-region], and the removal described here is post-launch; its own tests switch it on. The dependents rule this probes (#239) still holds the removal path, in the lib tests that switch it on.
 The reply's /IRT wrote the removed annotation into the output, measured. The reply goes with what it replies to (#239).
 """
 

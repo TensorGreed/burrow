@@ -1119,10 +1119,20 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         }
         let frame = Self::frame(&page)?;
         let region = self.region.to_content_space(&frame)?;
+        // REFUSED FOR LAUNCH (#136 D3); a test of the post-launch removal switches it on.
+        #[cfg(test)]
+        let in_region = if super::hooks::annotations_removed() {
+            InRegion::Remove
+        } else {
+            InRegion::Refuse
+        };
+        #[cfg(not(test))]
+        let in_region = InRegion::Refuse;
         let removed = remove_annotations_in(
             &page,
             &region,
             frame.rotate,
+            in_region,
             &self.deadline,
             self.clock.as_ref(),
         )?;
@@ -1149,7 +1159,38 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
     }
 }
 
-/// Remove every annotation whose `/Rect` intersects the region.
+/// What [`remove_annotations_in`] does with an annotation whose `/Rect` reaches the region.
+///
+/// **The operation refuses** (owner, 2026-10-15, #136 D3): for launch, redaction never silently
+/// removes or keeps an annotation in the region, so the page is refused and the visitor can
+/// flatten or remove the annotation and try again. Removing it, with its dependents (#239), is the
+/// post-launch behaviour, and stays here behind [`InRegion::Remove`] so its own tests keep holding
+/// it until then. No production call passes `Remove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InRegion {
+    /// Refuse the page as `[annotation-in-region]`. What the operation does.
+    Refuse,
+    /// Remove the annotation and what depends on it. Post-launch; tests only today.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "post-launch (#136 D3): only the tests remove, for now"
+        )
+    )]
+    Remove,
+}
+
+/// The refusal for an annotation whose `/Rect` reaches the region. See [`InRegion`].
+fn annotation_in_region() -> Error {
+    Error::Unsupported(
+        "pdf redaction [annotation-in-region]: an annotation sits in the region, and burrow \
+         neither removes nor keeps an annotation there yet; flatten or remove it, then try again"
+            .to_owned(),
+    )
+}
+
+/// Refuse, or remove (see [`InRegion`]), every annotation whose `/Rect` intersects the region.
 ///
 /// # This was missing, and it returned `Ok` over a rendered secret
 ///
@@ -1199,6 +1240,7 @@ fn remove_annotations_in<O: PdfObject>(
     page: &O,
     region: &crate::pdfsyntax::geometry::Rect,
     rotate: u16,
+    in_region: InRegion,
     deadline: &Deadline,
     clock: &dyn Clock,
 ) -> Result<Removed> {
@@ -1272,6 +1314,12 @@ fn remove_annotations_in<O: PdfObject>(
         annotation.drained()?;
     }
 
+    // AN ANNOTATION THE REGION REACHES REFUSES, FOR LAUNCH (owner, 2026-10-15, #136 D3). After
+    // every `/Rect` is read, so one burrow cannot place still refuses as `[annotation-rect]`
+    // first; before anything is removed, so the page is untouched.
+    if in_region == InRegion::Refuse && entries.iter().any(|entry| entry.over) {
+        return Err(annotation_in_region());
+    }
     let removed = with_dependents(&entries, deadline, clock)?;
     let gone: BTreeSet<(c_int, c_int)> = entries
         .iter()
@@ -2949,7 +2997,7 @@ mod annotation_walk_tests {
 
     use burrow_types::{Clock, Deadline, Limits};
 
-    use super::remove_annotations_in;
+    use super::{InRegion, remove_annotations_in};
     use crate::pdfsyntax::geometry::Rect;
     use crate::redact::graph::{OpensForRedaction, PdfDocument};
 
@@ -3022,7 +3070,8 @@ mod annotation_walk_tests {
             right: 300.0,
             top: 370.0,
         };
-        remove_annotations_in(&page, &region, 0, &deadline, &clock).expect("all kept, bounded");
+        remove_annotations_in(&page, &region, 0, InRegion::Remove, &deadline, &clock)
+            .expect("all kept, bounded");
         let reads = clock.0.load(Ordering::Relaxed) - before;
         // THREE PER KEPT ANNOTATION since #239: the read of it, the decision on it, and its stream.
         assert!(
@@ -3089,8 +3138,8 @@ mod annotation_walk_tests {
             right: 300.0,
             top: 370.0,
         };
-        let removed =
-            remove_annotations_in(&page, &region, 0, &deadline, &clock).expect("all removed");
+        let removed = remove_annotations_in(&page, &region, 0, InRegion::Remove, &deadline, &clock)
+            .expect("all removed");
         assert_eq!(
             removed.annotations.len(),
             40,

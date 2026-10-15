@@ -306,6 +306,9 @@ fn a_rect_written_with_its_corners_reversed_is_still_over_the_region() {
         "<< /N 7 0 R >>",
         &[appearance("/BBox [0 0 100 20]")],
     );
+    // THE POST-LAUNCH REMOVAL (#136 D3): for launch the region over it refuses; switched on here
+    // because what this pins is where the removal finds the annotation.
+    let _removing = crate::redact::hooks::removing_annotations();
     let [(_, natively), (_, on_the_web)] = on_both(&bytes);
     for (engine, output) in [("natively", natively), ("on the web", on_the_web)] {
         let output = output.unwrap_or_else(|error| panic!("{engine}: {error:?}"));
