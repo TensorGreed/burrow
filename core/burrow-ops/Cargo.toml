@@ -26,6 +26,8 @@ default = []
 # builds with no engines present, and `build.rs` FAILS rather than skipping when it is on
 # and they are missing.
 native-engines = ["burrow-engines/native-engines"]
+# Forwards to `burrow-engines/redaction-digest`. See it there.
+redaction-digest = ["burrow-engines/redaction-digest"]
 
 [dev-dependencies]
 # Property tests. Required by the definition of done, not optional per operation.
@@ -40,7 +42,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # definition of the schema.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = { version = "0.10", default-features = false }
+sha2.workspace = true
 
 [lints]
 workspace = true

@@ -48,8 +48,13 @@ cargo deny list --layout crate --format json > /tmp/deny-list.json
 the only one: `wasm-bindgen` and its runtime dependencies (`cfg-if`, `once_cell`,
 `wasm-bindgen-shared`, and `unicode-ident` beneath it) are **normal** dependencies of
 `burrow-wasm` and so are in the wasm module's link graph, subject to dead-code
-elimination. Everything else in the table below is compile-time, build-script, or
-test-only, as marked. Rows are marked individually; do not read the table as uniformly
+elimination. Since #206's web half, the `sha2` group (`sha2`, `digest`, `block-buffer`,
+`crypto-common`, `generic-array`, `typenum`, and `cfg-if`) also ships, in the **redaction**
+wasm module only: `burrow-engines`' `redaction-digest` feature, enabled by `burrow-wasm`'s
+`redact` feature and by nothing else. It is absent from the base and render modules and from
+the native binaries, where `sha2` (with `cpufeatures`, and `libc` on aarch64) is build- and
+dev-only. Everything else in the table below is compile-time, build-script, or test-only, as
+marked. Rows are marked individually; do not read the table as uniformly
 compile-time.
 
 | Crate | License | Used by | Notes |
@@ -58,16 +63,16 @@ compile-time.
 | `thiserror-impl` | MIT OR Apache-2.0 | `thiserror` | Proc-macro implementation |
 | `syn`, `quote`, `proc-macro2` | MIT OR Apache-2.0 | `thiserror-impl`, `wasm-bindgen-macro`, `wasm-bindgen-macro-support` | Proc-macro support; compile-time only |
 | `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2`, `wasm-bindgen-shared` | Unicode identifier tables. Via `wasm-bindgen-shared` this is a **normal** dependency, not only a proc-macro one, so it is in the wasm link graph |
-| `sha2` | MIT OR Apache-2.0 | `burrow-engines` | **Runtime since #206's web half; ships in every binary.** Binds redaction's second reading to the exact bytes it was taken of (`redact_read_back::recorded`). Also verifies the vendored engine checksums at build time. `default-features = false` |
-| `digest` | MIT OR Apache-2.0 | `sha2` | Digest traits; **runtime**, with `sha2` |
-| `block-buffer` | MIT OR Apache-2.0 | `digest` | **Runtime**, with `sha2` |
-| `crypto-common` | MIT OR Apache-2.0 | `digest` | **Runtime**, with `sha2` |
-| `generic-array` | MIT | `block-buffer` | **MIT only, not dual-licensed.** Runtime, with `sha2` |
-| `typenum` | MIT OR Apache-2.0 | `generic-array` | **Runtime**, with `sha2` (type-level numbers) |
+| `sha2` | MIT OR Apache-2.0 | `burrow-engines` | **Runtime in the redaction wasm module only** (`redaction-digest`, #206): binds the second reading to the exact bytes it was taken of. Build- and dev-only everywhere else, where it verifies the vendored engine checksums. `default-features = false`, pinned in `[workspace.dependencies]` |
+| `digest` | MIT OR Apache-2.0 | `sha2` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
+| `block-buffer` | MIT OR Apache-2.0 | `digest` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
+| `crypto-common` | MIT OR Apache-2.0 | `digest` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
+| `generic-array` | MIT | `block-buffer` | **MIT only, not dual-licensed.** With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
+| `typenum` | MIT OR Apache-2.0 | `generic-array` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
 | `version_check` | MIT OR Apache-2.0 | `generic-array` | **Build only**: `generic-array`'s build script |
-| `cfg-if` | MIT OR Apache-2.0 | `sha2`, `cpufeatures`, `wasm-bindgen` | **No longer build/dev only**: `wasm-bindgen` uses it in `describe.rs` and `externref.rs`, so it is in the wasm module's link graph |
-| `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection. **Runtime in the native binaries** (x86 and aarch64, where `sha2` uses it); not in the wasm modules |
-| `libc` | MIT OR Apache-2.0 | `cpufeatures` | **Runtime in the native binaries on aarch64**, with `cpufeatures`; not in the wasm modules |
+| `cfg-if` | MIT OR Apache-2.0 | `sha2`, `wasm-bindgen` | **No longer build/dev only**: `wasm-bindgen` uses it in `describe.rs` and `externref.rs`, so it is in the wasm module's link graph |
+| `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection, for `sha2` on x86 and aarch64. **Build/dev only**: absent from every wasm module (and from armv7 Android, which `sha2` does not detect features on), and native ships no `sha2` at run time |
+| `libc` | MIT OR Apache-2.0 | `cpufeatures` | With `cpufeatures`, on aarch64. **Build/dev only** |
 | `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines`, `burrow-wasm` | **Runtime; ships in the binary.** Wipes password buffers on drop, and the web binding's copies of the input (#199). `default-features = false`, `features = ["alloc"]` — no transitive dependencies |
 | `wasm-bindgen` | MIT OR Apache-2.0 | `burrow-wasm` | **Runtime; ships in the wasm module.** The JS↔Rust boundary for the engine bridge. `default-features = false`, `features = ["std"]` — deliberately no `js-sys` and no `web-sys` |
 | `wasm-bindgen-macro` | MIT OR Apache-2.0 | `wasm-bindgen` | Proc macro expanding `#[wasm_bindgen]`; compile-time only |
@@ -77,12 +82,12 @@ compile-time.
 | `bumpalo` | MIT OR Apache-2.0 | `wasm-bindgen-macro-support` | Arena allocator used while encoding the macro's output (`encode.rs`); compile-time only |
 | `rustversion` | MIT OR Apache-2.0 | `wasm-bindgen` | Build script detecting the compiler version; **build only** |
 
-The `sha2` group is a **runtime dependency of `burrow-engines`** since #206's web half
-(owner-approved 2026-10-15): the second reading is recorded in the render worker and judged
-in the redaction worker, and each side takes the SHA-256 of the bytes it holds. It also runs in
-`build.rs` to re-verify the vendored engine libraries, and in the link tests. In the wasm modules
-it is `sha2`, `digest`, `block-buffer`, `crypto-common`, `generic-array`, `typenum` and `cfg-if`;
-natively `cpufeatures`, and on aarch64 `libc`, come with it.
+The `sha2` group ships in **one artifact, the redaction wasm module** (#206's web half,
+owner-approved 2026-10-15): the redaction worker takes the SHA-256 of the bytes it holds, so a
+reading from the render worker answers only for the exact document it was taken of. The render
+worker, which every tool page loads, hashes with the platform's own `crypto.subtle.digest`
+instead and links no `sha2`. Everywhere else the group is build- and dev-only: `build.rs`
+re-verifies the vendored engine libraries with it, and the link tests use it.
 
 The `wasm-bindgen` group is a dependency of **`burrow-wasm` only**; it is absent from the
 iOS, Android, and native graphs. Four of its seven crates (`wasm-bindgen-macro`,

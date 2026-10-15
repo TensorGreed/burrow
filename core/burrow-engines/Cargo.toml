@@ -28,17 +28,23 @@ native-engines = []
 # not something to leave lying around in the public API.
 fuzzing = []
 
+# The SHA-256 the redaction worker binds the second reading to (#206's web half). On only in the
+# redaction wasm module, through `burrow-wasm/redact`; off in the base and render modules, which
+# never link `sha2`, and off natively, where the second reading is read in-process.
+redaction-digest = ["dep:sha2"]
+
 [dependencies]
 burrow-types.workspace = true
 # Wipes the NUL-terminated copy of a password that PDFium's C API requires, as soon as the
 # load returns. Already a dependency of burrow-types for the same reason.
 zeroize.workspace = true
-# #206's web half: the second reading is recorded in the render worker and judged in the
-# redaction worker, and each side takes the SHA-256 of the bytes it holds, so a reading answers
-# only for the exact document it was taken of (`redact_read_back::recorded`). Already in this
-# crate's build and dev graph for the vendored-library checksums; this makes it a runtime
-# dependency. Owner-approved 2026-10-15, pinned as the workspace pins it.
-sha2 = { version = "0.10", default-features = false }
+# #206's web half: the redaction worker takes the SHA-256 of the bytes it holds, so a reading
+# from the render worker answers only for the exact document it was taken of
+# (`redact_read_back::recorded`). OPTIONAL, behind `redaction-digest`, which only the redaction
+# wasm module enables: the render module every tool page loads hashes with the platform's own
+# `crypto.subtle.digest` instead (owner, 2026-10-15), and native reads in-process and needs no
+# hash. Pinned in the workspace table.
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # THE OPERATION, FOR THE TESTS THAT DRIVE IT. `burrow-ops` depends on this crate, so this is a
@@ -50,7 +56,7 @@ burrow-ops.workspace = true
 # The provenance test hashes whichever libpdfium the loader actually mapped, so it needs
 # the same digest the build script uses. The conformance tests reuse it to pin each
 # committed fixture by content.
-sha2 = { version = "0.10", default-features = false }
+sha2.workspace = true
 # Property tests. Required by the definition of done, not optional per operation.
 proptest = { version = "1", default-features = false, features = ["std"] }
 # Reads tests/conformance/expectations.json, which M1 PR 4's web harness reads too -- the
@@ -62,7 +68,7 @@ serde_json = "1"
 # For re-verifying the vendored libraries' checksums in build.rs. Shelling out to
 # sha256sum was the alternative and was rejected: a subprocess plus a PATH dependency in
 # a build script is worse than one small, ubiquitous crate.
-sha2 = { version = "0.10", default-features = false }
+sha2.workspace = true
 
 [lints.rust]
 # Relaxed from the workspace `forbid`: this crate wraps C/C++ engines. Every `unsafe`

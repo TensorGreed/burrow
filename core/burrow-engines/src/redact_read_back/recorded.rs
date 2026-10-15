@@ -22,6 +22,13 @@
 //! the render worker read them honestly. Both workers are this build's own code, and the render
 //! module's reading is the same algorithm as native's (`web::WebPdfiumReading`).
 //!
+//! # Where `sha2` ships
+//!
+//! The digest-taking half -- [`digest`], [`record`], [`RecordedReading`], [`agrees_recorded`] -- is
+//! behind the `redaction-digest` feature, which only the redaction wasm module enables. The render
+//! module takes its digests with `crypto.subtle.digest` and calls [`record_digested`]; the codec
+//! needs no hash. So `sha2` is linked into the redaction module and into nothing else that ships.
+//!
 //! # The encoding
 //!
 //! Version 1, little-endian, fixed layout and exact length -- nothing optional, nothing skipped:
@@ -38,13 +45,17 @@
 //! as no answer), not the codec's.
 
 use burrow_types::{Error, Result};
+#[cfg(any(test, feature = "redaction-digest"))]
 use sha2::{Digest as _, Sha256};
 
-use super::{Agreement, MAX_CHARS, PageReading, PlacedChar, SecondReading, agrees, rejected};
+#[cfg(any(test, feature = "redaction-digest"))]
+use super::{Agreement, agrees, rejected};
+use super::{MAX_CHARS, PageReading, PlacedChar, SecondReading};
 
 /// A SHA-256 digest.
 pub type Digest = [u8; 32];
 
+#[cfg(any(test, feature = "redaction-digest"))]
 /// The SHA-256 of `bytes`.
 #[must_use]
 pub fn digest(bytes: &[u8]) -> Digest {
@@ -64,6 +75,7 @@ pub struct Recorded {
     pub page: PageReading,
 }
 
+#[cfg(any(test, feature = "redaction-digest"))]
 /// Read `input`'s page count and `output`'s page `page` through `reading`, and record both with
 /// the digests of the bytes that were read.
 ///
@@ -78,8 +90,30 @@ pub fn record<R: SecondReading>(
     page: usize,
 ) -> Result<Recorded> {
     // THE DIGESTS FIRST, of the very slices the engine is about to read.
-    let input_digest = digest(input);
-    let output_digest = digest(output);
+    record_digested(reading, input, output, page, digest(input), digest(output))
+}
+
+/// [`record`], with the digests taken by the caller -- the render worker, which takes them with
+/// the platform's own SHA-256 (`crypto.subtle.digest`) so that `sha2` is not linked into the
+/// module every tool page loads (owner, 2026-10-15).
+///
+/// The caller's digests must be of exactly `input` and `output`. Nothing here can check that,
+/// and nothing needs to for the verdict to be sound: [`agrees_recorded`] recomputes both digests
+/// from the bytes the redaction module holds, so a digest of anything else refuses as
+/// `[second-reading-other-document]`. What the caller's discipline adds is that a reading which
+/// is refused was refused for the right reason.
+///
+/// # Errors
+///
+/// As [`record`].
+pub fn record_digested<R: SecondReading>(
+    reading: &R,
+    input: &[u8],
+    output: &[u8],
+    page: usize,
+    input_digest: Digest,
+    output_digest: Digest,
+) -> Result<Recorded> {
     let none = || Error::Malformed("the renderer gave no answer".to_owned());
     let input_pages = reading.page_count(input)?.ok_or_else(none)?;
     let page = reading.read_page(output, page)?.ok_or_else(none)?;
@@ -213,6 +247,7 @@ pub fn decode(bytes: &[u8]) -> Result<Recorded> {
     })
 }
 
+#[cfg(any(test, feature = "redaction-digest"))]
 /// A [`SecondReading`] that answers from a recording, and only for the bytes it was taken of.
 ///
 /// A `page_count` or `read_page` of bytes whose digest is not the recorded one has no answer
@@ -222,6 +257,7 @@ pub struct RecordedReading {
     recorded: Recorded,
 }
 
+#[cfg(any(test, feature = "redaction-digest"))]
 impl RecordedReading {
     /// A reading that replays `recorded`.
     #[must_use]
@@ -230,6 +266,7 @@ impl RecordedReading {
     }
 }
 
+#[cfg(any(test, feature = "redaction-digest"))]
 impl SecondReading for RecordedReading {
     fn page_count(&self, bytes: &[u8]) -> Result<Option<u64>> {
         Ok((digest(bytes) == self.recorded.input_digest).then_some(self.recorded.input_pages))
@@ -242,6 +279,7 @@ impl SecondReading for RecordedReading {
     }
 }
 
+#[cfg(any(test, feature = "redaction-digest"))]
 /// [`super::agrees`], over a recording: the digests first, then the rules.
 ///
 /// # Errors

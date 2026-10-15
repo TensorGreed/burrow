@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Forwards to `burrow-engines/redaction-digest`: the SHA-256 the redaction worker binds the
+# second reading to (#206). Enabled by `burrow-wasm/redact` and by nothing else.
+redaction-digest = ["burrow-ops/redaction-digest"]
+
 [dependencies]
 burrow-types.workspace = true
 burrow-ops.workspace = true
