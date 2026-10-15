@@ -439,9 +439,85 @@ fn an_empty_key_opens_split_only_in_a_dests_the_catalog_alone_refers_to() {
     }
 }
 
+/// THE CATALOG NAMED BY AN OBJECT a part may copy carries its `/Dests` with it, so an empty key is
+/// admitted only when nothing but a trailer names the catalog (round 2's review). Each shape
+/// refuses at the OPEN -- these tests never extract, so the part re-read cannot be what refused
+/// them -- and for a direct `/Dests` as for an indirect one.
+#[test]
+fn an_empty_dests_key_refuses_at_the_open_when_an_object_names_the_catalog() {
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>";
+    let form = "0 0 m 1 1 l S";
+    for (what, catalog) in [
+        (
+            "an indirect /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>",
+        ),
+        (
+            "a direct /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
+        ),
+    ] {
+        for (shape, page_extra, content, more) in [
+            (
+                "a used form's /Resources names the catalog",
+                "/XObject << /X1 7 0 R >>",
+                "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do",
+                vec![(
+                    7,
+                    0,
+                    format!(
+                        "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                         /Resources << /Extra 1 0 R >> /Length {} >>\nstream\n{form}\nendstream",
+                        form.len()
+                    ),
+                )],
+            ),
+            (
+                "a used /ExtGState names the catalog",
+                "/ExtGState << /G 1 0 R >>",
+                "/G gs BT /F1 24 Tf 20 350 Td (KEEP) Tj ET",
+                Vec::new(),
+            ),
+            (
+                "an annotation names the catalog",
+                "/Extra 7 0 R",
+                SHOWN,
+                vec![(
+                    7,
+                    0,
+                    "<< /Type /Annot /Subtype /Text /Rect [200 20 220 40] /Foo 1 0 R >>".to_owned(),
+                )],
+            ),
+        ] {
+            let mut objects = more.clone();
+            objects.push((6, 0, DESTS.to_owned()));
+            refuses(
+                &format!("{what}: {shape}"),
+                &classic(&document(catalog, page_extra, content, &objects)),
+                "[split-name-read-differently]",
+            );
+        }
+    }
+    // A `/Dests` WRITTEN DIRECTLY IN ANOTHER OBJECT'S DICTIONARY is not the catalog's -- beside a
+    // catalog whose own `/Dests` would be admitted, so only the holder tells them apart.
+    refuses(
+        "a direct /Dests in another object",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>",
+            "/Extra 7 0 R",
+            SHOWN,
+            &[
+                (6, 0, DESTS.to_owned()),
+                (7, 0, "<< /Dests << / [3 0 R /Fit] >> >>".to_owned()),
+            ],
+        )),
+        "[split-name-read-differently]",
+    );
+}
+
 /// `/DESTS WRITTEN ONCE`, as the catalog is: a second revision of it in an incremental update, or a
 /// header and an object-stream member both claiming its number, refuses; so does a `/Dests` naming
-/// a generation the file does not head.
+/// a generation the file does not head, as a reference to nothing.
 #[test]
 fn an_empty_dests_key_is_admitted_only_when_dests_is_written_once() {
     const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
@@ -469,10 +545,13 @@ fn an_empty_dests_key_is_admitted_only_when_dests_is_written_once() {
         SHOWN,
         &[(6, 0, DESTS.to_owned())],
     ));
-    let [native, web] = opened(&wrong);
-    assert!(
-        native.is_err() && web.is_err(),
-        "a /Dests at a generation the file does not head: {native:?} {web:?}"
+    // qpdf resolves a generation the file does not head to nothing, so this refuses as such before
+    // the empty key is judged; `written_once`'s generation branch is witnessed by name in
+    // `redact::references::tests`.
+    refuses(
+        "a /Dests at a generation the file does not head",
+        &wrong,
+        "[split-reference-to-nothing]",
     );
 }
 
@@ -506,7 +585,8 @@ fn with_revision(base: &[u8], number: i32, body: &str) -> Vec<u8> {
 
 /// THE SECOND LINE OF DEFENCE (owner, 2026-10-15): with the sole-referrer condition taken out
 /// under `cfg(test)`, a /Dests a form's resources also name is admitted at the open, and the part
-/// that carries it is refused when it is written, on both engines. It should never fire otherwise.
+/// that carries it is refused when it is written, on both engines. No measured shape reaches it
+/// otherwise.
 #[test]
 fn a_part_carrying_an_admitted_empty_key_is_refused_when_written() {
     let catalog = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";

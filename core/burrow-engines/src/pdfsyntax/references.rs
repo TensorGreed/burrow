@@ -182,10 +182,13 @@ pub struct Found {
     /// accepts empty keys. One entry per key written; bounded, as the other lists are, by the work
     /// budget.
     pub empty_keys: Vec<EmptyKey>,
-    /// Every reference written, with where it was written, one entry per occurrence: what a caller
-    /// needs to ask whether an object has exactly one referrer. Recorded where the bytes are
-    /// judged as written, and bounded by the work budget.
-    pub reference_sites: Vec<ReferenceSite>,
+    /// Who refers to each object, by the number written: how many references name it, how many of
+    /// those are held by an object (rather than a trailer), and how many are the `/Dests` value of
+    /// an object's own top-level dictionary, with the first such holder. What a caller needs to ask
+    /// whether an object has exactly one referrer. Recorded where the bytes are judged as written.
+    /// **Bounded**: one entry per distinct object number referred to, and those are capped at
+    /// [`MAX_DISTINCT_REFERENCES`] (past it the scan is [`Irregular::BeyondCaps`]).
+    pub referrers: BTreeMap<i32, Referrers>,
 }
 
 /// An empty key the scan recorded for its caller ([`Found::empty_keys`]).
@@ -198,16 +201,31 @@ pub struct EmptyKey {
     pub in_direct_dests: bool,
 }
 
-/// One occurrence of a reference ([`Found::reference_sites`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReferenceSite {
-    /// The number of the object referred to, as written.
-    pub target: i32,
-    /// The number of the object holding the reference, or `None` (a trailer, an unread header).
-    pub holder: Option<i32>,
-    /// Whether it is the value of the `/Dests` key (written exactly so) of the holder's own
-    /// top-level dictionary: the one place the catalog's `/Dests` may be referred to from.
-    pub dests_entry: bool,
+/// Who refers to one object ([`Found::referrers`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Referrers {
+    /// References naming it, anywhere.
+    pub sites: usize,
+    /// Of those, the ones not written in a trailer: held by an object, or under a header that did
+    /// not read (which counts as an object's, failing closed).
+    pub held: usize,
+    /// Of those, the ones that are the `/Dests` value (written exactly so) of the holder's own
+    /// top-level dictionary.
+    pub dests_entries: usize,
+    /// The holder of the first such `/Dests` entry.
+    pub dests_entry_holder: Option<i32>,
+}
+
+impl Referrers {
+    /// Add `other`'s counts to these, keeping the first `/Dests` holder seen.
+    pub fn absorb(&mut self, other: &Self) {
+        self.sites = self.sites.saturating_add(other.sites);
+        self.held = self.held.saturating_add(other.held);
+        self.dests_entries = self.dests_entries.saturating_add(other.dests_entries);
+        if self.dests_entry_holder.is_none() {
+            self.dests_entry_holder = other.dests_entry_holder;
+        }
+    }
 }
 
 /// Where a dictionary value was written: the number of the object holding it (`None` where the
@@ -316,7 +334,9 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         } else {
             None
         };
+        scan.in_trailer = keyword != b"obj";
         let end = scan.one_value(bytes, start + keyword.len(), holder)?;
+        scan.in_trailer = false;
         if scan.found.irregular.is_some() {
             break;
         }
@@ -574,6 +594,8 @@ struct Scan<'c> {
     /// vertical tab refused -- rather than read as qpdf rewrote them. The name is older than the
     /// second rule.
     judge_names: bool,
+    /// Whether the value being read is a trailer's, for [`Referrers::held`].
+    in_trailer: bool,
 }
 
 /// One token that is not a comment, as far as reading references needs.
@@ -744,6 +766,7 @@ impl<'c> Scan<'c> {
             checkpointed: 0,
             checkpoint,
             judge_names: true,
+            in_trailer: false,
         }
     }
 
@@ -857,11 +880,17 @@ impl<'c> Scan<'c> {
                                             && level.key == b"Dests"
                                 );
                             if let Some(target) = plain(number) {
-                                self.found.reference_sites.push(ReferenceSite {
-                                    target,
-                                    holder,
-                                    dests_entry,
-                                });
+                                let entry = self.found.referrers.entry(target).or_default();
+                                entry.sites = entry.sites.saturating_add(1);
+                                if !self.in_trailer {
+                                    entry.held = entry.held.saturating_add(1);
+                                }
+                                if dests_entry {
+                                    entry.dests_entries = entry.dests_entries.saturating_add(1);
+                                    if entry.dests_entry_holder.is_none() {
+                                        entry.dests_entry_holder = holder;
+                                    }
+                                }
                             }
                         }
                         if self.judge_names
@@ -1564,26 +1593,21 @@ mod tests {
         }
     }
 
-    /// EVERY REFERENCE IS A SITE, with its holder, and only a top-level `/Dests` value is marked as
-    /// that entry: what the sole-referrer condition counts.
+    /// EVERY REFERENCE IS COUNTED, with whether an object holds it, and only a top-level `/Dests`
+    /// value is counted as that entry: what the sole-referrer condition reads.
     #[test]
     fn every_reference_is_recorded_with_where_it_was_written() {
         let found = file(
             b"1 0 obj\n<< /Dests 6 0 R /A [6 0 R] /B << /Dests 6 0 R >> >>\nendobj\ntrailer\n<< /X 6 0 R >>\n",
         );
-        let site = |holder, dests_entry| super::ReferenceSite {
-            target: 6,
-            holder,
-            dests_entry,
-        };
         assert_eq!(
-            found.reference_sites,
-            vec![
-                site(Some(1), true),
-                site(Some(1), false),
-                site(Some(1), false),
-                site(None, false)
-            ]
+            found.referrers.get(&6),
+            Some(&super::Referrers {
+                sites: 4,
+                held: 3,
+                dests_entries: 1,
+                dests_entry_holder: Some(1),
+            })
         );
     }
 

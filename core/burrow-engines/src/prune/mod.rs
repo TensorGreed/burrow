@@ -651,10 +651,10 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         defer_null_value: false,
         // AT THE OPEN ONLY (owner, 2026-10-15): the catalog's `/Dests` dictionary may hold an
         // empty key when the catalog's entry is its sole referrer (or it is written in the
-        // catalog). Split never copies the catalog into a part, and with no other referrer nothing
-        // a part receives reaches the dictionary. Every part is then also held to
-        // `SPLIT_PART_REFERENCES`, which admits no empty key at all, as a second line that should
-        // never fire.
+        // catalog), and when nothing but a trailer names the catalog itself. Split copies pages,
+        // not the trailer, so with no other referrer of either, nothing a part receives reaches the
+        // dictionary. Every part is then also held to `SPLIT_PART_REFERENCES`, which admits no
+        // empty key at all, as a second line no measured shape reaches.
         admit_dests_empty_key: true,
     };
 

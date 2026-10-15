@@ -66,14 +66,14 @@
 //! refused. ADR 0029's #227 amendment records the measured count.
 
 use core::ffi::c_int;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
 use super::graph::{PdfDocument, PdfObject};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
-use crate::pdfsyntax::references::{self, EmptyKey, Found, Holder, Irregular, ReferenceSite};
+use crate::pdfsyntax::references::{self, EmptyKey, Found, Holder, Irregular, Referrers};
 
 /// An object stream's member count.
 const COUNT: Name = Name::literal(b"/N\0");
@@ -117,8 +117,9 @@ pub(crate) struct ReferenceRefusals {
     /// Whether an empty name written as a key of the catalog's `/Dests` dictionary passes this
     /// check: split's open (owner, 2026-10-15). Admitted only where the catalog's `/Dests` entry is
     /// that dictionary's **sole referrer** -- no other dictionary, array, name tree, object-stream
-    /// member or trailer names it, so nothing a part receives can reach it -- or where the `/Dests`
-    /// dictionary is written directly in the catalog. An operation that sets this also holds every
+    /// member or trailer names it -- or where the `/Dests` dictionary is written directly in the
+    /// catalog; and in both cases only where nothing but a trailer names the catalog itself, so
+    /// nothing a part receives can reach either. An operation that sets this also holds every
     /// output to the same pass with it unset ([`Referenced::admitted_empty_keys`] says when), as a
     /// second line of defence. Every other empty key refuses as [`Self::name`], and every empty key
     /// refuses where this is `false`.
@@ -274,7 +275,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
     let mut null_holders = core::mem::take(&mut wanted.null_values);
     let mut dictionary_references = core::mem::take(&mut wanted.dictionary_references);
     let mut empty_keys = core::mem::take(&mut wanted.empty_keys);
-    let mut reference_sites = core::mem::take(&mut wanted.reference_sites);
+    let mut referrers = core::mem::take(&mut wanted.referrers);
     // The numbers object streams list as members: no header in the file speaks for them. Capped
     // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
     // (ADR 0007), and every stream's decoded bytes are already held while it is read.
@@ -322,7 +323,9 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         null_holders.extend(members.null_values);
         dictionary_references.extend(members.dictionary_references);
         empty_keys.extend(members.empty_keys);
-        reference_sites.extend(members.reference_sites);
+        for (target, counted) in &members.referrers {
+            referrers.entry(*target).or_default().absorb(counted);
+        }
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
             return Err((refusals.unreadable)(Irregular::BeyondCaps));
         }
@@ -383,15 +386,22 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         } else {
             DestsSlots::default()
         };
-        let sole = slots.indirect.is_some_and(|dests| {
-            sole_referrer(dests, slots.catalog, &reference_sites, &from_trailer)
-        });
+        // THE CATALOG ITSELF must reach no part either: only a trailer may name it. A form's
+        // resources, a graphics state or an annotation naming it would carry its `/Dests`, direct
+        // or indirect, into whatever part copies them (round 2's review).
+        let catalog_alone = slots
+            .catalog
+            .is_some_and(|catalog| named_by_trailers_only(catalog, &referrers));
+        let sole = slots
+            .indirect
+            .is_some_and(|dests| sole_referrer(dests, slots.catalog, &referrers, &from_trailer));
         let admitted = |key: &EmptyKey| {
-            if key.in_direct_dests {
-                slots.catalog == Some(key.object)
-            } else {
-                slots.indirect == Some(key.object) && sole
-            }
+            catalog_alone
+                && if key.in_direct_dests {
+                    slots.catalog == Some(key.object)
+                } else {
+                    slots.indirect == Some(key.object) && sole
+                }
         };
         if !empty_keys.iter().all(admitted) {
             return Err((refusals.name)());
@@ -539,19 +549,33 @@ fn catalog_dests<D: PdfDocument>(
 fn sole_referrer(
     dests: c_int,
     catalog: Option<c_int>,
-    sites: &[ReferenceSite],
+    referrers: &BTreeMap<c_int, Referrers>,
     from_trailer: &BTreeSet<(c_int, c_int)>,
 ) -> bool {
     #[cfg(test)]
     if crate::redact::hooks::sole_referrer_skipped() {
         return true;
     }
-    let mut referrers = sites.iter().filter(|site| site.target == dests);
-    let only = referrers.next();
-    referrers.next().is_none()
-        && only
-            .is_some_and(|site| site.dests_entry && site.holder.is_some() && site.holder == catalog)
+    let Some(counted) = referrers.get(&dests) else {
+        return false;
+    };
+    counted.sites == 1
+        // DEFENCE IN DEPTH, unwitnessed (each clause's removal survives, measured): with one site
+        // in all, that it is the catalog's `/Dests` entry is what `catalog_dests` already
+        // established, and a reference in qpdf's trailer is one in the file's, already counted.
+        && counted.dests_entries == 1
+        && counted.dests_entry_holder.is_some()
+        && counted.dests_entry_holder == catalog
         && !from_trailer.iter().any(|(number, _)| *number == dests)
+}
+
+/// Whether every reference to `catalog` the scan read is written in a trailer: no object -- a
+/// form's resources, a graphics state, an annotation, anything -- names the catalog, so no part
+/// that copies an object can receive it.
+fn named_by_trailers_only(catalog: c_int, referrers: &BTreeMap<c_int, Referrers>) -> bool {
+    referrers
+        .get(&catalog)
+        .is_none_or(|counted| counted.held == 0)
 }
 
 /// The scan's answer, or the refusal it calls for.
@@ -568,4 +592,57 @@ fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
 fn integer_at<O: PdfObject>(dictionary: &O, key: &Name) -> Option<i64> {
     let value = dictionary.key(key);
     (value.type_code() == object_type::INTEGER).then(|| value.integer_value())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::written_once;
+    use crate::pdfsyntax::references::{Declared, Found};
+
+    fn headed(number: i32, generations: &[i32]) -> Found {
+        let mut found = Found::default();
+        found.declarations.insert(
+            number,
+            Declared {
+                headers: generations.len(),
+                generations: generations.iter().copied().collect(),
+                ..Declared::default()
+            },
+        );
+        found
+    }
+
+    /// WRITTEN ONCE, branch by branch: one header at the generation asked; one object-stream member
+    /// and no header; and the refusals -- a header at another generation, two headers, a header and
+    /// a member, two members, and the number 0.
+    #[test]
+    fn written_once_holds_only_for_one_copy_at_the_generation_asked() {
+        assert_eq!(written_once(&headed(6, &[0]), &[], (6, 0)), Some(6));
+        assert_eq!(
+            written_once(&headed(6, &[0]), &[], (6, 1)),
+            None,
+            "a header at another generation"
+        );
+        assert_eq!(
+            written_once(&headed(6, &[0, 0]), &[], (6, 0)),
+            None,
+            "two headers"
+        );
+        assert_eq!(written_once(&Found::default(), &[6], (6, 0)), Some(6));
+        assert_eq!(
+            written_once(&headed(6, &[0]), &[6], (6, 0)),
+            None,
+            "a header and a member"
+        );
+        assert_eq!(
+            written_once(&Found::default(), &[6, 6], (6, 0)),
+            None,
+            "two members"
+        );
+        assert_eq!(
+            written_once(&headed(0, &[0]), &[], (0, 0)),
+            None,
+            "number 0"
+        );
+    }
 }
