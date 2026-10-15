@@ -214,8 +214,12 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   const after = since(`redact-page:${testInfo.project.name}`);
   // EVERY REQUEST IS ACCOUNTED FOR (round 2's C): redaction's pinned engine artifacts, or one of
   // the page's own static files by exact shape. Anything else on the origin fails, by name.
+  // ON THIS SITE'S ORIGIN, and only then by path: a page asset or an engine artifact fetched from
+  // anywhere else is no artifact of this page's.
+  const site = new URL(page.url()).origin;
   const unexpected = after.filter(
-    (entry) => !isRedactionArtifact(entry.url) && !isPageAsset(entry.url),
+    (entry) =>
+      entry.origin !== site || (!isRedactionArtifact(entry.url) && !isPageAsset(entry.url)),
   );
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),

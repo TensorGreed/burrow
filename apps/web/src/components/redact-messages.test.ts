@@ -24,10 +24,11 @@ const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
  * is held by Rust tests to the production source: every id bracketed after a message prefix
  * (`"<lowercase words> [`), of any shape; every hyphenated `[id]` in a string literal; the names
  * of `Refusal`, `FrameRule` and `InkKind`; and `outcomes.tsv`. They also refuse any id interpolated
- * into a bracket outside the three sites that stamp those tables' names.
- * `tests/redaction/rule-ids.txt` is held to the table, and this test reads that file. What the
- * Rust side cannot see is said in its module documentation: an id assembled some other way, until
- * the ids are one enum (filed, post-launch).
+ * into a bracket, outside three whole literals each met exactly once: two that stamp a table's name
+ * and one that only reads a refusal's prefix. `tests/redaction/rule-ids.txt` is held to the table,
+ * and this test reads that file. What the Rust side cannot see, until #360's enum: an id built with
+ * `concat!`, one after an interpolated prefix (`"{PREFIX} [word]"`), and one passed as a format
+ * argument.
  */
 function engineRules(): string[] {
   return readFileSync(join(REPO, "tests/redaction/rule-ids.txt"), "utf8")

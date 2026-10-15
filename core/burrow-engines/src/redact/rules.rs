@@ -22,17 +22,21 @@
 //!   `pdf redaction [`, `pdf region [`, `pdf syntax [`, …), of any shape, is in [`RULE_IDS`];
 //! - every hyphenated `[id]` in any production string literal is in it too;
 //! - no production string literal interpolates into a bracket (`[{`), outside an explicit list of
-//!   the three sites that stamp a table's name ([`Refusal`] and [`InkKind`]) -- so an id cannot be
-//!   built where the scan cannot read it;
+//!   three whole literals, each in its own file and each met exactly once: the two that stamp a
+//!   table's name ([`InkKind`]'s, and [`Refusal`]'s), and one that only READS a refusal's prefix
+//!   to match it and raises nothing;
 //! - every name in [`Refusal::ALL`], [`FrameRule::ALL`] and [`InkKind::ALL`] is in it, each `ALL`
 //!   held to its enum by an exhaustive match or its own test, and so is every rule
 //!   `tests/redaction/outcomes.tsv` records;
 //! - nothing is in [`RULE_IDS`] that none of those raise;
 //! - and the committed copy is the table.
 //!
-//! What it does not see: an id assembled any other way -- from a `const` concatenated with
-//! `concat!`, or passed through a helper that adds the brackets. The interpolation rule closes the
-//! common form of that; the enum closes it for good.
+//! What it does not see, until #360's enum: an id assembled any other way. Three named shapes --
+//! a literal built with `concat!`; a message whose prefix is itself interpolated
+//! (`"{PREFIX} [word]"`, which is not "lowercase words, then `[`", so a hyphenless id there is not
+//! read); and a bracketed id passed as a format ARGUMENT (`format!("pdf redaction {}: …",
+//! "[word]")`), whose literal holds no bracket to refuse. The interpolation rule closes the common
+//! form; the enum closes them all.
 //!
 //! Split's own rules (`split-*`) are split's and are not here.
 //!
@@ -447,26 +451,42 @@ mod tests {
         }
     }
 
-    /// The interpolations into a bracket that may stand, by file and by the literal's start:
-    /// the sites that stamp a table's name, which the table tests read.
+    /// The interpolations into a bracket that may stand: each a WHOLE literal, in one file, that
+    /// stamps a table's name. Compared with `==` after Rust's line continuations are folded, and
+    /// each must be met exactly once, so a new literal with a stamped prefix is not admitted.
     const STAMPED: &[(&str, &str)] = &[
         // `InkKind::rule`, in the region-reaches-ink refusal.
         (
             "redact/steps.rs",
-            "pdf redaction [{}]: the redacted region reaches",
+            "pdf redaction [{}]: the redacted region reaches {}, which the redaction removes no part of, so the region cannot be cleared",
         ),
         // `Refusal::rule`, where `Refusal::refuse` builds the walk's every refusal.
         ("pdfsyntax/geometry.rs", "pdf geometry [{}]: {detail}"),
-        // `Refusal::caught`, which READS a refusal's prefix and raises none.
+        // `Refusal::caught`, which only READS a refusal's prefix, to match one; it raises nothing.
         ("pdfsyntax/geometry.rs", "pdf geometry [{}]: "),
     ];
 
-    /// What one source raises, and the interpolations it makes that `STAMPED` does not allow.
+    /// A string literal's contents with Rust's line continuations (`\` at a line's end, and the
+    /// next line's leading whitespace) folded away, as the compiler folds them.
+    fn folded(literal: &str) -> String {
+        let mut out = String::new();
+        let mut rest = literal;
+        while let Some(at) = rest.find("\\\n") {
+            out.push_str(&rest[..at]);
+            rest = rest[at + 2..].trim_start();
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// What one source raises; the interpolations into a bracket it makes that `STAMPED` does not
+    /// name; and, per `STAMPED` entry, how many times it was met (`stamped`).
     fn scan(
         path: &str,
         text: &str,
         ids: &mut BTreeSet<String>,
         interpolated: &mut Vec<String>,
+        stamped: &mut [usize],
     ) -> Vec<String> {
         let (strings, files) = production_strings(text);
         for literal in &strings {
@@ -476,12 +496,15 @@ mod tests {
                 ids.insert(id.to_owned());
             }
             hyphenated(literal, ids);
-            if literal.contains("[{")
-                && !STAMPED
+            if literal.contains("[{") {
+                let whole = folded(literal);
+                match STAMPED
                     .iter()
-                    .any(|(file, start)| path.ends_with(file) && literal.starts_with(start))
-            {
-                interpolated.push(format!("{path}: {literal}"));
+                    .position(|(file, site)| path.ends_with(file) && whole == *site)
+                {
+                    Some(entry) => stamped[entry] += 1,
+                    None => interpolated.push(format!("{path}: {whole}")),
+                }
             }
         }
         files
@@ -490,6 +513,8 @@ mod tests {
     struct Raised {
         ids: BTreeSet<String>,
         interpolated: Vec<String>,
+        /// How many times each `STAMPED` entry was met, which must be once each.
+        stamped: Vec<usize>,
     }
 
     fn raised() -> Raised {
@@ -518,13 +543,14 @@ mod tests {
         }
         let mut ids = BTreeSet::new();
         let mut interpolated = Vec::new();
+        let mut stamped = vec![0; STAMPED.len()];
         for path in files
             .iter()
             .filter(|p| !is_test_file(p) && !test_paths.contains(*p))
         {
             let text = std::fs::read_to_string(path).expect("a source file");
             let shown = path.to_string_lossy().replace('\\', "/");
-            scan(&shown, &text, &mut ids, &mut interpolated);
+            scan(&shown, &text, &mut ids, &mut interpolated, &mut stamped);
         }
         ids.extend(Refusal::ALL.iter().map(|r| r.rule().to_owned()));
         ids.extend(FrameRule::ALL.iter().map(|r| r.rule().to_owned()));
@@ -540,7 +566,11 @@ mod tests {
             }
         }
         ids.retain(|id| !id.starts_with("split-"));
-        Raised { ids, interpolated }
+        Raised {
+            ids,
+            interpolated,
+            stamped,
+        }
     }
 
     #[test]
@@ -571,6 +601,17 @@ mod tests {
             raised.interpolated.is_empty(),
             "an id interpolated into a bracket outside the stamped sites: {:?}",
             raised.interpolated
+        );
+        // REPORTED, AND EACH ONCE: an entry met twice would admit a second literal, and one met
+        // never names a site that no longer exists.
+        let met: Vec<(&str, usize)> = STAMPED
+            .iter()
+            .zip(&raised.stamped)
+            .map(|((file, _), n)| (*file, *n))
+            .collect();
+        assert!(
+            raised.stamped.iter().all(|n| *n == 1),
+            "each stamped site must be met exactly once; met: {met:?}"
         );
     }
 
@@ -633,7 +674,14 @@ mod tests {
         );
         let mut ids = BTreeSet::new();
         let mut interpolated = Vec::new();
-        let files = scan("core/x/src/planted.rs", source, &mut ids, &mut interpolated);
+        let mut stamped = vec![0; STAMPED.len()];
+        let files = scan(
+            "core/x/src/planted.rs",
+            source,
+            &mut ids,
+            &mut interpolated,
+            &mut stamped,
+        );
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         assert_eq!(
             ids,
@@ -649,22 +697,50 @@ mod tests {
             ["core/x/src/planted.rs: pdf redaction [{PLANTED}]: x"]
         );
         assert_eq!(files, ["fake"]);
-        // A STAMPED site is allowed only in its own file.
-        let mut none = Vec::new();
+        // A STAMPED SITE IS ITS WHOLE LITERAL, IN ITS OWN FILE: the real one, folded across its
+        // line continuation, is met; a new literal sharing its prefix is not admitted; and the
+        // same literal in another file is not either.
+        let real = "fn f() { format!(\"pdf redaction [{}]: the redacted region reaches {}, which the redaction removes \\\n                 no part of, so the region cannot be cleared\", a, b); }";
+        let same_prefix =
+            "fn g() { format!(\"pdf redaction [{}]: the redacted region reaches {} too\", a, b); }";
+        let mut counted = vec![0; STAMPED.len()];
+        let mut flagged = Vec::new();
         scan(
             "core/x/src/redact/steps.rs",
-            "fn f() { format!(\"pdf redaction [{}]: the redacted region reaches {}\", a, b); }",
+            real,
             &mut BTreeSet::new(),
-            &mut none,
+            &mut flagged,
+            &mut counted,
         );
-        assert!(none.is_empty());
+        assert!(
+            flagged.is_empty(),
+            "the real stamped site was flagged: {flagged:?}"
+        );
+        assert_eq!(counted[0], 1, "the real stamped site was not met");
+        scan(
+            "core/x/src/redact/steps.rs",
+            same_prefix,
+            &mut BTreeSet::new(),
+            &mut flagged,
+            &mut counted,
+        );
+        assert_eq!(
+            flagged.len(),
+            1,
+            "a new literal with a stamped prefix was admitted"
+        );
         scan(
             "core/x/src/elsewhere.rs",
-            "fn f() { format!(\"pdf redaction [{}]: the redacted region reaches {}\", a, b); }",
+            real,
             &mut BTreeSet::new(),
-            &mut none,
+            &mut flagged,
+            &mut counted,
         );
-        assert_eq!(none.len(), 1);
+        assert_eq!(
+            flagged.len(),
+            2,
+            "a stamped literal was admitted outside its file"
+        );
         assert!(is_test_file(Path::new("a/src/b_tests.rs")));
         assert!(is_test_file(Path::new("a/src/tests/c.rs")));
         assert!(!is_test_file(Path::new("a/src/frames.rs")));
