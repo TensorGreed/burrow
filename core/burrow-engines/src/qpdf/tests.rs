@@ -2355,8 +2355,12 @@ mod second_reading {
         // THE TWIN: one font, one code, one parse -- read and redacted.
         let (twin, _) = run(1, 1);
         assert_eq!(twin, ("Ok".to_owned(), 1), "one font drawing one code");
-        // PAST IT: refused before PDFium loads the page, and so in milliseconds, not the seconds
-        // the load itself takes.
+        // PAST IT: refused before PDFium loads the page. `read == 0` is the check; the time is
+        // reported, not asserted. Run alone it is milliseconds (39 ms in a debug build on
+        // 2026-10-15, against about 4 s for the load it prevents). Inside the parallel suite the
+        // wall clock also holds the wait for PDFium's one engine thread, which every test
+        // shares and the operation's page-size read still uses: 1.8 s was measured there, none of
+        // it this refusal's.
         let (past, took) = run(8, 255);
         assert_eq!(
             past,
@@ -2364,9 +2368,74 @@ mod second_reading {
             "8 fonts x 255 codes of one procedure must be counted 2,040 times"
         );
         println!("refused in {took:?}");
+    }
+
+    #[test]
+    fn type_three_procedures_no_code_draws_are_not_parsed_at_the_load() {
+        // A PIN ON PDFIUM, NOT ON BURROW. `type_three_marked_work` charges only the codes a font
+        // draws, on the measured fact that PDFium's page load parses no procedure a drawn code does
+        // not name. Measured 2026-10-15 (release build, PDFium's share alone): one code drawn from
+        // fonts of 1, 51 and 201 procedures nested 900 deep, about 6, 10 and 8 ms; every code
+        // drawn, about 7, 99 and 226 ms. If a PDFium bump starts parsing them, the extra load time
+        // here grows by about a millisecond a procedure, and this fails: the charge must then
+        // cover every procedure in the font.
+        //
+        // The fixture's procedures are nested 990 deep, just under the ceiling for one code, where a
+        // parse costs PDFium about 2 ms. Its share is the redaction's time with the second reading
+        // less its time with the reading skipped. That difference also holds burrow's own scan of
+        // the procedures for the bound, a few tens of milliseconds in a debug build and a few in a
+        // release one. Inside the parallel suite either run can also wait for PDFium's one engine
+        // thread, which other tests share, so the least of five tries is taken on each side.
+        let font = |undrawn: usize| {
+            let total = 1 + undrawn;
+            let procs: String = (0..total)
+                .map(|i| format!("/g{i} {} 0 R ", 8 + i))
+                .collect();
+            let mut objects = vec![type_three_font(1, total, &format!("<< {procs}>>"))];
+            for _ in 0..total {
+                objects.push(stream("", &format!("1 0 d0\n{}", wrapped_in(990, ""))));
+            }
+            objects
+        };
+        let page = format!("{PLAIN}{}", shows(0, 1));
+        let pdfium_share = |undrawn: usize| {
+            let objects = font(undrawn);
+            (0..5)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    let read = redact_with(&page, "/T0 7 0 R ", "", &objects);
+                    let with = started.elapsed();
+                    assert_eq!(
+                        read,
+                        ("Ok".to_owned(), 1),
+                        "the page must be loaded to be timed"
+                    );
+                    crate::redact::hooks::SECOND_READING_SKIPPED.with(|flag| flag.set(true));
+                    let started = std::time::Instant::now();
+                    let skipped = redact_with(&page, "/T0 7 0 R ", "", &objects);
+                    let without = started.elapsed();
+                    crate::redact::hooks::SECOND_READING_SKIPPED.with(|flag| flag.set(false));
+                    assert_eq!(
+                        skipped,
+                        ("Ok".to_owned(), 0),
+                        "the skipped run loads nothing"
+                    );
+                    with.saturating_sub(without)
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        let alone = pdfium_share(0);
+        let beside_200 = pdfium_share(200);
+        println!("PDFium's share: {alone:?} alone, {beside_200:?} beside 200 undrawn procedures");
+        // Parsed, the 200 would add about 400 ms; not parsed, burrow's scan adds about 40 ms in a
+        // debug build. 150 ms is the line.
         assert!(
-            took < std::time::Duration::from_millis(1_500),
-            "the refusal must come before the page load: it took {took:?}"
+            beside_200 < alone + std::time::Duration::from_millis(150),
+            "200 undrawn Type 3 procedures added {:?} to PDFium's page load ({alone:?} alone): \
+             PDFium now parses procedures no drawn code names, and `type_three_marked_work` must \
+             charge every procedure in the font",
+            beside_200.saturating_sub(alone)
         );
     }
 

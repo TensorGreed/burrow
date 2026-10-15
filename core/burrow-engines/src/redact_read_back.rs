@@ -162,7 +162,13 @@ pub const MAX_CHARS: usize = 2 * crate::pdfsyntax::geometry::MAX_GLYPHS;
 /// - **every form once per `Do`**, since PDFium parses a form again at each draw;
 /// - **Type 3 procedures, per font object and per distinct code drawn in it**, each charged at the
 ///   font's heaviest procedure: PDFium parses a procedure for every font object and code that
-///   draws it, and the walk does not enter one.
+///   draws it, and the walk does not enter one. A procedure no drawn code names is not charged,
+///   because PDFium does not parse it at the load. That was measured, not assumed (2026-10-15,
+///   release build, PDFium's share of the time alone): with one code drawn, a font of 1, 51 and
+///   201 procedures nested 900 deep loaded in about 6, 10 and 8 ms; with every code drawn, the
+///   same fonts loaded in about 7, 99 and 226 ms.
+///   `type_three_procedures_no_code_draws_are_not_parsed_at_the_load` pins it, so a PDFium whose
+///   load does parse them fails that test, and this charge has to change.
 ///
 /// What it does not count: content PDFium does not parse at the load (annotation appearances,
 /// pattern cells and soft-mask groups, which it parses when it renders). Render and previews
