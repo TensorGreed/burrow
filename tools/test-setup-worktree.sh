@@ -28,7 +28,9 @@ status=0; out="$("$script" "$main" --no-build 2>&1)" || status=$?
 if [ "$status" -eq 2 ] && grep -q "is the main checkout" <<<"$out"; then ok "the main checkout is refused"
 else bad "the main checkout was not refused by name (status $status): $out"; fi
 
-git -C "$main" worktree add -q --detach "$tree" HEAD
+# FROM THE COMMIT THIS SCRIPT IS ON, not the main checkout's HEAD: the cases below test this
+# branch's script and `.gitignore`, and the main checkout may have anything checked out.
+git -C "$main" worktree add -q --detach "$tree" "$(git -C "$here" rev-parse HEAD)"
 
 # 2. A DIRECTORY INSIDE A WORKTREE, not its top, is refused.
 status=0; out="$("$script" "$tree/tools" --no-build 2>&1)" || status=$?
@@ -42,6 +44,16 @@ status=0; out="$("$script" "$tree" --no-build 2>&1)" || status=$?
 if [ "$status" -eq 0 ] && [ -d "$tree/engines/vendor" ] && [ ! -L "$tree/engines/vendor" ] \
    && grep -q "replacing it with a copy" <<<"$out"; then ok "a linked engines/vendor is replaced by a copy"
 else bad "the planted link was not replaced (status $status): $out"; fi
+
+# 3b. THE CORPUS LINK IS IGNORED. `corpus/files/` with a trailing slash matched only a directory,
+# so the link showed as untracked, one `git add` from being committed.
+if [ -L "$tree/corpus/files" ] || [ ! -e "$main/corpus/files" ]; then
+  untracked="$(git -C "$tree" status --porcelain --ignored=no -- corpus/files)"
+  if [ -z "$untracked" ]; then ok "the corpus link is ignored, not untracked"
+  else bad "the corpus link shows in git status: $untracked"; fi
+else
+  bad "setup did not link corpus/files although the main checkout has one"
+fi
 
 # 4. NOTHING WRITTEN IN THE WORKTREE'S ENGINES REACHES THE MAIN CHECKOUT'S.
 marker="setup-worktree-test-$$"
@@ -70,4 +82,4 @@ if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2
   exit 1
 fi
-echo "OK — $pass case(s) of 6 behaved as required"
+echo "OK — $pass case(s) of 7 behaved as required"

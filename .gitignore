@@ -62,7 +62,10 @@ bindings/burrow-wasm/pkg-redact/
 # --- Corpus: the manifest is tracked, the files are never committed ---
 # Test corpora can be large and can contain third-party or sensitive documents.
 # Fetch them with tools/corpus-fetch.sh using corpus/manifest.toml.
-corpus/files/
+# NO TRAILING SLASH: `tools/setup-worktree.sh` makes `corpus/files` a LINK to the main checkout's,
+# and a pattern ending in `/` matches only a directory, so the link showed as untracked and one
+# `git add` from being committed.
+corpus/files
 corpus/cache/
 corpus/out/
 # The owner's producer set: real producer output, never committed.

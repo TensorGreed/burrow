@@ -17,6 +17,8 @@
 #                      it. Stated rather than enforced.
 #   apps/web           `pnpm install --frozen-lockfile`, from this tree's lockfile.
 #   bindings/pkg*      BUILT here (`ci-local.py --only wasm-pack`), so their stamps name this tree.
+#   tests/redaction/generated   GENERATED here (`tools/check-redaction-corpus.sh`), because the
+#                      census and the `outcomes.tsv` bless read it outside a sweep.
 #   census harnesses   `~/burrow-census/zz_census.rs` and `zz_tiles.rs`, if present, copied into
 #                      `core/burrow-engines/tests/` (gitignored). Never formatted with rustfmt:
 #                      `rustfmt --edition 2021` follows `mod support;` into tracked files.
@@ -103,6 +105,12 @@ if [ "$build" -eq 1 ]; then
   (cd "$target/apps/web" && pnpm install --frozen-lockfile --silent)
   echo "  apps/web: pnpm install done"
   python3 -B "$target/tools/ci-local.py" --only wasm-pack
+  # 6. THE GENERATED REDACTION CORPUS, `tests/redaction/generated/` (gitignored). A sweep's
+  # `redaction-corpus` job regenerates it, but the census and the `outcomes.tsv` bless read it
+  # OUTSIDE a sweep -- and in a fresh worktree it did not exist: the bless failed on the missing
+  # directory, and a census ran over the 127 inputs it could find and looked like a census.
+  "$target/tools/check-redaction-corpus.sh" >/dev/null
+  echo "  tests/redaction/generated: $(find "$target/tests/redaction/generated" -type f | wc -l) file(s)"
 fi
 
 # THE CHECK, and what it examined. Without --no-build every stamp must be current; with it, only
