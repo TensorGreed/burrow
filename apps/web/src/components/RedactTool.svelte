@@ -324,8 +324,22 @@
   // asked to keep.
   $effect(() => {
     const onPageHide = () => releaseAll();
+    // A PAGE RESTORED FROM THE BACK-FORWARD CACHE after leaving mid-run would still say "Working"
+    // over a run whose reply `releaseAll` already invalidated; it is back to idle, with nothing
+    // to download, which is what it now is.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      if (phase === "working") {
+        phase = "idle";
+        announce("Stopped.");
+      }
+    };
     globalThis.addEventListener("pagehide", onPageHide);
-    return () => globalThis.removeEventListener("pagehide", onPageHide);
+    globalThis.addEventListener("pageshow", onPageShow);
+    return () => {
+      globalThis.removeEventListener("pagehide", onPageHide);
+      globalThis.removeEventListener("pageshow", onPageShow);
+    };
   });
 
   onDestroy(() => {
@@ -513,8 +527,12 @@
 
   {#if earlier && !(phase === "done" && result && !stale)}
     <p class="result" data-testid="redact-earlier">
-      The result you are working from stays here until this run finishes:
-      <a class="download" href={earlier.url} download={earlier.name}>Download {earlier.name}</a>
+      <!-- NOT LABELLED WITH ITS FILE NAME (L-B): the name is the chain's, which a finished second
+           run would share, and after a refused or stopped run a link saying it would read as the
+           result with both areas removed. -->
+      <a class="download" href={earlier.url} download={earlier.name}
+        >Download the last result, with only the earlier areas removed</a
+      >
     </p>
   {/if}
 

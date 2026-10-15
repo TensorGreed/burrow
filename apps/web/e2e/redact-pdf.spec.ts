@@ -386,12 +386,78 @@ test("leaving the page releases every result it holds", async ({ page }) => {
   await page.getByTestId("redact-run").click();
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
   await page.getByTestId("redact-another").click();
-  const url = String(await page.getByTestId("redact-earlier").locator("a").getAttribute("href"));
-  expect(await served(page, url)).toBe(true);
+  const earlierUrl = String(
+    await page.getByTestId("redact-earlier").locator("a").getAttribute("href"),
+  );
+  // AND A CURRENT RESULT: the second run's, held while the page is left.
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await area(page, ...SECOND_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  const currentUrl = String(await page.getByTestId("redact-download").getAttribute("href"));
+  expect(await served(page, currentUrl), "the current result is not downloadable").toBe(true);
 
   // `pagehide` is what a navigation or a bfcache entry fires; the page releases on it.
   await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
+  expect(await served(page, currentUrl), "leaving the page left the current result alive").toBe(
+    false,
+  );
+  expect(await served(page, earlierUrl), "leaving the page left the earlier result alive").toBe(
+    false,
+  );
+});
+
+test("leaving the page holding only an earlier result releases it", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+  const url = String(await page.getByTestId("redact-earlier").locator("a").getAttribute("href"));
+  expect(await served(page, url)).toBe(true);
+  await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
   expect(await served(page, url), "leaving the page left a result alive").toBe(false);
+});
+
+test("a page restored from the back-forward cache mid-run is idle, not working", async ({
+  page,
+}) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  // RUN, LEAVE AND COME BACK IN ONE TASK, so the run is still in flight when the page is left.
+  const stillWorking = await page.evaluate(async () => {
+    (document.querySelector('[data-testid="redact-run"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const working = document.querySelector('[data-testid="redact-stop"]') !== null;
+    globalThis.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    globalThis.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    return working;
+  });
+  expect(stillWorking, "the run had already finished when the page was left").toBe(true);
+  await expect(page.getByTestId("redact-stop")).toHaveCount(0);
+  await expect(page.getByTestId("redact-run")).toBeEnabled();
+  await expect(page.getByTestId("redact-download")).toHaveCount(0);
+});
+
+test("after a stopped second run, the earlier link says what it holds", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await area(page, ...SECOND_LINE);
+  const stopped = await page.evaluate(async () => {
+    (document.querySelector('[data-testid="redact-run"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stop = document.querySelector<HTMLButtonElement>('[data-testid="redact-stop"]');
+    stop?.click();
+    return stop !== null;
+  });
+  expect(stopped).toBe(true);
+  const earlier = page.getByTestId("redact-earlier").locator("a");
+  await expect(earlier).toHaveText("Download the last result, with only the earlier areas removed");
+  await expect(earlier).not.toContainText("01-plain-tj-redacted.pdf");
 });
 
 test("a §7 note stays through the chain and goes with a genuinely new file (L2)", async ({
