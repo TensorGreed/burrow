@@ -1749,8 +1749,8 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     // NONE NOW, AND THAT IS STATED, NOT HIDDEN. #292's accepted cost moved
     // producer-vertical-writing to the decided refusals; #125 slice 3 (2026-10-15) moves
     // producer-writer, which is tagged, to them too. So this test executes NO redaction of a real
-    // producer's document until an untagged producer fixture is committed or the structure-tree
-    // narrowing lands: every assertion above the refusals is unexecuted today. The count below
+    // producer's document until an untagged producer fixture is committed (#359) or the
+    // structure-tree narrowing lands: every assertion above the refusals is unexecuted today. The count below
     // pins that, so the day a document redacts again it must be counted here on purpose.
     assert_eq!(
         (redacted_documents, refused_as_decided),

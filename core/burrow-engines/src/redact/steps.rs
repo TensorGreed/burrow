@@ -498,7 +498,7 @@ impl<D: PdfDocument> PageRedaction<D> {
     ///
     /// A structure element's `/Alt` and `/ActualText` describe the content its marked-content
     /// sequences enclose, in words, from off the page; a removal that takes the glyphs leaves the
-    /// description. ADR 0029 §5 marks the signal OWED. #125 proposed the page's `/StructParents`,
+    /// description. ADR 0029 §5 marked the signal OWED. #125 proposed the page's `/StructParents`,
     /// and named its bypass in the same breath: a structure element reaching this page's MCIDs where
     /// the page carries no `/StructParents`. No page-side proxy survives that, so this is the
     /// broader refusal #125 says is the honest outcome then -- every document with a tree, wherever

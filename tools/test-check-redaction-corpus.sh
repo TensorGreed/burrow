@@ -294,8 +294,11 @@ else
   fail=$((fail + 1))
 fi
 
-after_case "an owed refusal with its marker removed is refused: redacted where the manifest says refused" \
-  evade-struct-without-structparents $'  owed_by = 125' '' "redacted where the manifest says refused"
+# A REFUSAL THE MANIFEST EXPECTS, on a document that redacts. This planted into #125's owed
+# /StructTreeRoot refusals until slice 3 (2026-10-15) made them refuse; no owed refusal is left, so
+# it plants the expectation itself on a document that redacts.
+after_case "a refusal the manifest expects where the document redacts is refused" \
+  plain-tj $'expect_after = "gone"' $'expect_after = "refused"' "redacted where the manifest says refused"
 after_case "an owed marker on a document that refuses now is stale" \
   evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 125' \
   "outlived the work it waited for"
@@ -355,9 +358,10 @@ after_case_before() {
 after_case_before "an expect_after outside gone, refused and present is refused" \
   plain-tj $'expect_after = "gone"' $'expect_after = "vanished"' "must be gone, refused or present"
 after_case_before "an owed_by that is not an issue number is refused" \
-  evade-struct-without-structparents $'owed_by = 125' $'owed_by = "soon"' "must name one of the issues"
+  type3-glyph $'owed_by = 131' $'owed_by = "soon"' "must name one of the issues"
+# #131, still pinned: #125 has no owed markers since slice 3 (2026-10-15), and left the pin.
 after_case_before "an owed marker added is a change to the pinned count" \
-  evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 125' \
+  evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 131' \
   "owed markers per issue are"
 after_case_before "after_unwitnessed is no longer an exemption" \
   plain-tj $'expect_after = "gone"' $'expect_after = "gone"\n  after_unwitnessed = "planted"' \
@@ -367,22 +371,23 @@ after_case_before "a witness_after that cannot see the canary before the run is 
   "BEFORE the run"
 
 # AND THE LEAK PIN, which only a full run can reach: a copy of the checker, beside the original,
-# whose pinned set has lost one name -- so a real leak reads as a new one. `structure-tree` since
-# 2026-10-08, when `evade-paths-in-type3-glyph` stopped leaking (#125).
+# whose pinned set has GAINED a name -- so a fixture pinned as leaking that no longer leaks reads as
+# a change. The set is empty since #125 slice 3 (2026-10-15), so there is no name left to remove;
+# before that this removed `structure-tree` and expected it to read as newly disclosing.
 copy="$here/.redaction-corpus-leaks.py"
 python3 - "$checker" "$copy" <<'PYEOF'
 import sys
 text = open(sys.argv[1]).read()
-line = '    "structure-tree",\n'
+line = 'OWED_LEAKS_EXPECTED: set[str] = set()\n'
 assert text.count(line) == 1, "the pinned leak set is not where this expects it"
-open(sys.argv[2], "w").write(text.replace(line, "", 1))
+open(sys.argv[2], "w").write(text.replace(line, 'OWED_LEAKS_EXPECTED: set[str] = {"structure-tree"}\n', 1))
 PYEOF
 if cmp -s "$checker" "$copy"; then
   echo "  FAIL the leak-count mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
   expect_refusal "a change in how many owed placements leak is refused" \
-    "newly disclosing \['structure-tree'\]" \
+    "no longer disclosing \['structure-tree'\]" \
     env -u BURROW_AFTER_ONLY python3 "$copy" --after
 fi
 rm -f "$copy"

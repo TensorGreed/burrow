@@ -1548,6 +1548,15 @@ mod wiring {
             "structure-tree",
             "a /StructElem reached from the catalogue, with no /StructTreeRoot",
         );
+        // AND A TYPED `/StructTreeRoot` reached the same way: the typed scan reads both types.
+        refused_by(
+            redact_in(
+                &document("/Burrow 6 0 R", &["<< /Type /StructTreeRoot /K [] >>"]),
+                UPPER_BAND,
+            ),
+            "structure-tree",
+            "a /StructTreeRoot reached from another catalogue key",
+        );
         // THE TWINS: the same documents with no tree redact.
         redact_in(&document("", &[]), UPPER_BAND).expect("an untagged document redacts");
         redact_in(
