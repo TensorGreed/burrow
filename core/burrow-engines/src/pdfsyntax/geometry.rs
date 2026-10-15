@@ -6652,6 +6652,14 @@ mod tests {
                 Refusal::UndeterminedWritingMode,
             );
         }
+        // A LONE `ID` refuses too, earlier, in the lexer: no `BI` opened it.
+        assert!(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/CMapName /Plain-H def ID A EI",
+            })
+            .is_err()
+        );
         let twin = CMap::Embedded {
             dictionary_wmode: None,
             program: b"/CMapName /Plain-H def",
