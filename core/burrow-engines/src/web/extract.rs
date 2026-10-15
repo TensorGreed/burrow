@@ -40,6 +40,9 @@ pub struct WebExtractable {
     annots_shared: Vec<Vec<u64>>,
     /// The deadline `open` started, so the pruning pass spends the same budget.
     deadline: Deadline,
+    /// Whether the open admitted an empty key of the catalog's `/Dests`, so every part is read back
+    /// for one (`prune::refuse_empty_keys_in_part`).
+    empty_key_admitted: bool,
 }
 
 impl PageExtractor for WebQpdf {
@@ -80,7 +83,7 @@ impl PageExtractor for WebQpdf {
 
         // THE OPTIONAL-CONTENT STOPGAP (owner, 2026-10-13), as natively, before a page is read.
         // Through redaction's seam over this session, borrowed, so split keeps the session.
-        crate::prune::refuse_optional_content_document(
+        let empty_key_admitted = crate::prune::refuse_optional_content_document(
             &crate::web::redact::WebRedactionDocument::borrowing(self, &session),
             &bytes,
             &deadline,
@@ -109,6 +112,7 @@ impl PageExtractor for WebQpdf {
             limits,
             annots_shared,
             deadline,
+            empty_key_admitted,
         })
     }
 
@@ -282,6 +286,18 @@ impl PageExtractor for WebQpdf {
             return Err(Error::Io("qpdf produced no output".to_owned()));
         }
         let output = self.bridge().copy_out(ptr, len);
+        // THE SECOND LINE (owner, 2026-10-15): when the open admitted an empty `/Dests` key, the
+        // part is read back and held to the reference pass with no empty key admitted. The open's
+        // sole-referrer condition means no part should carry that object; this refuses if one does.
+        if source.empty_key_admitted {
+            let part = Session::open(self, &output, None, false)?;
+            crate::prune::refuse_empty_keys_in_part(
+                &crate::web::redact::WebRedactionDocument::borrowing(self, &part),
+                &output,
+                &source.deadline,
+                options.clock.as_ref(),
+            )?;
+        }
 
         // WHAT THE SPLIT HAS COST SO FAR. `max_memory_bytes` DETECTS rather than bounds (ADR
         // 0007), and this is the only place on the split path that can detect anything: the

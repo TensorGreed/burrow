@@ -338,28 +338,71 @@ fn a_name_inside_the_measured_allowlist_opens_for_split() {
     }
 }
 
-/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
-/// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
 /// THE CHROME SHAPE (owner, 2026-10-15): an empty key at the top level of the catalog's `/Dests`
 /// dictionary, which Chrome's print-to-PDF writes for a link to an unnamed anchor, opens for split
-/// -- no part receives the source catalog -- and nowhere else.
+/// when the catalog's `/Dests` entry is that dictionary's **sole referrer**, so nothing a part
+/// receives can reach it; and nowhere else.
 #[test]
-fn an_empty_key_opens_split_only_at_the_top_level_of_the_catalog_s_dests() {
+fn an_empty_key_opens_split_only_in_a_dests_the_catalog_alone_refers_to() {
     const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>";
     let dests = |body: &str| vec![(6, 0, body.to_owned())];
     opens(
-        "an empty key of /Dests",
+        "an empty key of a /Dests only the catalog names",
+        &classic(&document(DESTS_CATALOG, "", SHOWN, &dests(DESTS))),
+    );
+    opens(
+        "an empty key of a /Dests written in the catalog",
         &classic(&document(
-            DESTS_CATALOG,
+            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
             "",
             SHOWN,
-            &dests("<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>"),
+            &[],
         )),
     );
-    // THE TWINS. One level down in /Dests; the same dictionary when the catalog does not name it;
-    // the same key in another dictionary of a document that has a /Dests; and a /Dests written
-    // directly in the catalog.
+    let form = "0 0 m 1 1 l S";
+    let form_sharing = vec![
+        (6, 0, DESTS.to_owned()),
+        (
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << /Extra 6 0 R >> \
+                 /Length {} >>\nstream\n{form}\nendstream",
+                form.len()
+            ),
+        ),
+    ];
+    // THE TWINS: the same /Dests also reached another way, one level down, not the catalog's, in
+    // another dictionary, or the catalog itself.
     for (what, catalog, page_extra, more) in [
+        (
+            "a form's /Resources also names /Dests",
+            DESTS_CATALOG,
+            "/XObject << /X1 7 0 R >>",
+            form_sharing,
+        ),
+        (
+            "the page's /XObject dictionary is /Dests",
+            DESTS_CATALOG,
+            "/XObject 6 0 R",
+            dests(DESTS),
+        ),
+        (
+            "the page's /ExtGState dictionary is /Dests",
+            DESTS_CATALOG,
+            "/ExtGState 6 0 R",
+            dests(DESTS),
+        ),
+        (
+            "a name tree also names /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R /Names << /Dests 7 0 R >> >>",
+            "",
+            vec![
+                (6, 0, DESTS.to_owned()),
+                (7, 0, "<< /Names [(a) 6 0 R] >>".to_owned()),
+            ],
+        ),
         (
             "one level down in /Dests",
             DESTS_CATALOG,
@@ -382,8 +425,8 @@ fn an_empty_key_opens_split_only_at_the_top_level_of_the_catalog_s_dests() {
             ],
         ),
         (
-            "a /Dests written in the catalog",
-            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
+            "the catalog is its own /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 1 0 R / [3 0 R /XYZ 0 400 0] >>",
             "",
             Vec::new(),
         ),
@@ -393,6 +436,128 @@ fn an_empty_key_opens_split_only_at_the_top_level_of_the_catalog_s_dests() {
             &classic(&document(catalog, page_extra, SHOWN, &more)),
             "[split-name-read-differently]",
         );
+    }
+}
+
+/// `/DESTS WRITTEN ONCE`, as the catalog is: a second revision of it in an incremental update, or a
+/// header and an object-stream member both claiming its number, refuses; so does a `/Dests` naming
+/// a generation the file does not head.
+#[test]
+fn an_empty_dests_key_is_admitted_only_when_dests_is_written_once() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] >>";
+    let base = classic(&document(
+        DESTS_CATALOG,
+        "",
+        SHOWN,
+        &[(6, 0, DESTS.to_owned())],
+    ));
+    refuses(
+        "/Dests rewritten in an incremental update",
+        &with_revision(&base, 6, DESTS),
+        "[split-name-read-differently]",
+    );
+    let direct = document(DESTS_CATALOG, "", SHOWN, &[(6, 0, DESTS.to_owned())]);
+    refuses(
+        "/Dests headed and also an object-stream member",
+        &with_object_stream(&direct, 9, 0, &[(6, DESTS.to_owned())]),
+        "[split-name-read-differently]",
+    );
+    let wrong = classic(&document(
+        "<< /Type /Catalog /Pages 2 0 R /Dests 6 1 R >>",
+        "",
+        SHOWN,
+        &[(6, 0, DESTS.to_owned())],
+    ));
+    let [native, web] = opened(&wrong);
+    assert!(
+        native.is_err() && web.is_err(),
+        "a /Dests at a generation the file does not head: {native:?} {web:?}"
+    );
+}
+
+/// `base` with an incremental update rewriting object `number` as `body`.
+fn with_revision(base: &[u8], number: i32, body: &str) -> Vec<u8> {
+    let text = String::from_utf8_lossy(base);
+    let prev: usize = text
+        .rsplit("startxref")
+        .next()
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|digits| digits.parse().ok())
+        .expect("a startxref");
+    let size = text
+        .split("/Size ")
+        .nth(1)
+        .and_then(|tail| tail.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .expect("a /Size");
+    let mut out = base.to_vec();
+    let at = out.len();
+    out.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    let xref = out.len();
+    out.extend_from_slice(
+        format!(
+            "xref\n{number} 1\n{at:010} 00000 n \ntrailer\n<< /Size {size} /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// THE SECOND LINE OF DEFENCE (owner, 2026-10-15): with the sole-referrer condition taken out
+/// under `cfg(test)`, a /Dests a form's resources also name is admitted at the open, and the part
+/// that carries it is refused when it is written, on both engines. It should never fire otherwise.
+#[test]
+fn a_part_carrying_an_admitted_empty_key_is_refused_when_written() {
+    let catalog = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let form = "0 0 m 1 1 l S";
+    let more = vec![
+        (
+            6,
+            0,
+            "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>".to_owned(),
+        ),
+        (
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << /Extra 6 0 R >> \
+                 /Length {} >>\nstream\n{form}\nendstream",
+                form.len()
+            ),
+        ),
+    ];
+    let pdf = classic(&document(
+        catalog,
+        "/XObject << /X1 7 0 R >>",
+        "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do",
+        &more,
+    ));
+    crate::redact::hooks::SOLE_REFERRER_SKIPPED.with(|flag| flag.set(true));
+    let native = super::Qpdf::new();
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    // THE OPEN ADMITS IT, on both, so the refusal below is the part's and not the open's.
+    let native_source = PageExtractor::open(&native, pdf.clone().into_boxed_slice(), &options());
+    let web_source = PageExtractor::open(&web, pdf.into_boxed_slice(), &options());
+    let native_part = native_source
+        .as_ref()
+        .map_err(ToString::to_string)
+        .map(|source| PageExtractor::extract(&native, source, 0, 1, &options()));
+    let web_part = web_source
+        .as_ref()
+        .map_err(ToString::to_string)
+        .map(|source| PageExtractor::extract(&web, source, 0, 1, &options()));
+    crate::redact::hooks::SOLE_REFERRER_SKIPPED.with(|flag| flag.set(false));
+    let native_part = native_part.unwrap_or_else(|error| panic!("native open refused: {error}"));
+    let web_part = web_part.unwrap_or_else(|error| panic!("web open refused: {error}"));
+    for (engine, part) in [("native", native_part), ("web", web_part)] {
+        match part {
+            Err(error) => assert!(
+                error.to_string().contains("[split-name-read-differently]"),
+                "{engine}: refused, but not by the empty-key re-read: {error}"
+            ),
+            Ok(_) => panic!("{engine}: a part carrying the empty key was written"),
+        }
     }
 }
 
@@ -425,6 +590,8 @@ fn an_empty_dest_in_a_link_opens_split_and_a_meaningful_key_refuses() {
     }
 }
 
+/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
+/// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
 #[test]
 fn the_empty_name_and_a_mixed_case_escape_refuse_split_s_open() {
     for (what, extra, twin) in [

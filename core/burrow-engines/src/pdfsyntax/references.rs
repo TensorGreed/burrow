@@ -172,14 +172,42 @@ pub struct Found {
     /// its length is bounded by the scan's work budget ([`WORK_FACTOR`] times the input plus
     /// [`WORK_SLACK`]), as [`Found::null_values`]' is.
     pub dictionary_references: Vec<((i32, i32), Holder)>,
-    /// Every empty name (`/` with nothing after it) written as a **key** of an object's own
-    /// top-level dictionary, by the object holding it, where the scan could follow the dictionary
-    /// as qpdf reads it and the byte after the `/` is one the measurement admits. Nothing else
-    /// about an empty key is admitted here: any other empty key is
-    /// [`Irregular::NameReadDifferently`]. **These are not accepted by the scan**: the caller
-    /// refuses every one unless its operation admits that object (split, the catalog's `/Dests`
-    /// dictionary, owner 2026-10-15), so a caller that ignores this field accepts empty keys.
-    pub empty_keys: Vec<Holder>,
+    /// Every empty name (`/` with nothing after it) written as a **key** where the caller may
+    /// rule on it: of an object's own top-level dictionary, or of a dictionary written directly as
+    /// that object's top-level `/Dests` value -- where the scan could follow the dictionaries as
+    /// qpdf reads them and the byte after the `/` is one the measurement admits. Any other empty
+    /// key is [`Irregular::NameReadDifferently`]. **These are not accepted by the scan**: the
+    /// caller refuses every one unless its operation admits that object (split's open, the
+    /// catalog's `/Dests` dictionary, owner 2026-10-15), so a caller that ignores this field
+    /// accepts empty keys. One entry per key written; bounded, as the other lists are, by the work
+    /// budget.
+    pub empty_keys: Vec<EmptyKey>,
+    /// Every reference written, with where it was written, one entry per occurrence: what a caller
+    /// needs to ask whether an object has exactly one referrer. Recorded where the bytes are
+    /// judged as written, and bounded by the work budget.
+    pub reference_sites: Vec<ReferenceSite>,
+}
+
+/// An empty key the scan recorded for its caller ([`Found::empty_keys`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptyKey {
+    /// The number of the object whose dictionary holds it.
+    pub object: i32,
+    /// Whether it is a key of a dictionary written directly as that object's top-level `/Dests`
+    /// value, rather than a key of the object's own dictionary.
+    pub in_direct_dests: bool,
+}
+
+/// One occurrence of a reference ([`Found::reference_sites`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceSite {
+    /// The number of the object referred to, as written.
+    pub target: i32,
+    /// The number of the object holding the reference, or `None` (a trailer, an unread header).
+    pub holder: Option<i32>,
+    /// Whether it is the value of the `/Dests` key (written exactly so) of the holder's own
+    /// top-level dictionary: the one place the catalog's `/Dests` may be referred to from.
+    pub dests_entry: bool,
 }
 
 /// Where a dictionary value was written: the number of the object holding it (`None` where the
@@ -630,6 +658,7 @@ impl<'a> Level<'a> {
         if self.in_container {
             self.value_done();
         } else {
+            // A CONTAINER WHERE A KEY BELONGS, already poisoned by `step`: defence in depth.
             self.poisoned = true;
         }
     }
@@ -637,10 +666,10 @@ impl<'a> Level<'a> {
 
 /// What an empty name is, by where it stands.
 enum EmptyName {
-    /// A value under `/Dest`, followed by white space the measurement admits: read alike.
+    /// A value under `/Dest`, followed by white space the measurement admits.
     Value,
-    /// A key of the top-level dictionary of the object numbered here: recorded for the caller.
-    TopLevelKey(i32),
+    /// A key the caller rules on ([`Found::empty_keys`]).
+    Key(EmptyKey),
     /// Anything else, and every name that is not empty: refused.
     Refused,
 }
@@ -654,20 +683,20 @@ const EMPTY_VALUE_PARENTS: [&[u8]; 1] = [b"Dest"];
 /// The empty name was measured in a dictionary, as a key and as a value, before every follower;
 /// the details are in the private measurement. Admitted, and nothing else: a **value** under a key
 /// in [`EMPTY_VALUE_PARENTS`], followed by CR, FF, LF, NUL, space or tab; and, recorded for the
-/// caller to rule on, a **key** of an object's own top-level dictionary followed by a byte measured
-/// to end the name in the same place. A name that is not empty, an empty name in an array or
-/// outside any container, in a dictionary this cannot follow, or under any other key, refuses.
+/// caller to rule on, a **key** of an object's own top-level dictionary, or of a dictionary
+/// written directly as its top-level `/Dests` value, followed by a byte measured to end the name in
+/// the same place. A name that is not empty, an empty name in an array or outside any container, in
+/// a dictionary this cannot follow, or under any other key, refuses.
 fn empty_name_position(
     written: &[u8],
     next: Option<u8>,
-    level: Option<&Option<Level<'_>>>,
-    depth: usize,
+    levels: &[Option<Level<'_>>],
     holder: Option<i32>,
 ) -> EmptyName {
     if !written.is_empty() {
         return EmptyName::Refused;
     }
-    let Some(Some(level)) = level else {
+    let Some(Some(level)) = levels.last() else {
         return EmptyName::Refused;
     };
     if level.poisoned {
@@ -686,14 +715,22 @@ fn empty_name_position(
     {
         return EmptyName::Value;
     }
-    if level.expect_key
-        && depth == 1
-        && key_follower
-        && let Some(object) = holder
-    {
-        return EmptyName::TopLevelKey(object);
+    let Some(object) = holder else {
+        return EmptyName::Refused;
+    };
+    if !level.expect_key || !key_follower {
+        return EmptyName::Refused;
     }
-    EmptyName::Refused
+    // THE OBJECT'S OWN DICTIONARY, or one written directly as its top-level `/Dests` value.
+    let in_direct_dests = match levels {
+        [_] => false,
+        [Some(top), _] if !top.poisoned && top.in_container && top.key == b"Dests" => true,
+        _ => return EmptyName::Refused,
+    };
+    EmptyName::Key(EmptyKey {
+        object,
+        in_direct_dests,
+    })
 }
 
 impl<'c> Scan<'c> {
@@ -764,12 +801,10 @@ impl<'c> Scan<'c> {
                     next,
                 } = token
             {
-                match empty_name_position(written, next, levels.last(), containers.len(), holder) {
+                // READ BEFORE THE STEP BELOW: the position is the one this name stands in.
+                match empty_name_position(written, next, &levels, holder) {
                     EmptyName::Value => {}
-                    EmptyName::TopLevelKey(object) => self.found.empty_keys.push(Holder {
-                        object: Some(object),
-                        direct: true,
-                    }),
+                    EmptyName::Key(key) => self.found.empty_keys.push(key),
                     EmptyName::Refused => {
                         self.found.irregular = Some(Irregular::NameReadDifferently);
                         return Ok(end(false, 0, false));
@@ -809,6 +844,25 @@ impl<'c> Scan<'c> {
                         );
                         if self.found.irregular.is_some() {
                             return Ok(end(false, 0, false));
+                        }
+                        if self.judge_names {
+                            // EVERY OCCURRENCE, unattributable ones included: a number that does
+                            // not read plainly was refused by `reference` above.
+                            let dests_entry = containers.len() == 1
+                                && matches!(
+                                    levels.last(),
+                                    Some(Some(level))
+                                        if !level.expect_key
+                                            && level.pending == 2
+                                            && level.key == b"Dests"
+                                );
+                            if let Some(target) = plain(number) {
+                                self.found.reference_sites.push(ReferenceSite {
+                                    target,
+                                    holder,
+                                    dests_entry,
+                                });
+                            }
                         }
                         if self.judge_names
                             && containers.last() == Some(&Container::Dictionary)
@@ -851,6 +905,8 @@ impl<'c> Scan<'c> {
             older = newer;
             newer = Some((significant, comment_since_newer));
             comment_since_newer = false;
+            // AFTER THIS TOKEN WAS JUDGED: the empty-name decision above read the position the
+            // name stands in, and this moves the dictionary past it. A close pops the level below.
             if self.judge_names
                 && let Some(Some(level)) = levels.last_mut()
                 && !matches!(token, Token::Close(_))
@@ -1391,11 +1447,9 @@ mod tests {
         }
     }
 
-    /// The scan reports it, in a file's object, in an object stream's member and after a value,
-    /// and does not judge a string's bytes.
     /// `body` as object 1, the scan's verdict on its names: `Ok(empty keys recorded)` or the
     /// irregularity.
-    fn names(body: &[u8]) -> core::result::Result<Vec<super::Holder>, Irregular> {
+    fn names(body: &[u8]) -> core::result::Result<Vec<super::EmptyKey>, Irregular> {
         let mut bytes = b"1 0 obj\n".to_vec();
         bytes.extend_from_slice(body);
         bytes.extend_from_slice(b"\nendobj\n");
@@ -1403,9 +1457,9 @@ mod tests {
         found.irregular.map_or(Ok(found.empty_keys), Err)
     }
 
-    const TOP: super::Holder = super::Holder {
-        object: Some(1),
-        direct: true,
+    const TOP: super::EmptyKey = super::EmptyKey {
+        object: 1,
+        in_direct_dests: false,
     };
 
     /// THE EMPTY NAME AS A VALUE (owner, 2026-10-15): under `/Dest`, before the six white-space
@@ -1472,6 +1526,67 @@ mod tests {
         );
     }
 
+    /// AN INTEGER BEFORE IT means qpdf reads the empty name as the next KEY, not as the value
+    /// (security review, round 1): `<< /Dest 5 / 6 >>` refuses. The twin, an integer value before
+    /// another key, admits the `/Dest` value after it.
+    #[test]
+    fn an_empty_name_after_an_integer_value_is_not_the_dest_value() {
+        assert_eq!(
+            names(b"<< /Dest 5 / 6 >>"),
+            Err(Irregular::NameReadDifferently)
+        );
+        assert_eq!(names(b"<< /K 5 /Dest / >>"), Ok(Vec::new()));
+    }
+
+    /// A `/Dests` WRITTEN DIRECTLY in an object's dictionary: its empty keys are recorded as such,
+    /// for the caller to admit only in the catalog. One level further down, refused.
+    #[test]
+    fn an_empty_key_of_a_direct_dests_is_recorded_as_one() {
+        let direct = super::EmptyKey {
+            object: 1,
+            in_direct_dests: true,
+        };
+        assert_eq!(
+            names(b"<< /Dests << / [3 0 R /Fit] >> >>"),
+            Ok(vec![direct])
+        );
+        for body in [
+            b"<< /Other << / 1 >> >>".as_slice(),
+            b"<< /Dests << /B << / 1 >> >> >>",
+            b"<< /D#65sts << / 1 >> >>",
+        ] {
+            assert_eq!(
+                names(body),
+                Err(Irregular::NameReadDifferently),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// EVERY REFERENCE IS A SITE, with its holder, and only a top-level `/Dests` value is marked as
+    /// that entry: what the sole-referrer condition counts.
+    #[test]
+    fn every_reference_is_recorded_with_where_it_was_written() {
+        let found = file(
+            b"1 0 obj\n<< /Dests 6 0 R /A [6 0 R] /B << /Dests 6 0 R >> >>\nendobj\ntrailer\n<< /X 6 0 R >>\n",
+        );
+        let site = |holder, dests_entry| super::ReferenceSite {
+            target: 6,
+            holder,
+            dests_entry,
+        };
+        assert_eq!(
+            found.reference_sites,
+            vec![
+                site(Some(1), true),
+                site(Some(1), false),
+                site(Some(1), false),
+                site(None, false)
+            ]
+        );
+    }
+
     /// IN AN ARRAY, OUTSIDE ANY CONTAINER, OR AS A KEY BELOW THE TOP LEVEL: refused.
     #[test]
     fn an_empty_name_anywhere_else_refuses() {
@@ -1525,15 +1640,17 @@ mod tests {
         assert_eq!(found.irregular, None);
         assert_eq!(
             found.empty_keys,
-            vec![super::Holder {
-                object: Some(5),
-                direct: true
+            vec![super::EmptyKey {
+                object: 5,
+                in_direct_dests: false
             }]
         );
         let found = object_stream(b"5 0 << /Dest / >>", 1, 4);
         assert_eq!((found.irregular, found.empty_keys), (None, Vec::new()));
     }
 
+    /// The scan reports it, in a file's object, in an object stream's member and after a value,
+    /// and does not judge a string's bytes.
     #[test]
     fn the_scan_reports_a_name_outside_the_allowlist_and_ignores_strings() {
         let bad = b"1 0 obj\n<< /Ke\x80y 1 >>\nendobj\n";

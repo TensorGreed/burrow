@@ -23,8 +23,8 @@ one is decided in an issue, with the same three parts.
    narrowing that rests on one is measured before it merges (owner, 2026-10-15, #206, whose Type 3
    charge counted drawn codes only on a reviewer's reading of PDFium until it was timed).
    **A divergence measurement records what the shape itself resolves to in each reader, not only
-   that its neighbours survive** (owner, 2026-10-15, after the empty-name measurement read the keys
-   around an empty name and not what the empty key resolved to).
+   that its neighbours survive** (owner, 2026-10-15, after a measurement that checked only a
+   shape's neighbours).
 
 3. **Fail closed.** A removal nothing observed is not a measured removal; a verify must witness the
    removal, not infer it from a blind instrument. *Decided:* ADR 0029 §8. *Does not cover:* channels no instrument observed — those
