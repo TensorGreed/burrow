@@ -1514,6 +1514,50 @@ mod wiring {
     }
 
     #[test]
+    fn a_document_with_a_structure_tree_refuses_however_the_tree_is_reached() {
+        // #125 slice 3: a structure element's /Alt and /ActualText describe what a removal takes,
+        // from off the page, and no page-side signal survives its evasion -- so every document
+        // with a tree refuses `[structure-tree]`. Two signals, each with its own fixture: the
+        // catalogue's key, here direct and untyped so only that signal can see it; and a typed
+        // element reached some other way, here from a catalogue key no reader treats as a tree.
+        let document = |catalog_extra: &str, extra: &[&str]| {
+            let mut objects = vec![
+                format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>"),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                    .to_owned(),
+            ];
+            objects.extend(extra.iter().map(|object| (*object).to_owned()));
+            pdf(&objects)
+        };
+        refused_by(
+            redact_in(&document("/StructTreeRoot << /K [] >>", &[]), UPPER_BAND),
+            "structure-tree",
+            "a direct, untyped /StructTreeRoot on the catalogue",
+        );
+        refused_by(
+            redact_in(
+                &document(
+                    "/Burrow 6 0 R",
+                    &["<< /Type /StructElem /S /P /Alt (a description) /K 0 >>"],
+                ),
+                UPPER_BAND,
+            ),
+            "structure-tree",
+            "a /StructElem reached from the catalogue, with no /StructTreeRoot",
+        );
+        // THE TWINS: the same documents with no tree redact.
+        redact_in(&document("", &[]), UPPER_BAND).expect("an untagged document redacts");
+        redact_in(
+            &document("/Burrow 6 0 R", &["<< /Type /Burrow /S /P /K 0 >>"]),
+            UPPER_BAND,
+        )
+        .expect("an object of another /Type redacts");
+    }
+
+    #[test]
     fn an_annotation_rect_past_what_readers_agree_on_is_refused() {
         // #224, security reviews rounds 3 and 4: PDFium reads a whole number outside 32 bits as
         // 0, so a `/Rect` of `[20 4294967296 120 380]` is 0..380 to a viewer that draws

@@ -493,6 +493,78 @@ impl<D: PdfDocument> PageRedaction<D> {
         Ok(())
     }
 
+    /// Refuse the document if it carries a structure tree: `/StructTreeRoot` on the catalogue, or
+    /// any referenced object typed `/StructTreeRoot` or `/StructElem` (#125 slice 3).
+    ///
+    /// A structure element's `/Alt` and `/ActualText` describe the content its marked-content
+    /// sequences enclose, in words, from off the page; a removal that takes the glyphs leaves the
+    /// description. ADR 0029 §5 marks the signal OWED. #125 proposed the page's `/StructParents`,
+    /// and named its bypass in the same breath: a structure element reaching this page's MCIDs where
+    /// the page carries no `/StructParents`. No page-side proxy survives that, so this is the
+    /// broader refusal #125 says is the honest outcome then -- every document with a tree, wherever
+    /// its elements point.
+    ///
+    /// Two signals, as for the form-field refusal and for the same reason: the catalogue's key,
+    /// resolved through the trailer's `/Root` (a direct catalogue is in no reference set), and a
+    /// typed object anywhere in the reference set, for a tree reached some other way. It is a
+    /// **deliberate over-refusal**: a tree that says nothing about the region refuses too. The
+    /// narrowing, a structure tree measured to describe nothing the region reaches, is post-launch.
+    ///
+    /// # Errors
+    ///
+    /// `[structure-tree]`, the deadline, and whatever reading an object raises. An `Internal` if
+    /// the reference pass did not run first, which `run` always arranges.
+    pub(crate) fn refuse_structure_tree(&self) -> Result<()> {
+        const STRUCT_TREE_ROOT: Name = Name::literal(b"/StructTreeRoot\0");
+        const TYPE: Name = Name::literal(b"/Type\0");
+        const ROOT: Name = Name::literal(b"/Root\0");
+        let refusal = || {
+            Error::Unsupported(
+                "pdf redaction [structure-tree]: the document carries a structure tree, whose \
+                 alternate and actual text can describe what a redaction removes, from off the \
+                 page -- so the whole document is refused"
+                    .to_owned(),
+            )
+        };
+        let trailer = self.document.trailer()?;
+        let catalog = trailer.key(&ROOT);
+        let has_tree = catalog.key(&STRUCT_TREE_ROOT).type_code() != object_type::NULL;
+        catalog.drained()?;
+        trailer.drained()?;
+        if has_tree {
+            return Err(refusal());
+        }
+        // DEFENCE IN DEPTH, unwitnessed: `run` always calls the reference pass before this.
+        let Some(referenced) = &self.referenced else {
+            return Err(Error::Internal(
+                "pdf redaction: the reference pass did not run before the structure-tree scan"
+                    .to_owned(),
+            ));
+        };
+        for &(number, generation) in &referenced.objects {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            let object = self.document.object(number, generation)?;
+            let typed = match object.type_code() {
+                object_type::DICTIONARY => object.key(&TYPE),
+                object_type::STREAM => object.stream_dict().key(&TYPE),
+                _ => {
+                    object.drained()?;
+                    continue;
+                }
+            };
+            let structural = typed.type_code() == object_type::NAME
+                && matches!(
+                    typed.name().map(|name| name.plain().to_vec()).as_deref(),
+                    Ok(b"StructTreeRoot" | b"StructElem")
+                );
+            object.drained()?;
+            if structural {
+                return Err(refusal());
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
     /// vouch for it; see `frame::check_inherited_media_box` (#224).
     ///

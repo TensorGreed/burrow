@@ -1651,15 +1651,18 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
                 eprintln!("  {name:<34} refused: {text}");
                 // TWO KNOWN REFUSALS, each by its own rule: producer-latex's bitmap glyphs, and
                 // LibreOffice's vertical widths -- #292's accepted cost, #294 to narrow.
+                // AND SINCE #125 SLICE 3, every document with a structure tree refuses
+                // `[structure-tree]`, before any page rule: both LibreOffice exports are tagged, so
+                // producer-vertical-writing's #292 refusal is now behind this one.
                 let expected = match name {
                     "producer-latex.pdf" => "[type-three-image-cut]",
-                    "producer-vertical-writing.pdf" => "[width-out-of-range]",
+                    "producer-vertical-writing.pdf" | "producer-writer.pdf" => "[structure-tree]",
                     _ => "",
                 };
                 assert!(
                     !expected.is_empty() && text.contains(expected),
-                    "{name}: only producer-latex [type-three-image-cut] and \
-                     producer-vertical-writing [width-out-of-range] refuse: {text}"
+                    "{name}: only producer-latex [type-three-image-cut], and producer-vertical-writing \
+                     and producer-writer [structure-tree], refuse: {text}"
                 );
                 refused_as_decided += 1;
                 continue;
@@ -1743,14 +1746,17 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
     }
 
-    // ONE NOW, NOT TWO: #292's accepted cost moves producer-vertical-writing from the redacted
-    // count to the decided refusals, and this test with it loses its vertical document until #294.
+    // NONE NOW, AND THAT IS STATED, NOT HIDDEN. #292's accepted cost moved
+    // producer-vertical-writing to the decided refusals; #125 slice 3 (2026-10-15) moves
+    // producer-writer, which is tagged, to them too. So this test executes NO redaction of a real
+    // producer's document until an untagged producer fixture is committed or the structure-tree
+    // narrowing lands: every assertion above the refusals is unexecuted today. The count below
+    // pins that, so the day a document redacts again it must be counted here on purpose.
     assert_eq!(
         (redacted_documents, refused_as_decided),
-        (1, 2),
-        "producer-writer must redact, and producer-latex and producer-vertical-writing must \
-         refuse as decided; a refusal that covered them all would leave every assertion above \
-         unexecuted and this test still green"
+        (0, 3),
+        "producer-latex, producer-vertical-writing and producer-writer must each refuse as \
+         decided, and no producer document redacts until one is added on purpose"
     );
 }
 
