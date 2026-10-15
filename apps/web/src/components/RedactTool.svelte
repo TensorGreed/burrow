@@ -330,6 +330,9 @@
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
       if (phase === "working") {
+        // AND THE WORKER IT WAS RUNNING ON IS GONE, so "Stopped." is true: a frozen worker could
+        // otherwise still be holding the document when the page comes back.
+        host?.discardWorker();
         phase = "idle";
         announce("Stopped.");
       }

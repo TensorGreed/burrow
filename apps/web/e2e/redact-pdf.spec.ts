@@ -396,13 +396,16 @@ test("leaving the page releases every result it holds", async ({ page }) => {
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
   const currentUrl = String(await page.getByTestId("redact-download").getAttribute("href"));
   expect(await served(page, currentUrl), "the current result is not downloadable").toBe(true);
+  // THE EARLIER RESULT WENT WITH THE RUN THAT REPLACED IT, before the page was left: asserted
+  // here, where it can fail, rather than after pagehide, where it is already true.
+  expect(
+    await served(page, earlierUrl),
+    "the earlier result outlived the run that replaced it",
+  ).toBe(false);
 
   // `pagehide` is what a navigation or a bfcache entry fires; the page releases on it.
   await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
   expect(await served(page, currentUrl), "leaving the page left the current result alive").toBe(
-    false,
-  );
-  expect(await served(page, earlierUrl), "leaving the page left the earlier result alive").toBe(
     false,
   );
 });
