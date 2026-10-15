@@ -119,10 +119,11 @@ pub(crate) struct ReferenceRefusals {
     /// that dictionary's **sole referrer** -- no other dictionary, array, name tree, object-stream
     /// member or trailer names it -- or where the `/Dests` dictionary is written directly in the
     /// catalog; and in both cases only where nothing but a trailer names the catalog itself, so
-    /// nothing a part receives can reach either. An operation that sets this also holds every
-    /// output to the same pass with it unset ([`Referenced::admitted_empty_keys`] says when), as a
-    /// second line of defence. Every other empty key refuses as [`Self::name`], and every empty key
-    /// refuses where this is `false`.
+    /// nothing a part receives can reach either. An xref stream's `/Root` counts as an object's
+    /// reference, so such a file refuses: an over-refusal, recorded. An operation that sets this
+    /// also holds every output to the same pass with it unset ([`Referenced::admitted_empty_keys`]
+    /// says when), as a second line of defence. Every other empty key refuses as [`Self::name`],
+    /// and every empty key refuses where this is `false`.
     pub(crate) admit_dests_empty_key: bool,
 }
 
@@ -572,6 +573,10 @@ fn sole_referrer(
 /// Whether every reference to `catalog` the scan read is written in a trailer: no object -- a
 /// form's resources, a graphics state, an annotation, anything -- names the catalog, so no part
 /// that copies an object can receive it.
+///
+/// **An xref stream's `/Root` counts as an object's reference**, since the cross-reference stream
+/// is an object, so a file whose `/Root` lives only in an xref-stream dictionary refuses even when
+/// it is otherwise admissible: an over-refusal, recorded (final review of #136's Chrome narrowing).
 fn named_by_trailers_only(catalog: c_int, referrers: &BTreeMap<c_int, Referrers>) -> bool {
     referrers
         .get(&catalog)
