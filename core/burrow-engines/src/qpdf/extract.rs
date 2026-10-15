@@ -305,7 +305,7 @@ impl PageExtractor for Qpdf {
         let output = write_out(&dest, &source.document, ObjectStreams::Preserve)?;
         // THE SECOND LINE (owner, 2026-10-15): when the open admitted an empty `/Dests` key, the
         // part is read back and held to the reference pass with no empty key admitted. The open's
-        // sole-referrer condition means no part should carry that object; this refuses if one does.
+        // referrer conditions leave no measured shape that reaches this; it refuses if one does.
         if source.empty_key_admitted {
             let (part, _, _, _) = super::open_document(output.clone().into_boxed_slice(), options)?;
             crate::prune::refuse_empty_keys_in_part(
