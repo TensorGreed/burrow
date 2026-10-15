@@ -1192,3 +1192,44 @@ fn a_null_dictionary_value_refuses_redaction_except_in_the_catalog() {
         "a second /Type /Catalog object holding a null",
     );
 }
+
+/// `text`, a [`classic`] file, with an object headed `0 0 obj` holding `body` written just before
+/// its cross-reference table, and `startxref` moved to match. The table does not list it -- entry 0
+/// is the free list's head -- so qpdf never reads it; the byte scan sees its header.
+pub(super) fn with_object_zero(text: &str, body: &str) -> Vec<u8> {
+    let object = format!("0 0 obj\n{body}\nendobj\n");
+    let (head, tail) = text.split_once("startxref\n").expect("a startxref");
+    let (offset, rest) = tail.split_once('\n').expect("its offset");
+    let offset: usize = offset.parse().expect("a number");
+    assert_eq!(
+        head.get(offset..offset + 5),
+        Some("xref\n"),
+        "startxref names the table"
+    );
+    format!(
+        "{}{object}{}startxref\n{}\n{rest}",
+        &head[..offset],
+        &head[offset..],
+        offset + object.len()
+    )
+    .into_bytes()
+}
+
+/// THE CATALOG'S NUMBER MUST BE POSITIVE to be exempt (#333). A direct catalog in the trailer has
+/// the identity (0, 0), and an object headed `0 0 obj` -- which the cross-reference does not hold,
+/// so qpdf never reads it -- is then one header at that number and generation. Without the guard
+/// its direct null key would be taken for the catalog's, and exempt. The twin holds no null.
+#[test]
+fn an_object_numbered_zero_is_never_the_catalog() {
+    let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
+    let text = text.replacen("/Root 1 0 R", "/Root << /Type /Catalog /Pages 2 0 R >>", 1);
+    refused_on_both(
+        &with_object_zero(&text, "<< /Extra null >>"),
+        "null-value",
+        "a null key in an object headed 0 0 obj",
+    );
+    redacts_on_both(
+        &with_object_zero(&text, "<< /Extra 1 >>"),
+        "the twin, with no null",
+    );
+}

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use burrow_types::{Clock, Limits, ManualClock};
 
 use super::references_tests::{
-    Written, classic, glued_trailer, long_name, planted, with_object_stream,
+    Written, classic, glued_trailer, long_name, planted, with_object_stream, with_object_zero,
 };
 use super::web_differential_tests::NativeBridge;
 use crate::{OpenOptions, PageExtractor};
@@ -583,4 +583,22 @@ fn a_form_with_a_wrong_length_refuses_at_split_s_open() {
         );
     }
     opens("a form with a correct /Length", &build(0));
+}
+
+/// THE CATALOG'S NUMBER MUST BE POSITIVE to be exempt (#333), at split's open: a direct catalog in
+/// the trailer is (0, 0), and an object headed `0 0 obj` that qpdf never reads must not stand in
+/// for it. The twin holds no null.
+#[test]
+fn an_object_numbered_zero_is_never_the_catalog_at_split_s_open() {
+    let text = String::from_utf8(classic(&document(PLAIN_CATALOG, "", SHOWN, &[]))).expect("ASCII");
+    let text = text.replacen("/Root 1 0 R", &format!("/Root {PLAIN_CATALOG}"), 1);
+    refuses(
+        "a null key in an object headed 0 0 obj",
+        &with_object_zero(&text, "<< /Extra null >>"),
+        "[split-null-value]",
+    );
+    opens(
+        "the twin, with no null",
+        &with_object_zero(&text, "<< /Extra 1 >>"),
+    );
 }
