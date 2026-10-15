@@ -182,31 +182,35 @@ one is decided in an issue, with the same three parts.
     leak, which keeps rule 6 as it was; and the headroom policy itself.
 
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
-    output with burrow's own walk shares any blind spot the walk has (#206's finding). It is
-    enough to merge a slice. Before redaction is un-held, the same property needs an independent
-    reader as well, and that reader is an un-hold gate for #136 S9 beside R10. *Decided:* owner,
-    2026-10-15, for slice 2b's ink removal: re-walking the ink merges 2b, and the PDFium ink
-    read-back (after #344) gates S9. *Does not cover:* a check that is already independent of the
-    walk, such as the removed image's bytes being absent from the output, which stands on its
-    own.
+    output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
+    one). It is enough to merge a slice. Before redaction is un-held, the same property needs an
+    independent reader as well, and that reader gates #136's last slice, S9 (the un-hold), beside
+    R10. *Decided:* owner, 2026-10-15, for slice 2b's ink removal: re-walking the ink merges 2b,
+    and the PDFium ink read-back (after #344) gates S9. *Does not cover:* a check that is already
+    independent of the walk, such as the removed image's bytes being absent from the output, which
+    stands on its own.
 
-20. **A deploy gate that fails on a lag that converges gets one re-run of the failed jobs.** If the
-    same job fails again, stop and bring the owner the failing asset and both hashes, built and
-    served. Before the re-run, the live site is compared against the build run's own artifact.
-    *Decided:* owner, 2026-10-15, after v0.1.8's live-routes check failed during edge propagation
-    (#351). The site was byte-identical 10 minutes later (48 of 48 files), and the re-run
-    succeeded. *Does not cover:* a failure that does not converge, such as an edge rewriting HTML,
-    which is a stop at once; and the check's own fix, which is #351.
+20. **When a deploy gate fails, compare the live site with the build run's own artifact first.**
+    If it now matches, the failure was propagation lag, and the failed jobs get one re-run. If
+    the same job fails again, stop and bring the owner the failing asset and both hashes, built
+    and served. *Decided:* owner, 2026-10-15, after v0.1.8's live-routes check failed during edge
+    propagation (#351). The site was byte-identical 10 minutes later (48 of 48 files), and the
+    re-run succeeded. *Does not cover:* a live site that still differs from the artifact (an edge
+    rewriting HTML, say), which is a stop at once with no re-run; and the check's own fix, which
+    is #351.
 
-21. **A ceiling in front of an engine call nothing can interrupt bounds the call's work, and is set
-    from measurement.** It counts what the engine will actually parse: every stream, every repeat
-    (a form once per draw), and everything the engine loads that burrow's walk does not enter. A
-    depth or a maximum is not such a bound. The census maximum and the fixture maximum are
-    recorded beside the constant, and each part of the count has its own fixture, a near-miss
-    twin and an asserted mutation (rule 7). *Decided:* owner, 2026-10-15, accepting #206's
-    `MAX_MARKED_WORK` (1,000,000; census maximum 18,962, fixture maximum 32), after review found
-    three ways past a depth cap. *Does not cover:* the same engine's loads elsewhere (render,
-    previews), which this does not cap.
+21. **A ceiling in front of an engine call nothing can interrupt is set against a named cost of
+    that call, counted as the engine incurs it, and from measurement.** The count covers every
+    stream the engine parses, every repeat (a form once per draw), and everything the engine loads
+    that burrow's walk does not enter. A depth or a maximum is not such a count. The census maximum
+    and the fixture maximum are recorded beside the constant, and each part of the count has its
+    own fixture, a near-miss twin and an asserted mutation (rule 7). *Decided:* owner, 2026-10-15,
+    accepting #206's `MAX_MARKED_WORK` (1,000,000; census maximum 18,962, fixture maximum 32),
+    whose cost is marked-content work: the `BDC`/`BMC` depth summed over every operation PDFium
+    parses at the page load. It replaced a depth cap after review found three ways past it.
+    *Does not cover:* the load's other costs (its total time, and memory that does not grow with
+    nesting), which this constant does not cap and ADR 0007's measured check still only detects;
+    and the same engine's loads elsewhere (render, previews), which it does not cap at all.
 
 ## Spec review first (the practice that uses rule 10)
 
