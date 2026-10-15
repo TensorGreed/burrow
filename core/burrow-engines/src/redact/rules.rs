@@ -4,24 +4,45 @@
 //! # Why a table
 //!
 //! The ids are raised three ways: the geometry walk's [`Refusal`] names, stamped into the bracket
-//! at run time; the frame rules' [`FrameRule::rule`]; and format strings written where a refusal
-//! is raised (`"pdf redaction [font-flags]: …"`). No one of those lists the others, so nothing
-//! outside this crate could ask "which rules are there" without parsing message shapes. The web
-//! page groups refusals into plain-language categories and must place every one; it reads this
-//! table, through the committed copy `tests/redaction/rule-ids.txt`, never the source.
+//! at run time; the frame rules' [`FrameRule::rule`] and the ink kinds' [`InkKind::rule`]; and
+//! literal messages written where a refusal is raised (`"pdf redaction [font-flags]: …"`). No one
+//! of those lists the others, so nothing outside this crate could ask "which rules are there"
+//! without parsing message shapes. The web page groups refusals into plain-language categories and
+//! must place every one; it reads this table, through the committed copy
+//! `tests/redaction/rule-ids.txt`, never the source.
 //!
-//! # Held to the source, both ways
+//! # What the tests guarantee, exactly
 //!
-//! `every_bracketed_id_the_redaction_path_raises_is_in_the_table` reads every id the production
-//! code of this crate and of `burrow-ops` brackets, plus the three name tables above and every rule
-//! `tests/redaction/outcomes.tsv` records, and requires each in [`RULE_IDS`]; a rule added with any
-//! name fails until it is listed. The reverse test refuses an entry nothing raises. A third holds
-//! the committed copy to this table.
+//! An INTERIM, until the ids are one enum every refusal is built from (filed, post-launch). The
+//! tests below read the production source of this crate and of `burrow-ops` -- comments, test
+//! files, file modules declared under `#[cfg(test)]` and inline `#[cfg(test)] mod … { … }`
+//! blocks left out, and code after such a block still read -- and require:
+//!
+//! - every id bracketed after a message prefix in a string literal (`"<lowercase words> [` --
+//!   `pdf redaction [`, `pdf region [`, `pdf syntax [`, …), of any shape, is in [`RULE_IDS`];
+//! - every hyphenated `[id]` in any production string literal is in it too;
+//! - no production string literal interpolates into a bracket (`[{`), outside an explicit list of
+//!   the three sites that stamp a table's name ([`Refusal`] and [`InkKind`]) -- so an id cannot be
+//!   built where the scan cannot read it;
+//! - every name in [`Refusal::ALL`], [`FrameRule::ALL`] and [`InkKind::ALL`] is in it, each `ALL`
+//!   held to its enum by an exhaustive match or its own test, and so is every rule
+//!   `tests/redaction/outcomes.tsv` records;
+//! - nothing is in [`RULE_IDS`] that none of those raise;
+//! - and the committed copy is the table.
+//!
+//! What it does not see: an id assembled any other way -- from a `const` concatenated with
+//! `concat!`, or passed through a helper that adds the brackets. The interpolation rule closes the
+//! common form of that; the enum closes it for good.
 //!
 //! Split's own rules (`split-*`) are split's and are not here.
 //!
 //! [`Refusal`]: crate::pdfsyntax::geometry::Refusal
+//! [`Refusal::ALL`]: crate::pdfsyntax::geometry::Refusal::ALL
+//! [`InkKind`]: crate::pdfsyntax::geometry::InkKind
+//! [`InkKind::rule`]: crate::pdfsyntax::geometry::InkKind::rule
+//! [`InkKind::ALL`]: crate::pdfsyntax::geometry::InkKind::ALL
 //! [`FrameRule::rule`]: crate::redact::frames::FrameRule::rule
+//! [`FrameRule::ALL`]: crate::redact::frames::FrameRule::ALL
 
 /// Every refusal rule id, sorted. See the module documentation for what keeps it complete.
 pub const RULE_IDS: &[&str] = &[
@@ -205,77 +226,321 @@ mod tests {
             || text.contains("/tests/")
     }
 
-    /// `text` with its inline `#[cfg(test)] mod … {` block, and everything after it, cut off.
-    fn production(text: &str) -> &str {
+    /// A Rust source, lexed just enough: `masked` is the text with every comment, string and
+    /// character literal blanked (newlines kept), and `strings` every string literal's start
+    /// offset and contents. Raw strings, byte strings, nested block comments, escapes and
+    /// lifetimes are handled; that is all a brace count and a string scan need.
+    struct Lexed {
+        masked: Vec<u8>,
+        strings: Vec<(usize, String)>,
+    }
+
+    fn lex(text: &str) -> Lexed {
+        let b = text.as_bytes();
+        let mut masked = b.to_vec();
+        let mut strings = Vec::new();
+        let blank = |m: &mut Vec<u8>, from: usize, to: usize| {
+            for x in &mut m[from..to] {
+                if *x != b'\n' {
+                    *x = b' ';
+                }
+            }
+        };
+        let mut i = 0;
+        while i < b.len() {
+            if b[i..].starts_with(b"//") {
+                let end = text[i..].find('\n').map_or(b.len(), |n| i + n);
+                blank(&mut masked, i, end);
+                i = end;
+            } else if b[i..].starts_with(b"/*") {
+                let (mut depth, mut j) = (1, i + 2);
+                while j < b.len() && depth > 0 {
+                    if b[j..].starts_with(b"/*") {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j..].starts_with(b"*/") {
+                        depth -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut masked, i, j);
+                i = j;
+            } else if (b[i] == b'r' || b[i..].starts_with(b"br"))
+                && !(i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+                && {
+                    let k = if b[i] == b'b' { i + 2 } else { i + 1 };
+                    let mut h = k;
+                    while h < b.len() && b[h] == b'#' {
+                        h += 1;
+                    }
+                    h < b.len() && b[h] == b'"'
+                }
+            {
+                let k = if b[i] == b'b' { i + 2 } else { i + 1 };
+                let mut h = k;
+                while b[h] == b'#' {
+                    h += 1;
+                }
+                let hashes = h - k;
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let body = h + 1;
+                let end = text[body..].find(&close).map_or(b.len(), |n| body + n);
+                strings.push((i, text[body..end].to_owned()));
+                let stop = (end + close.len()).min(b.len());
+                blank(&mut masked, i, stop);
+                i = stop;
+            } else if b[i] == b'"' {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                let end = j.min(b.len());
+                strings.push((i, text[i + 1..end].to_owned()));
+                let stop = (end + 1).min(b.len());
+                blank(&mut masked, i, stop);
+                i = stop;
+            } else if b[i] == b'\'' {
+                // A character literal, or a lifetime: `'x'` and `'\n'` close; `'a` does not.
+                if i + 1 < b.len() && b[i + 1] == b'\\' {
+                    let end = text[i + 2..].find('\'').map_or(b.len(), |n| i + 2 + n + 1);
+                    blank(&mut masked, i, end);
+                    i = end;
+                } else if let Some(c) = text[i + 1..].chars().next() {
+                    let after = i + 1 + c.len_utf8();
+                    if after < b.len() && b[after] == b'\'' {
+                        blank(&mut masked, i, after + 1);
+                        i = after + 1;
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        Lexed { masked, strings }
+    }
+
+    /// Whether a `cfg` predicate holds only under test: `test`, or an `all(…)` with `test` among
+    /// its terms. `not(test)`, `any(…)` and everything else is production.
+    fn requires_test(predicate: &str) -> bool {
+        let predicate = predicate.trim();
+        if predicate == "test" {
+            return true;
+        }
+        predicate
+            .strip_prefix("all(")
+            .and_then(|r| r.strip_suffix(')'))
+            .is_some_and(|terms| terms.split(',').any(|t| t.trim() == "test"))
+    }
+
+    /// The byte spans of every inline test-only `mod NAME { … }` block (`#[cfg(test)]`, or a
+    /// `cfg(all(test, …))`), matched by braces in the masked text, and the names of file modules
+    /// declared test-only (`mod NAME;`).
+    fn test_modules(lexed: &Lexed) -> (Vec<(usize, usize)>, Vec<String>) {
+        let code = String::from_utf8_lossy(&lexed.masked).into_owned();
+        let (mut spans, mut files) = (Vec::new(), Vec::new());
         let mut from = 0;
-        while let Some(at) = text[from..].find("#[cfg(test)]") {
+        while let Some(at) = code[from..].find("#[cfg(") {
             let start = from + at;
-            let rest = text[start + "#[cfg(test)]".len()..].trim_start();
-            let rest = rest
-                .strip_prefix("pub(crate) ")
-                .or_else(|| rest.strip_prefix("pub "))
-                .unwrap_or(rest);
+            let body = &code[start + "#[cfg(".len()..];
+            let Some(close) = body.find(")]") else { break };
+            if !requires_test(&body[..close]) {
+                from = start + 1;
+                continue;
+            }
+            let mut rest = body[close + 2..].trim_start();
+            while rest.starts_with("#[") {
+                rest = rest[rest.find(']').map_or(rest.len(), |n| n + 1)..].trim_start();
+            }
+            for vis in ["pub(crate) ", "pub(super) ", "pub "] {
+                if let Some(r) = rest.strip_prefix(vis) {
+                    rest = r;
+                }
+            }
             if let Some(after) = rest.strip_prefix("mod ") {
-                let head: String = after.chars().take_while(|c| *c != '\n').collect();
-                if head.trim_end().ends_with('{') {
-                    return &text[..start];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let tail = after[name.len()..].trim_start();
+                if tail.starts_with(';') {
+                    files.push(name);
+                } else if tail.starts_with('{') {
+                    let open = code.len() - tail.len();
+                    let mut depth = 0usize;
+                    let mut end = code.len();
+                    for (k, c) in code[open..].char_indices() {
+                        match c {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = open + k + 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    spans.push((start, end));
+                    from = end;
+                    continue;
                 }
             }
             from = start + 1;
         }
-        text
+        (spans, files)
     }
 
-    fn is_id_byte(b: u8) -> bool {
-        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+    /// The string literals of production code: everything but inline test modules.
+    fn production_strings(text: &str) -> (Vec<String>, Vec<String>) {
+        let lexed = lex(text);
+        let (spans, files) = test_modules(&lexed);
+        let strings = lexed
+            .strings
+            .iter()
+            .filter(|(at, _)| !spans.iter().any(|(s, e)| at >= s && at < e))
+            .map(|(_, s)| s.clone())
+            .collect();
+        (strings, files)
     }
 
-    /// Every bracketed id in `code`: one with a hyphen anywhere, or one of any shape after the
-    /// core's own prefixes, `pdf redaction [` and `pdf region [`.
-    fn bracketed(code: &str, out: &mut BTreeSet<String>) {
-        let bytes = code.as_bytes();
-        let mut i = 0;
-        while let Some(at) = code[i..].find('[') {
-            let open = i + at;
-            let mut end = open + 1;
-            while end < bytes.len() && is_id_byte(bytes[end]) {
-                end += 1;
-            }
-            if end < bytes.len() && bytes[end] == b']' && end > open + 1 {
-                let id = &code[open + 1..end];
-                let prefixed = code[..open].ends_with("pdf redaction ")
-                    || code[..open].ends_with("pdf region ");
-                let shaped = id.starts_with(|c: char| c.is_ascii_lowercase())
-                    && !id.ends_with('-')
-                    && !id.contains("--");
-                if shaped && (id.contains('-') || prefixed) {
+    /// Whether `literal` starts with a message prefix: lowercase words, a space, then `[`.
+    fn prefixed_id(literal: &str) -> Option<&str> {
+        let open = literal.find(" [")?;
+        let head = &literal[..open];
+        if head.is_empty()
+            || !head
+                .split(' ')
+                .all(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_lowercase()))
+        {
+            return None;
+        }
+        let body = &literal[open + 2..];
+        Some(&body[..body.find(']')?])
+    }
+
+    /// Every hyphenated `[id]` in a string literal.
+    fn hyphenated(literal: &str, out: &mut BTreeSet<String>) {
+        let mut rest = literal;
+        while let Some(open) = rest.find('[') {
+            let body = &rest[open + 1..];
+            if let Some(close) = body.find(']') {
+                let id = &body[..close];
+                if id.contains('-')
+                    && id.starts_with(|c: char| c.is_ascii_lowercase())
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                {
                     out.insert(id.to_owned());
                 }
             }
-            i = open + 1;
+            rest = body;
         }
     }
 
-    /// What the redaction path raises, read from the source and the name tables.
-    fn raised() -> BTreeSet<String> {
+    /// The interpolations into a bracket that may stand, by file and by the literal's start:
+    /// the sites that stamp a table's name, which the table tests read.
+    const STAMPED: &[(&str, &str)] = &[
+        // `InkKind::rule`, in the region-reaches-ink refusal.
+        (
+            "redact/steps.rs",
+            "pdf redaction [{}]: the redacted region reaches",
+        ),
+        // `Refusal::rule`, where `Refusal::refuse` builds the walk's every refusal.
+        ("pdfsyntax/geometry.rs", "pdf geometry [{}]: {detail}"),
+        // `Refusal::caught`, which READS a refusal's prefix and raises none.
+        ("pdfsyntax/geometry.rs", "pdf geometry [{}]: "),
+    ];
+
+    /// What one source raises, and the interpolations it makes that `STAMPED` does not allow.
+    fn scan(
+        path: &str,
+        text: &str,
+        ids: &mut BTreeSet<String>,
+        interpolated: &mut Vec<String>,
+    ) -> Vec<String> {
+        let (strings, files) = production_strings(text);
+        for literal in &strings {
+            if let Some(id) = prefixed_id(literal)
+                && !id.contains('{')
+            {
+                ids.insert(id.to_owned());
+            }
+            hyphenated(literal, ids);
+            if literal.contains("[{")
+                && !STAMPED
+                    .iter()
+                    .any(|(file, start)| path.ends_with(file) && literal.starts_with(start))
+            {
+                interpolated.push(format!("{path}: {literal}"));
+            }
+        }
+        files
+    }
+
+    struct Raised {
+        ids: BTreeSet<String>,
+        interpolated: Vec<String>,
+    }
+
+    fn raised() -> Raised {
         let mut files = Vec::new();
         rust_files(&repo().join("core/burrow-engines/src"), &mut files);
         rust_files(&repo().join("core/burrow-ops/src"), &mut files);
-        let mut ids = BTreeSet::new();
-        for path in files.iter().filter(|p| !is_test_file(p)) {
+        // FILE MODULES DECLARED UNDER `#[cfg(test)]`, which are test code whatever they are called.
+        let mut test_paths: BTreeSet<PathBuf> = BTreeSet::new();
+        for path in &files {
             let text = std::fs::read_to_string(path).expect("a source file");
-            bracketed(production(&text), &mut ids);
+            let (_, names) = test_modules(&lex(&text));
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            let base = if stem == "mod" || stem == "lib" {
+                dir
+            } else {
+                dir.join(&stem)
+            };
+            for name in names {
+                test_paths.insert(base.join(format!("{name}.rs")));
+                test_paths.insert(base.join(&name).join("mod.rs"));
+            }
+        }
+        let mut ids = BTreeSet::new();
+        let mut interpolated = Vec::new();
+        for path in files
+            .iter()
+            .filter(|p| !is_test_file(p) && !test_paths.contains(*p))
+        {
+            let text = std::fs::read_to_string(path).expect("a source file");
+            let shown = path.to_string_lossy().replace('\\', "/");
+            scan(&shown, &text, &mut ids, &mut interpolated);
         }
         ids.extend(Refusal::ALL.iter().map(|r| r.rule().to_owned()));
         ids.extend(FrameRule::ALL.iter().map(|r| r.rule().to_owned()));
-        ids.extend(
-            [InkKind::Image, InkKind::Vector, InkKind::Shading].map(|k| k.rule().to_owned()),
-        );
+        ids.extend(InkKind::ALL.iter().map(|k| k.rule().to_owned()));
         let outcomes = std::fs::read_to_string(repo().join("tests/redaction/outcomes.tsv"))
             .expect("the golden");
-        bracketed(&outcomes, &mut ids);
+        for line in outcomes.lines().filter(|l| l.starts_with("CASE")) {
+            hyphenated(line, &mut ids);
+            if let Some(at) = line.find("(\"")
+                && let Some(id) = prefixed_id(&line[at + 2..])
+            {
+                ids.insert(id.to_owned());
+            }
+        }
         ids.retain(|id| !id.starts_with("split-"));
-        ids
+        Raised { ids, interpolated }
     }
 
     #[test]
@@ -283,12 +548,13 @@ mod tests {
         let raised = raised();
         // A COUNT, so a scan that read nothing does not pass as "nothing missing".
         assert!(
-            raised.len() > 100,
+            raised.ids.len() > 100,
             "the scan found {} ids; it is not reading the source",
-            raised.len()
+            raised.ids.len()
         );
         let table: BTreeSet<&str> = RULE_IDS.iter().copied().collect();
         let missing: Vec<&String> = raised
+            .ids
             .iter()
             .filter(|id| !table.contains(id.as_str()))
             .collect();
@@ -299,11 +565,21 @@ mod tests {
     }
 
     #[test]
+    fn no_production_message_builds_a_bracketed_id_the_scan_cannot_read() {
+        let raised = raised();
+        assert!(
+            raised.interpolated.is_empty(),
+            "an id interpolated into a bracket outside the stamped sites: {:?}",
+            raised.interpolated
+        );
+    }
+
+    #[test]
     fn the_table_lists_nothing_the_redaction_path_does_not_raise() {
         let raised = raised();
         let stale: Vec<&&str> = RULE_IDS
             .iter()
-            .filter(|id| !raised.contains(**id))
+            .filter(|id| !raised.ids.contains(**id))
             .collect();
         assert!(
             stale.is_empty(),
@@ -320,25 +596,75 @@ mod tests {
     }
 
     #[test]
+    fn ink_kind_all_is_every_variant() {
+        // EXHAUSTIVE: a new variant does not compile until it has an index here, and the index
+        // count is then held against `ALL`.
+        fn index(kind: InkKind) -> usize {
+            match kind {
+                InkKind::Image => 0,
+                InkKind::Vector => 1,
+                InkKind::Shading => 2,
+            }
+        }
+        let seen: BTreeSet<usize> = InkKind::ALL.iter().map(|k| index(*k)).collect();
+        assert_eq!(seen, (0..3).collect::<BTreeSet<_>>());
+        assert_eq!(InkKind::ALL.len(), 3);
+    }
+
+    #[test]
     fn the_scan_reads_every_shape_and_leaves_test_code_out() {
-        // THE SCAN'S OWN PROBE: one id per shape it must read, and the near-misses it must not.
-        let mut found = BTreeSet::new();
-        let code = concat!(
-            "\"pdf redaction [planted-bracket]: x\"\n",
-            "\"pdf region [plantedword]: a one-word rule after the prefix\"\n",
-            "\"a word [notarule] with no hyphen and no prefix\"\n",
-            "/// [`Refusal::Planted`] is a doc link, not a rule\n",
-            "#[cfg(test)]\nmod hooks;\n",
-            "\"after a test module declaration [still-production]\"\n",
+        // THE SCAN'S OWN PROBE, PERMANENT: each escape round 2 planted, and the near-misses.
+        let source = concat!(
+            "fn a() -> Error { Error::Malformed(\"pdf syntax [plantedword]: x\".to_owned()) }\n",
+            "const PLANTED: &str = \"planted-const\";\n",
+            "fn b() -> String { format!(\"pdf redaction [{PLANTED}]: x\") }\n",
+            "fn c() -> &'static str { \"pdf redaction [planted-bracket]: x\" }\n",
+            "// pdf redaction [in-a-comment]: a comment raises nothing\n",
+            "/// [image-in-a-doc] is a doc mention, not a raise\n",
+            "fn d() -> char { '{' }\n",
+            "#[cfg(test)]\nmod fake;\n",
+            "#[cfg(not(test))]\nmod real { fn r() -> &'static str { \"pdf region [not-test-is-production]: x\" } }\n",
+            "#[cfg(all(test, feature = \"x\"))]\nmod gated {\n    fn g() -> &'static str { \"pdf redaction [only-in-gated-tests]: x\" }\n}\n",
             "#[cfg(test)]\nmod tests {\n",
-            "    \"pdf redaction [only-in-tests]\"\n",
+            "    fn t() -> &'static str { \"pdf redaction [only-in-tests]: } { '}'\" }\n",
+            "    fn u() -> &'static str { r#\"pdf region [raw-in-tests]: \"}\"#}\n",
+            "}\n",
+            "fn e() -> &'static str { \"pdf region [after-tests]: code after a test module\" }\n",
         );
-        bracketed(production(code), &mut found);
-        let found: Vec<&str> = found.iter().map(String::as_str).collect();
+        let mut ids = BTreeSet::new();
+        let mut interpolated = Vec::new();
+        let files = scan("core/x/src/planted.rs", source, &mut ids, &mut interpolated);
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         assert_eq!(
-            found,
-            ["planted-bracket", "plantedword", "still-production"]
+            ids,
+            [
+                "after-tests",
+                "not-test-is-production",
+                "planted-bracket",
+                "plantedword"
+            ]
         );
+        assert_eq!(
+            interpolated,
+            ["core/x/src/planted.rs: pdf redaction [{PLANTED}]: x"]
+        );
+        assert_eq!(files, ["fake"]);
+        // A STAMPED site is allowed only in its own file.
+        let mut none = Vec::new();
+        scan(
+            "core/x/src/redact/steps.rs",
+            "fn f() { format!(\"pdf redaction [{}]: the redacted region reaches {}\", a, b); }",
+            &mut BTreeSet::new(),
+            &mut none,
+        );
+        assert!(none.is_empty());
+        scan(
+            "core/x/src/elsewhere.rs",
+            "fn f() { format!(\"pdf redaction [{}]: the redacted region reaches {}\", a, b); }",
+            &mut BTreeSet::new(),
+            &mut none,
+        );
+        assert_eq!(none.len(), 1);
         assert!(is_test_file(Path::new("a/src/b_tests.rs")));
         assert!(is_test_file(Path::new("a/src/tests/c.rs")));
         assert!(!is_test_file(Path::new("a/src/frames.rs")));

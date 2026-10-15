@@ -212,18 +212,40 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
 
   const after = since(`redact-page:${testInfo.project.name}`);
-  const engines = after.filter((entry) => entry.url.startsWith("/engines/"));
-  const unexpected = engines.filter((entry) => !isRedactionArtifact(entry.url));
+  // EVERY REQUEST IS ACCOUNTED FOR (round 2's C): redaction's pinned engine artifacts, or one of
+  // the page's own static files by exact shape. Anything else on the origin fails, by name.
+  const unexpected = after.filter(
+    (entry) => !isRedactionArtifact(entry.url) && !isPageAsset(entry.url),
+  );
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
-    "the redaction page fetched an engine artifact it does not use",
+    "the redaction page requested something that is neither its engine nor its own static files",
   ).toEqual([]);
   // THE CONTROL: redaction's own module was fetched, so the window watched something.
   expect(
-    engines.filter((entry) => /burrow_wasm_redact_bg/.test(entry.url)).length,
+    after.filter((entry) => /burrow_wasm_redact_bg/.test(entry.url)).length,
     "redaction's module was not fetched, so this test watched nothing",
+  ).toBeGreaterThan(0);
+  expect(
+    after.filter((entry) => entry.url === "/redact-pdf/").length,
+    "the page itself was not logged, so the allow-list below matched nothing",
   ).toBeGreaterThan(0);
   // AND NOTHING BUT GETs of the page's own static files: no upload of any kind.
   const posted = after.filter((entry) => entry.method !== "GET");
   expect(posted.map((entry) => `${entry.method} ${entry.url}`)).toEqual([]);
 });
+
+/**
+ * The held page's own static files, by exact shape: the page, its content-hashed Astro chunks and
+ * stylesheets, and the self-hosted font. Not a prefix match on the origin: a path the page has no
+ * reason to fetch fails the test above whatever directory it is in.
+ */
+function isPageAsset(url: string): boolean {
+  return (
+    url === "/redact-pdf/" ||
+    // FIREFOX ASKS FOR THIS ITSELF, for the tab's icon; the page names no icon and sends nothing.
+    url === "/favicon.ico" ||
+    /^\/_astro\/[A-Za-z0-9_.-]+\.(js|css)$/.test(url) ||
+    /^\/fonts\/[a-z0-9.-]+\.woff2$/.test(url)
+  );
+}

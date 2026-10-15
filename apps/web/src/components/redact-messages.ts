@@ -281,7 +281,14 @@ export const RULES: Readonly<Record<string, Category>> = {
  */
 export function ruleOf(message: string | undefined): string {
   if (!message) return "";
-  const id = /\[([^\]]{0,64})\]/.exec(message)?.[1] ?? "";
+  // ANCHORED ON THE FIRST `[`, then validated (L1, round 2's A): a first bracket that does not
+  // close, or holds anything but one of this page's rules, is no rule -- a later bracket is never
+  // tried in its place.
+  const open = message.indexOf("[");
+  if (open < 0) return "";
+  const close = message.indexOf("]", open + 1);
+  if (close < 0 || close - open - 1 > 64) return "";
+  const id = message.slice(open + 1, close);
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) && Object.hasOwn(RULES, id) ? id : "";
 }
 

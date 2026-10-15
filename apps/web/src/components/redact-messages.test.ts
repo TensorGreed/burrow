@@ -21,9 +21,13 @@ const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
  * Every refusal rule id the engine lists, from the committed copy of its table.
  *
  * THE ENGINE'S OWN LIST, NEVER A PARSE OF THE SOURCE. `burrow_engines::redact::rules::RULE_IDS`
- * is held by Rust tests to every id the redaction path brackets, whatever its shape, and
- * `tests/redaction/rule-ids.txt` is held to that table; this test reads the file. A rule added to
- * the core with any name reaches this list, and fails here until it has a category.
+ * is held by Rust tests to the production source: every id bracketed after a message prefix
+ * (`"<lowercase words> [`), of any shape; every hyphenated `[id]` in a string literal; the names
+ * of `Refusal`, `FrameRule` and `InkKind`; and `outcomes.tsv`. They also refuse any id interpolated
+ * into a bracket outside the three sites that stamp those tables' names.
+ * `tests/redaction/rule-ids.txt` is held to the table, and this test reads that file. What the
+ * Rust side cannot see is said in its module documentation: an id assembled some other way, until
+ * the ids are one enum (filed, post-launch).
  */
 function engineRules(): string[] {
   return readFileSync(join(REPO, "tests/redaction/rule-ids.txt"), "utf8")
@@ -156,6 +160,9 @@ describe("redaction's refusal categories (#136, S3 and S7)", () => {
     expect(ruleOf("pdf region [rotate]: a /Rotate that is not a right angle")).toBe("rotate");
     // A known rule in a LATER bracket is not the message's rule, as Rust's FrameRule::of reads it.
     expect(ruleOf("[made-up-thing] then [font-flags]")).toBe("");
+    // A FIRST BRACKET THAT DOES NOT CLOSE before a rule is no rule either (round 2's A).
+    expect(ruleOf("pdf redaction [unclosed: then [font-flags]")).toBe("");
+    expect(ruleOf(`[${"x".repeat(65)}] then [font-flags]`)).toBe("");
     expect(ruleOf("pdf redaction [other]: [font-flags]")).toBe("");
     expect(ruleOf("pdf redaction [made-up-thing]: x")).toBe("");
     expect(ruleOf("[IMAGE-IN-REGION]")).toBe("");
