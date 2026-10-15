@@ -56,6 +56,13 @@ impl Pdfium {
 /// 0011 and `thread.rs` record. Routing the oracle's calls here makes the one thread the only one
 /// again.
 ///
+/// **Not behind `cfg(test)`, and why.** Its caller is `tests/support/char_box_oracle.rs`, which
+/// integration tests compile against the library built WITHOUT `cfg(test)`, so a `cfg(test)`
+/// gate would remove it from exactly the build that needs it. A `test-support` cargo feature
+/// would gate it, at the cost of a new feature in every shipped build's manifest; not added. It
+/// takes no document and hands PDFium nothing, and every FFI call `work` makes is the caller's
+/// own `unsafe`, so what it exposes is the thread, not the engine.
+///
 /// `work` must not panic: a panic poisons the engine for the rest of the process. The oracle
 /// catches its own and re-raises it on the caller's thread.
 ///

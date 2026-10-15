@@ -2315,6 +2315,59 @@ mod second_reading {
     }
 
     #[test]
+    fn the_second_reading_spends_the_operations_budget() {
+        // THE CLOCK PASSES THE BUDGET AS THE SECOND READING BEGINS, and not before: the redaction
+        // and burrow's own verification run inside it. The reading must spend the OPERATION's
+        // deadline, so the outcome is the operation's -- `LimitExceeded` on `max_duration_ms`,
+        // never a verdict on the page -- and it must come at the reading's first open, before any
+        // page is asked for. A reading that started a fresh deadline of its own would open the
+        // input, count it, and go on to read the page.
+        use crate::redact::hooks::ON_SECOND_READING;
+        reset();
+        let clock = Arc::new(burrow_types::ManualClock::new(0));
+        let limits = Limits::with(|l| l.max_duration_ms = 60_000);
+        let options =
+            crate::OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn burrow_types::Clock>);
+        let advanced = Arc::clone(&clock);
+        ON_SECOND_READING.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || advanced.advance(61_000)));
+        });
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        let outcome = Qpdf
+            .redact_page(&document(PLAIN), 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes);
+        ON_SECOND_READING.with(|slot| *slot.borrow_mut() = None);
+        let read = readings();
+        let now = burrow_types::Clock::now_ms(clock.as_ref());
+        reset();
+        assert_eq!(
+            now, 61_000,
+            "the clock was advanced by the second reading, and only there"
+        );
+        match outcome {
+            Err(Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            }) => {}
+            other => panic!(
+                "past the budget during the second reading must be the operation's time limit: \
+                 {:?}",
+                other.map(|_| ())
+            ),
+        }
+        assert_eq!(
+            read, 0,
+            "the page was asked for after the budget had run out"
+        );
+    }
+
+    #[test]
     fn r4_an_output_short_of_a_page_is_refused() {
         reset();
         WRITER_DROPS_A_PAGE.with(|flag| flag.set(true));

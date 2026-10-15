@@ -34,26 +34,35 @@
 //!   refused 152 of 3,488 tiles that burrow redacts today, every one of them traced to burrow's
 //!   conservative glyph box ignoring `/FontDescriptor`'s `/FontBBox` (#344) rather than to a glyph
 //!   PDFium places in the region. The origin rule refused none. The ink half lands after #344.
+//!
+//!   A region no more than twice [`TOLERANCE_PT`] wide or tall has nothing left to compare once the
+//!   tolerance is taken off, and refuses as `[second-reading-region-too-small]`.
 //! - **R2, `[second-reading-no-text]`.** burrow's walk places glyphs on the page and PDFium reports
 //!   no character it did not generate. A reading that sees nothing cannot vouch for anything.
 //! - **R3, `[second-reading-page-size]`.** PDFium's rotated size for the page equals the output
 //!   frame's, within the size tolerance `redact::frame` uses (0.01 pt) -- so R1's region, converted
 //!   with burrow's frame, is the region on the page PDFium shows.
 //! - **R4, `[second-reading-page-count]`.** PDFium's page count of the output equals the count the
-//!   operation promised, which is qpdf's count of the input.
+//!   operation promised, which is qpdf's count of the input. PDFium's count
+//!   (`FPDF_GetPageCount`) is the page tree's DECLARED root `/Count`, not a walk of the tree: R4
+//!   and R5 compare qpdf's reading against that declaration, so a tree whose declared `/Count`
+//!   both engines accept, and whose kids say otherwise, is not caught here.
 //! - **`[second-reading-nesting]`, before any page is loaded.** The output page's marked-content
 //!   work is past [`MAX_MARKED_WORK`]: PDFium's page load grows with nesting, so it is capped
 //!   before it rather than measured after.
-//! - **R5, `[second-reading-input-page-count]`.** PDFium's page count of the input equals qpdf's
-//!   -- #111's half, here for redaction only.
+//! - **R5, `[second-reading-input-page-count]`.** PDFium's page count of the input, its declared
+//!   root `/Count` as above, equals qpdf's -- #111's half, here for redaction only.
 //!
-//! # Geometry, never mapping
+//! # Positions, not text
 //!
 //! No Unicode is read: no `FPDFText_GetUnicode`, no `FPDFText_GetText`, no `/ToUnicode`, no
-//! `/ActualText`. A lying `/ToUnicode` moves no box, which is why this half is admissible and the
-//! other is not (spike 0006, channel 21). The functions that would read text are not declared
-//! anywhere in this crate's shipped source, and `tests::no_text_reading_function_is_declared`
-//! refuses one that is, with a probe per name.
+//! `/ActualText`. What a character says is the document's own claim about itself (spike 0006,
+//! channel 21), so it is not taken as a second opinion. Where a character is placed is read
+//! instead -- but mapping is not wholly out of it: PDFium decides WHETHER to report a character
+//! partly from its mapping, so a mapping can remove a character from this reading (see
+//! "Characters PDFium does not report" below). The PDFium text functions this crate's source
+//! may name are exactly five, and `tests::the_pdfium_text_functions_named_are_the_five_permitted`
+//! refuses any other, with a probe per rejected name.
 //!
 //! # What this leaves undetectable, stated because the rules could be read as covering it
 //!
@@ -77,6 +86,15 @@
 //!   `/ActualText` span PDFium reports the span's replacement text, placed at the span's first
 //!   text object with that object's box, and reports nothing for the span's later text objects
 //!   -- so the placement of glyphs in those later objects is not read.
+//! - **Characters PDFium does not report.** R1 can only refuse a character PDFium reports, and
+//!   PDFium reports no character at all -- not one outside the region, none -- for three causes
+//!   measured on #206's fixtures: a `/ToUnicode` that maps the code to a space or to nothing; a
+//!   `/Differences` name the substituted font does not carry; and a Type 3 glyph whose procedure
+//!   draws nothing. Such a glyph in the region is held by burrow's own check alone. R2 catches the
+//!   case where every glyph on the page is one of these, and no other: a page with one reported
+//!   character and many unreported ones passes it. A count-based R2 -- burrow's glyph count
+//!   against PDFium's, page by page -- is a follow-up, to be built only once a census shows what
+//!   it would cost.
 //! - **Pages other than the redacted page.** Only the page that was redacted is read; text on
 //!   every other page is held only by the page count and burrow's own checks.
 
@@ -326,11 +344,22 @@ pub fn agrees<R: SecondReading>(
             "[second-reading-unavailable] the region cannot be converted: {error}"
         ))
     })?;
-    let inner = shrunk(&region, TOLERANCE_PT);
-    let inside = read
-        .iter()
-        .filter(|c| inner.is_some_and(|inner| reaches(&inner, c)))
-        .count();
+    // A REGION NO WIDER OR TALLER THAN TWICE THE TOLERANCE has nothing left once the tolerance
+    // is taken off each side, so R1 would test nothing and pass. Refused rather than read as
+    // agreement: a check with nothing to compare is not a check.
+    // Decided on the extent itself, with a relative margin, because `shrunk` adds and subtracts
+    // and a region of exactly twice the tolerance can come out a float's width wide.
+    let floor = 2.0 * TOLERANCE_PT * (1.0 + 1e-9);
+    let too_small = region.right - region.left <= floor || region.top - region.bottom <= floor;
+    let inner = shrunk(&region, TOLERANCE_PT).filter(|_| !too_small);
+    let Some(inner) = inner else {
+        return Err(rejected(format!(
+            "[second-reading-region-too-small] the region on page {} is too small to compare \
+             positions in",
+            expected.page
+        )));
+    };
+    let inside = read.iter().filter(|c| reaches(&inner, c)).count();
     if inside > 0 {
         return Err(rejected(format!(
             "[second-reading-glyph-in-region] the renderer places {inside} character(s) inside \

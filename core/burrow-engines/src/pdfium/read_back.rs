@@ -6,8 +6,8 @@
 //! # Limits, because `FPDFText_LoadPage` cannot be interrupted
 //!
 //! - **The operation's deadline, not a fresh one.** Both opens spend it (`open_spending`), and it
-//!   is checkpointed before and after every engine call, and every 4,096 characters while the
-//!   boxes are read.
+//!   is checkpointed before and after every engine call, and every 4,096 characters while their
+//!   origins are read.
 //! - **`estimate::before_page_load` before the page is loaded.** `FPDF_LoadPage` builds the
 //!   display list and `FPDFText_LoadPage` the text layer, in two calls nothing can checkpoint;
 //!   the only lever on them is refusing to begin, which is what render does too.
@@ -79,6 +79,8 @@ impl SecondReading for PdfiumReading<'_> {
         if let Some(error) = crate::redact::hooks::forced_second_reading_failure() {
             return Err(error);
         }
+        #[cfg(test)]
+        crate::redact::hooks::second_reading_begins();
         let document = self.open(bytes)?;
         page_count_of(&document).map(Some)
     }

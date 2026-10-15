@@ -239,17 +239,17 @@ unsafe extern "C" {
 
     // ---- fpdf_text.h: WHERE glyphs are, never WHAT they say (#206) ---------------------
     //
-    // GEOMETRY ONLY, AND THE LIST IS CLOSED. These five answer where PDFium places each
-    // character: its pen origin, and whether PDFium invented it. The ink box
-    // (`FPDFText_GetCharBox`) is deliberately not declared until #344 (see
-    // `redact_read_back`'s R1). No
-    // function that returns a character's Unicode or a page's text is declared here or anywhere
-    // in this crate's shipped source -- `FPDFText_GetUnicode`, `FPDFText_GetText`,
-    // `FPDFText_GetBoundedText` and the rest -- because a reading that decodes through the
-    // font verifies the document's own claim about itself (spike 0006, channel 21). "A
-    // function that cannot be called cannot leak", the rule `codes/qpdf.rs` keeps for qpdf's
-    // error text. `redact_read_back::tests::no_text_reading_function_is_declared` holds it,
-    // with a probe per forbidden name.
+    // POSITIONS ONLY, AND THE LIST IS CLOSED. These five open and close a page's text, count its
+    // characters, and answer where PDFium places each one (its pen origin) and whether PDFium
+    // invented it. The ink box (`FPDFText_GetCharBox`) is deliberately not declared until #344
+    // (see `redact_read_back`'s R1). No function that returns a character's Unicode or a page's
+    // text is named anywhere in this crate's source -- `FPDFText_GetUnicode`, `FPDFText_GetText`,
+    // `FPDFText_GetBoundedText` and the rest -- because a reading that decodes through the font
+    // verifies the document's own claim about itself (spike 0006, channel 21). "A function that
+    // cannot be called cannot leak", the rule `codes/qpdf.rs` keeps for qpdf's error text.
+    // `redact_read_back::tests::the_pdfium_text_functions_named_are_the_five_permitted` holds the
+    // set of `FPDFText_*`, `FPDFTextObj_*` and `FPDFLink_*` names in code, `link_name` included,
+    // to exactly these five.
 
     /// `FPDF_EXPORT FPDF_TEXTPAGE FPDF_CALLCONV FPDFText_LoadPage(FPDF_PAGE page)` —
     /// `fpdf_text.h:31`. Null on failure. Released with `FPDFText_ClosePage`.

@@ -216,6 +216,29 @@ fn r1_converts_the_region_with_the_outputs_frame_rotation_included() {
 }
 
 #[test]
+fn a_region_too_small_to_compare_in_refuses() {
+    // 0.1 pt is twice the tolerance: nothing is left once it comes off each side.
+    let fake = Fake::honest();
+    let mut expected = agreement(2);
+    expected.region.width = 2.0 * TOLERANCE_PT;
+    assert_eq!(
+        rule_of(verdict(&fake, &expected)),
+        "second-reading-region-too-small"
+    );
+    let mut expected = agreement(2);
+    expected.region.height = 2.0 * TOLERANCE_PT;
+    assert_eq!(
+        rule_of(verdict(&fake, &expected)),
+        "second-reading-region-too-small"
+    );
+    // THE TWIN: just wider than that leaves a sliver, and an honest reading passes.
+    let mut expected = agreement(2);
+    expected.region.width = 2.0 * TOLERANCE_PT + 0.01;
+    expected.region.height = 2.0 * TOLERANCE_PT + 0.01;
+    assert_eq!(rule_of(verdict(&fake, &expected)), "Ok");
+}
+
+#[test]
 fn an_origin_that_is_not_a_number_is_no_answer() {
     // Every comparison with NaN is false, so R1 would read it as outside the region.
     let fake = Fake::with_chars(vec![visible(72.0, 700.0), visible(f64::NAN, 640.0)]);
@@ -418,11 +441,22 @@ fn a_rejection_names_no_coordinate() {
     }
 }
 
-// ---- geometry, never mapping ----------------------------------------------------------------
+// ---- positions, not text ------------------------------------------------------------------
 
-/// The PDFium text functions that return what a character SAYS, or a page's text. None may be
-/// declared in this crate's shipped source (module header, "Geometry, never mapping").
-const TEXT_READING_FUNCTIONS: &[&str] = &[
+/// The PDFium text functions this crate's source may name: where a character is, whether PDFium
+/// invented it, and the calls that open and close the page's text. Nothing else.
+const PERMITTED: [&str; 5] = [
+    "FPDFText_ClosePage",
+    "FPDFText_CountChars",
+    "FPDFText_GetCharOrigin",
+    "FPDFText_IsGenerated",
+    "FPDFText_LoadPage",
+];
+
+/// Names the scan must REJECT, one probe each: what a character says, a page's text, and the ink
+/// box R1 does not read until #344. Not the rule -- the rule is the equality with [`PERMITTED`],
+/// which rejects every other name too -- but the shapes the scan is shown to see.
+const REJECTED: &[&str] = &[
     "FPDFText_GetUnicode",
     "FPDFText_GetText",
     "FPDFText_GetBoundedText",
@@ -430,89 +464,123 @@ const TEXT_READING_FUNCTIONS: &[&str] = &[
     "FPDFText_GetFontInfo",
     "FPDFText_FindStart",
     "FPDFText_GetSchResultIndex",
+    "FPDFText_GetCharBox",
+    "FPDFText_GetLooseCharBox",
     "FPDFLink_LoadWebLinks",
     "FPDFLink_GetURL",
     "FPDFTextObj_GetText",
 ];
 
-/// Whether `source` declares `name` as a function, outside a comment.
-fn declares(source: &str, name: &str) -> bool {
-    let call = format!("fn {name}(");
-    source.lines().any(|line| {
+/// Every `FPDFText_*`, `FPDFTextObj_*` and `FPDFLink_*` name in `source`'s CODE -- comments
+/// stripped, string literals kept, so a `#[link_name = "..."]` attribute binding one of them to an
+/// innocent Rust name is counted as the name it binds.
+fn named(source: &str) -> std::collections::BTreeSet<String> {
+    let mut found = std::collections::BTreeSet::new();
+    for line in source.lines() {
         let code = line.split("//").next().unwrap_or_default();
-        code.contains(&call)
-    })
+        for prefix in ["FPDFText_", "FPDFTextObj_", "FPDFLink_"] {
+            let mut rest = code;
+            while let Some(at) = rest.find(prefix) {
+                let tail = &rest[at..];
+                let end = tail
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len());
+                // `FPDFTextObj_` also begins with `FPDFText`, but not with `FPDFText_`, so the
+                // two prefixes never report the same name twice.
+                found.insert(tail[..end].to_owned());
+                rest = &tail[end..];
+            }
+        }
+    }
+    found
 }
 
 #[test]
-fn the_declaration_scan_matches_its_probes() {
-    // PER-RULE PROBES: each name matches its own declaration and rejects the near-miss of the
-    // same name in a comment, every run, so the scan below is a measurement.
-    for name in TEXT_READING_FUNCTIONS {
-        let positive = format!("unsafe extern \"C\" {{\n    fn {name}(page: X) -> c_int;\n}}\n");
-        let near_miss =
+fn the_name_scan_matches_its_probes() {
+    // PER-NAME PROBES, every run: each rejected name is seen as a declaration, as a call, and
+    // behind a `link_name` that hides it under another Rust name; and is NOT seen in a comment.
+    for name in REJECTED {
+        let declared = format!("unsafe extern \"C\" {{\n    fn {name}(page: X) -> c_int;\n}}\n");
+        let called = format!("    let n = unsafe {{ {name}(text, 0) }};\n");
+        let aliased = format!(
+            "unsafe extern \"C\" {{\n    #[link_name = \"{name}\"]\n    fn harmless(page: X);\n}}\n"
+        );
+        let commented =
             format!("    // fn {name}( is never declared\n    /// `{name}` is not read\n");
-        assert!(declares(&positive, name), "the scan misses {name}");
+        for (shape, source) in [
+            ("declared", &declared),
+            ("called", &called),
+            ("aliased", &aliased),
+        ] {
+            assert!(
+                named(source).contains(*name),
+                "the scan misses {name} {shape}"
+            );
+        }
         assert!(
-            !declares(&near_miss, name),
+            named(&commented).is_empty(),
             "the scan reads {name} in a comment"
         );
     }
+    // THE `link_name` NEAR-MISS: an attribute binding a PDFium function OUTSIDE the three
+    // families is not a text function, and the scan must not count it as one.
+    let near_miss =
+        "unsafe extern \"C\" {\n    #[link_name = \"FPDF_LoadPage\"]\n    fn load(d: X);\n}\n";
+    assert!(
+        named(near_miss).is_empty(),
+        "the scan counts FPDF_LoadPage as a text function"
+    );
+    // AND THE PREFIX BOUNDARY: `FPDFTextObj_` is its own family, reported once.
+    assert_eq!(
+        named("fn FPDFTextObj_GetText(o: X);"),
+        std::collections::BTreeSet::from(["FPDFTextObj_GetText".to_owned()])
+    );
 }
 
 #[test]
-fn no_text_reading_function_is_declared() {
+fn the_pdfium_text_functions_named_are_the_five_permitted() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![root];
-    let mut examined = Vec::new();
-    let mut found = Vec::new();
+    let mut examined = 0_usize;
+    let mut found: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).expect("the source tree reads") {
             let path = entry.expect("an entry reads").path();
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|ext| ext == "rs") {
-                // This file names every forbidden function in its probes, so it is the one
-                // file the scan cannot read for itself.
+                // This file names every rejected function in its probes, so it is the one file
+                // the scan cannot read for itself.
                 if path.ends_with("redact_read_back/tests.rs") {
                     continue;
                 }
                 let source = std::fs::read_to_string(&path).expect("a source file reads");
-                for name in TEXT_READING_FUNCTIONS {
-                    if declares(&source, name) {
-                        found.push(format!("{} declares {name}", path.display()));
-                    }
+                for name in named(&source) {
+                    found
+                        .entry(name)
+                        .or_default()
+                        .push(path.display().to_string());
                 }
-                examined.push(path);
+                examined += 1;
             }
         }
     }
-    let ffi = examined
-        .iter()
-        .filter(|path| path.ends_with("pdfium/ffi.rs") || path.ends_with("pdfium/read_back.rs"))
-        .count();
+    let names: Vec<&str> = found.keys().map(String::as_str).collect();
     eprintln!(
-        "  text-reading scan: {} source file(s) examined, {} of them PDFium's declarations and \
-         reading; {} forbidden name(s) checked",
-        examined.len(),
-        ffi,
-        TEXT_READING_FUNCTIONS.len()
+        "  pdfium text-function scan: {examined} source file(s) examined; named {} of the {} \
+         permitted: {names:?}",
+        names.len(),
+        PERMITTED.len()
     );
+    assert!(examined > 0, "the scan examined no source file");
+    // EQUALITY, not absence: every permitted name must be SEEN (so a scan that saw nothing fails),
+    // and nothing else may be.
     assert_eq!(
-        ffi, 2,
-        "the scan did not examine both of PDFium's declaration and reading files"
+        names,
+        PERMITTED.to_vec(),
+        "the PDFium text functions named in this crate's source, with where: {found:?}"
     );
-    assert!(
-        declares(
-            &std::fs::read_to_string(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pdfium/ffi.rs")
-            )
-            .expect("ffi.rs reads"),
-            "FPDFText_GetCharOrigin"
-        ),
-        "the scan does not see the origin function it permits, so it would not see a forbidden one"
-    );
-    assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
 // ---- the nesting ceiling ------------------------------------------------------------------

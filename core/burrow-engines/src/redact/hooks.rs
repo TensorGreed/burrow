@@ -117,6 +117,22 @@ thread_local! {
     pub(crate) static SECOND_READING_SKIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// Run when the second reading begins, before its first open: a test that needs the clock to
+    /// pass the budget DURING the second reading, and not before it, advances its clock here.
+    pub(crate) static ON_SECOND_READING: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run [`ON_SECOND_READING`]'s closure, if a test set one.
+pub(crate) fn second_reading_begins() {
+    ON_SECOND_READING.with(|slot| {
+        if let Some(run) = slot.borrow().as_ref() {
+            run();
+        }
+    });
+}
+
 /// Whether this thread's redactions verify without the second reading.
 pub(crate) fn second_reading_skipped() -> bool {
     SECOND_READING_SKIPPED.with(std::cell::Cell::get)
