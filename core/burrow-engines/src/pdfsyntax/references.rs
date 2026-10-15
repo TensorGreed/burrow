@@ -1076,8 +1076,8 @@ const fn is_delimiter(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Found, Irregular, MAX_DISTINCT_REFERENCES, MAX_NAME_WRITTEN, in_file, in_object_stream,
-        name_reads_alike,
+        Found, Irregular, MAX_DISTINCT_REFERENCES, MAX_NAME_WRITTEN, MAX_NESTING, in_file,
+        in_object_stream, name_reads_alike,
     };
     use burrow_types::{Error, Result};
     use proptest::prelude::*;
@@ -1735,6 +1735,28 @@ mod tests {
         let found = file(&bytes[..at]);
         assert_eq!(found.irregular, None);
         assert_eq!(found.declarations.len(), super::MAX_DECLARATIONS);
+    }
+
+    /// NESTING PAST [`MAX_NESTING`] is reported as [`Irregular::BeyondCaps`], never a clean scan
+    /// (#333): arrays, and dictionaries. The near-miss, exactly the cap, is read through to the reference at its
+    /// innermost level.
+    #[test]
+    fn nesting_past_the_cap_is_refused() {
+        let nested = |open: &str, close: &str, levels: usize| {
+            let mut bytes = b"1 0 obj ".to_vec();
+            bytes.extend_from_slice(open.repeat(levels).as_bytes());
+            bytes.extend_from_slice(b"2 0 R");
+            bytes.extend_from_slice(close.repeat(levels).as_bytes());
+            bytes.extend_from_slice(b" endobj");
+            bytes
+        };
+        for (what, open, close) in [("arrays", "[", "]"), ("dictionaries", "<< /K ", " >>")] {
+            let found = file(&nested(open, close, MAX_NESTING + 1));
+            assert_eq!(found.irregular, Some(Irregular::BeyondCaps), "{what}");
+            let found = file(&nested(open, close, MAX_NESTING));
+            assert_eq!(found.irregular, None, "{what}, at the cap");
+            assert!(found.references.contains(&(2, 0)), "{what}, at the cap");
+        }
     }
 
     /// A reference as written, plain or not.
