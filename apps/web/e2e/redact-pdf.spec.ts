@@ -442,6 +442,54 @@ test("a page restored from the back-forward cache mid-run is idle, not working",
   await expect(page.getByTestId("redact-download")).toHaveCount(0);
 });
 
+test("a page restored mid-run discards the worker the run was on", async ({ page }, testInfo) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  // HOLD THE RUN IN FLIGHT: redaction's worker recycles after every reply, so the run spawns a
+  // fresh worker, and that worker's fetch of redaction's module is held -- the run cannot finish
+  // until the test lets it.
+  // THE FIRST FETCH ONLY, held for the whole test: a later worker's fetch goes through, so the run
+  // after the restore can finish if, and only if, it is on a new worker. (Unrouting released the
+  // held request too, which let the old worker finish and passed the test with the discard
+  // removed -- caught by its own mutation.)
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const engine = "**/engines/burrow_wasm_redact_bg.*.wasm";
+  let seen = 0;
+  await page.route(engine, async (route) => {
+    seen += 1;
+    if (seen === 1) await held;
+    // The worker the held request came from is terminated by the restore, which aborts it, and
+    // continuing an aborted request is refused: the expected outcome, not a failure.
+    await route.continue().catch(() => {});
+  });
+  const fetching = page.waitForRequest(/burrow_wasm_redact_bg\.[0-9a-f]{16}\.wasm/, {
+    timeout: 15_000,
+  });
+  await page.getByTestId("redact-run").click();
+  await fetching;
+  await expect(page.getByTestId("redact-stop")).toBeVisible();
+
+  // LEFT AND RESTORED from the back-forward cache, with the run still held.
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    globalThis.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await expect(page.getByTestId("redact-stop")).toHaveCount(0);
+
+  // THE NEXT RUN IS ON A FRESH WORKER, which fetches redaction's set again and finishes. Had the
+  // restore kept the held worker, this run would queue behind a run that never ends.
+  await mark(`redact-restored:${testInfo.project.name}`);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 15_000 });
+  const fresh = since(`redact-restored:${testInfo.project.name}`).filter((entry) =>
+    /burrow_wasm_redact_bg/.test(entry.url),
+  );
+  expect(fresh.length, "the run after the restore did not start a fresh worker").toBeGreaterThan(0);
+  release();
+  await page.unroute(engine);
+});
+
 test("after a stopped second run, the earlier link says what it holds", async ({ page }) => {
   await open(page, TWO_LINES, generated);
   await area(page, ...FIRST_LINE);
