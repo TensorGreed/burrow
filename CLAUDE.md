@@ -154,6 +154,10 @@ When a change is more than one of these, it gets the heaviest. DECISIONS.md rule
 2026-10-14) is the source; this replaced "both reviewers for any code that decides what redaction
 removes or keeps" (2026-09-24).
 
+A change described as **behaviour-preserving** shows in its PR description that `outcomes.tsv` and
+the census are unchanged; any difference means it is not, and it is reviewed as the refusal or
+acceptance change it is.
+
 **How many rounds, and what a round may find** (owner, 2026-10-09; DECISIONS.md rule 15). Review is
 bounded, so a small increment does not turn into an open-ended loop:
 
