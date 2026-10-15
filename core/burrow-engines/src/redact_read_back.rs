@@ -145,18 +145,24 @@ pub const MAX_CHARS: usize = 2 * crate::pdfsyntax::geometry::MAX_GLYPHS;
 /// starts, so the page is refused before the load rather than measured after it
 /// (`[second-reading-nesting]`).
 ///
-/// # A sum, and what it counts
+/// # A sound over-estimate, not a model
+///
+/// The count is an over-estimate of the marked-content work PDFium does at the load, built so that
+/// it is never less; it is not a model of PDFium's parser, and does not try to be exact. **Any
+/// undercount found later is a bug in this bound**, to be fixed here, not a property of the input.
 ///
 /// The first version capped the deepest nesting, and review found three ways past it: a form's
 /// unmatched `EMC`s lowered the page's count, a Type 3 glyph procedure was not counted at all,
-/// and a cap on depth says nothing about a form drawn thousands of times, each draw under it. So
-/// it counts work, in three parts, each held by its own test:
+/// and a cap on depth says nothing about a form drawn thousands of times, each draw under it. The
+/// second review found a fourth: Type 3 procedures counted once per stream, where PDFium parses
+/// one per font object and code. So it counts work, in three parts, each held by its own test:
 ///
 /// - **a mark stack per stream**: a form starts at the depth open where it is drawn, its `EMC`s
 ///   cannot close the caller's marks, and the caller's depth is restored after it;
 /// - **every form once per `Do`**, since PDFium parses a form again at each draw;
-/// - **every Type 3 procedure** of every drawn Type 3 font, which PDFium parses at the load and
-///   the walk does not enter -- a superset of the ones it parses.
+/// - **Type 3 procedures, per font object and per distinct code drawn in it**, each charged at the
+///   font's heaviest procedure: PDFium parses a procedure for every font object and code that
+///   draws it, and the walk does not enter one.
 ///
 /// What it does not count: content PDFium does not parse at the load (annotation appearances,
 /// pattern cells and soft-mask groups, which it parses when it renders). Render and previews

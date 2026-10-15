@@ -2279,38 +2279,94 @@ mod second_reading {
         );
     }
 
+    /// A Type 3 font as object `at`, whose codes `first..first + codes` are the names `/g0..`,
+    /// each glyph 1000 units wide, with `/CharProcs` the given dictionary (direct or a reference).
+    fn type_three_font(first: usize, codes: usize, char_procs: &str) -> String {
+        let names: String = (0..codes).map(|i| format!("/g{i} ")).collect();
+        let widths = "1000 ".repeat(codes);
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+             /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs {char_procs} \
+             /Encoding << /Type /Encoding /Differences [{first} {names}] >> \
+             /FirstChar {first} /LastChar {} /Widths [{widths}] >>",
+            first + codes - 1
+        )
+    }
+
+    /// Visible Type 3 text outside the region: font `/T{font}` at 1 pt, showing `codes` codes from 1.
+    fn shows(font: usize, codes: usize) -> String {
+        let hex: String = (1..=codes).map(|code| format!("{code:02X}")).collect();
+        format!("BT /T{font} 1 Tf 300 {} Td <{hex}> Tj ET\n", 300 + font)
+    }
+
     #[test]
-    fn every_type_three_procedure_of_a_drawn_font_is_counted() {
+    fn type_three_procedures_are_counted_for_every_code_drawn() {
         // TYPE 3 PROCEDURES. PDFium parses a Type 3 glyph's procedure when it loads the page, and
-        // the walk never enters one. A font of `procedures` procedures, each nested 150 deep --
-        // about 22,500 apiece -- and one of its glyphs drawn, outside the region, beside the
+        // the walk never enters one. One font with `codes` codes, each its own procedure nested
+        // 150 deep -- about 22,500 apiece -- every code drawn, outside the region, beside the
         // plain page's text.
-        fn font(procedures: usize) -> Vec<String> {
-            let names: String = (0..procedures)
+        let run = |codes: usize| {
+            let procs: String = (0..codes)
                 .map(|i| format!("/g{i} {} 0 R ", 8 + i))
                 .collect();
-            let mut objects = vec![format!(
-                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
-                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {names}>> \
-                 /Encoding << /Type /Encoding /Differences [97 /g0] >> \
-                 /FirstChar 97 /LastChar 97 /Widths [1000] >>"
-            )];
-            for _ in 0..procedures {
+            let mut objects = vec![type_three_font(1, codes, &format!("<< {procs}>>"))];
+            for _ in 0..codes {
                 objects.push(stream("", &format!("1000 0 d0\n{}", wrapped_in(150, ""))));
             }
-            objects
-        }
-        let page = format!("{PLAIN}BT /T3 12 Tf 300 300 Td (a) Tj ET\n");
-        let run = |procedures: usize| redact_with(&page, "/T3 7 0 R ", "", &font(procedures));
-        assert_eq!(
-            run(10),
-            ("Ok".to_owned(), 1),
-            "10 procedures, about 225,000"
-        );
+            redact_with(
+                &format!("{PLAIN}{}", shows(0, codes)),
+                "/T0 7 0 R ",
+                "",
+                &objects,
+            )
+        };
+        assert_eq!(run(10), ("Ok".to_owned(), 1), "10 codes, about 225,000");
         assert_eq!(
             run(60),
             ("second-reading-nesting".to_owned(), 0),
-            "60 procedures, about 1,350,000, must each be counted"
+            "60 codes, about 1,350,000, must each be counted"
+        );
+    }
+
+    #[test]
+    fn a_procedure_shared_by_codes_and_fonts_is_counted_for_each_of_them() {
+        // ONE PROCEDURE, MANY PARSES. PDFium keeps a Type 3 font's glyphs per font object and code,
+        // so a procedure named under 255 codes, in each of 8 font objects sharing one `/CharProcs`
+        // dictionary, is parsed 2,040 times at the load. Counted once per stream it read as one
+        // procedure -- under the ceiling -- and the uninterruptible load ran for seconds (#206's
+        // second review). The procedure is nested 600 deep, about 360,000: one parse is under the
+        // ceiling, 2,040 are far past it.
+        let procedure = stream("", &format!("1 0 d0\n{}", wrapped_in(600, "")));
+        let run = |fonts: usize, codes: usize| {
+            // Object 7 the shared `/CharProcs`, 8 the procedure, 9.. the fonts.
+            let names: String = (0..codes).map(|i| format!("/g{i} 8 0 R ")).collect();
+            let mut objects = vec![format!("<< {names}>>"), procedure.clone()];
+            let mut resources = String::new();
+            let mut page = PLAIN.to_owned();
+            for font in 0..fonts {
+                objects.push(type_three_font(1, codes, "7 0 R"));
+                resources.push_str(&format!("/T{font} {} 0 R ", 9 + font));
+                page.push_str(&shows(font, codes));
+            }
+            let started = std::time::Instant::now();
+            let outcome = redact_with(&page, &resources, "", &objects);
+            (outcome, started.elapsed())
+        };
+        // THE TWIN: one font, one code, one parse -- read and redacted.
+        let (twin, _) = run(1, 1);
+        assert_eq!(twin, ("Ok".to_owned(), 1), "one font drawing one code");
+        // PAST IT: refused before PDFium loads the page, and so in milliseconds, not the seconds
+        // the load itself takes.
+        let (past, took) = run(8, 255);
+        assert_eq!(
+            past,
+            ("second-reading-nesting".to_owned(), 0),
+            "8 fonts x 255 codes of one procedure must be counted 2,040 times"
+        );
+        println!("refused in {took:?}");
+        assert!(
+            took < std::time::Duration::from_millis(1_500),
+            "the refusal must come before the page load: it took {took:?}"
         );
     }
 

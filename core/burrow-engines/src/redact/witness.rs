@@ -149,12 +149,15 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         let watch = self.watch(read);
         let (glyphs, walked) =
             crate::pdfsyntax::geometry::glyphs_and_marked_work_in(&content, &resources, &watch)?;
-        // AND THE TYPE 3 PROCEDURES the drawn glyphs' fonts carry, which PDFium parses at the load
-        // and the walk never enters (#206's review).
-        let drawn: BTreeSet<ScopedFont> = glyphs
-            .iter()
-            .map(|glyph| glyph.source.font.clone())
-            .collect();
+        // AND THE TYPE 3 PROCEDURES PDFium parses at the load, once per font object and code drawn,
+        // which the walk never enters (#206's reviews).
+        let mut drawn: BTreeMap<ScopedFont, BTreeSet<u32>> = BTreeMap::new();
+        for glyph in &glyphs {
+            drawn
+                .entry(glyph.source.font.clone())
+                .or_default()
+                .insert(glyph.source.code);
+        }
         let procedures = super::steps::type_three_marked_work(&resources, &drawn, &watch)?;
         Ok((glyphs, walked.saturating_add(procedures)))
     }
