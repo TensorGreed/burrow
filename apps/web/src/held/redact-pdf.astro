@@ -1,0 +1,132 @@
+---
+// The redaction tool page, HELD (#136, slice S1).
+//
+// NOT SHIPPED, and not built into a production site. This file lives outside `src/pages/`, so
+// Astro does not route it; `astro.config.mjs` injects `/redact-pdf` only when
+// `BURROW_HARNESS=1`, exactly as it does `/harness`. `src/production-build.test.ts` asserts the
+// route is absent from a production build and present in the harness one, because "we intended
+// not to ship it" is a different claim from "it is not there". It comes off the held list when
+// the ship blockers in `docs/ROADMAP.md` close, deliberately, not because this page exists.
+//
+// THE COPY IS ADR 0029 §7's, and its sentences come from `src/redact-copy.ts` so
+// `src/redact-copy.test.ts` can hold the built page to them: every mark present, "burrow"
+// absent from the visible prose, and none of the forbidden claims made. Write "Not Only PDF",
+// never "burrow" -- the repository is burrow; the product a person is using is not.
+//
+// NO ISLAND YET. The tool arrives in S3; until then the page is static, with a placeholder
+// where it will mount.
+import BaseLayout from "../layouts/BaseLayout.astro";
+import {
+  ALT_TEXT_MARK,
+  ALT_TEXT_UNSEEN_MARK,
+  FONT_SET_MARK,
+  FONT_SHARED_MARK,
+  NOT_CHANGED_MARK,
+  NOT_CHANGED_WHY_MARK,
+  ORIGINAL_MARK,
+  REFUSES_MARK,
+  REMOVED_MARK,
+  SCAN_MARK,
+  VERIFIES_LIMIT_MARK,
+  VERIFIES_MARK,
+  WHERE_TO_LOOK_MARK,
+} from "../redact-copy.js";
+---
+
+<BaseLayout
+  title="Redact PDF — remove text on your own computer | Not Only PDF"
+  description="Remove selected text from a PDF. The redaction happens in your browser and the file is never uploaded, and the page says plainly what it removes and what it does not."
+>
+  <div class="read">
+    <h1>Redact PDF</h1>
+
+    <p>
+      Remove text you select from a PDF. The work happens in this browser, on this computer: the
+      file is not uploaded, because Not Only PDF has no server that could receive it.
+    </p>
+  </div>
+
+  <div id="redact-tool" class="read">
+    <p>The tool is not on this page yet. What it will do, and what it will not, is below.</p>
+  </div>
+
+  {
+    /*
+    OPEN BY DEFAULT, as `/split-pdf`'s is and for the same reason: what is inside is the
+    explanation of what the operation leaves behind, and a disclosure a person has to click to
+    find is weaker than the one ADR 0029 §7 describes.
+  */
+  }
+  <div class="read">
+    <details open>
+      <summary><h2>What is removed, and what is not</h2></summary>
+
+      <p>
+        {REMOVED_MARK} Anything the page itself carried about that text — its thumbnail, its accessibility
+        text, the private notes some editors attach to a page — goes with it.
+      </p>
+
+      <p>
+        <strong>{NOT_CHANGED_MARK}</strong>
+        {NOT_CHANGED_WHY_MARK} — so if the text you removed also appears in the title, in an attached
+        file, or in the properties your editor wrote when it saved, it is still in this file.
+        <strong>{WHERE_TO_LOOK_MARK}</strong> If either holds what you were removing, the fix is in the
+        program you made the document with, not here.
+      </p>
+
+      <p>
+        <strong>{ALT_TEXT_MARK}</strong> A tagged document can carry a written-out version of what a passage
+        says, which a screen reader reads <em>instead of</em> the letters on the page. That version covers
+        the whole passage as one piece of writing, with nothing in it to say which words belong to the
+        part you removed — so Not Only PDF removes the whole thing rather than guessing at a shorter one.
+        A screen reader then falls back to the letters on the page. Usually those are fine. But the reason
+        an author supplies that text in the first place is often that the letters do <strong
+          >not</strong
+        >
+        read correctly on their own — a ligature that is one character in the file and two in the word,
+        or a word broken across two lines — and in those documents the fallback is worse than what was
+        there.
+        <strong>{ALT_TEXT_UNSEEN_MARK}</strong>, and the person it affects is not the person doing
+        the redacting, which is why it is written here rather than left to be discovered.
+      </p>
+
+      <p>
+        <strong>{FONT_SET_MARK}</strong> Not the words, and not the order — the set of characters. Rebuilding
+        a font is a thing Not Only PDF cannot do yet, so this is stated rather than fixed.
+      </p>
+
+      <p>
+        <strong>{FONT_SHARED_MARK}</strong> Not the words, and not where they were — but more than the
+        character set, because the <code>/Widths</code> array and the <code>/ToUnicode</code> map still
+        have an entry per code. Not Only PDF leaves that font untouched on purpose: editing it would change
+        how the text looks on the other pages that use it, which is damage to a page you did not ask about
+        rather than a leak on the one you did.
+      </p>
+
+      <p>
+        {REFUSES_MARK}
+        <strong>And {VERIFIES_MARK}:</strong>
+        {VERIFIES_LIMIT_MARK}.
+      </p>
+
+      <p>
+        <strong>{ORIGINAL_MARK}</strong> Not Only PDF makes a new file and leaves the one you chose as
+        it was, so the original still holds everything you removed. Keep it or delete it as you would
+        any other copy of what you were protecting.
+      </p>
+    </details>
+
+    <details open>
+      <summary><h2>Scanned pages</h2></summary>
+
+      <p>
+        A scanned page is usually one picture of the whole page, so the letters you can see are part
+        of the picture rather than text in the file. If the area you select covers a picture, the
+        page is refused. Taking those letters out would mean darkening the pixels inside the area
+        you chose and saving the picture again, and {SCAN_MARK}. That is a step this tool has still
+        to take, not a line it has drawn — until it does, a scanned page is refused rather than
+        handed back looking redacted.
+      </p>
+    </details>
+  </div>
+</BaseLayout>
