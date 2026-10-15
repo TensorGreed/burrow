@@ -172,6 +172,14 @@ pub struct Found {
     /// its length is bounded by the scan's work budget ([`WORK_FACTOR`] times the input plus
     /// [`WORK_SLACK`]), as [`Found::null_values`]' is.
     pub dictionary_references: Vec<((i32, i32), Holder)>,
+    /// Every empty name (`/` with nothing after it) written as a **key** of an object's own
+    /// top-level dictionary, by the object holding it, where the scan could follow the dictionary
+    /// as qpdf reads it and the byte after the `/` is one the measurement admits. Nothing else
+    /// about an empty key is admitted here: any other empty key is
+    /// [`Irregular::NameReadDifferently`]. **These are not accepted by the scan**: the caller
+    /// refuses every one unless its operation admits that object (split, the catalog's `/Dests`
+    /// dictionary, owner 2026-10-15), so a caller that ignores this field accepts empty keys.
+    pub empty_keys: Vec<Holder>,
 }
 
 /// Where a dictionary value was written: the number of the object holding it (`None` where the
@@ -547,6 +555,147 @@ enum Significant<'a> {
     Other,
 }
 
+/// Where a dictionary is between its keys and values, as qpdf reads it: enough to say whether an
+/// empty name stands as a value, and under which key, or as a key (the Chrome split narrowing,
+/// owner 2026-10-15).
+///
+/// **It fails closed.** Anything this does not follow exactly -- a key that is not a name, three
+/// integers in a row, an `R` without two before it, a value after a dangling integer -- poisons the
+/// dictionary, and no empty name in a poisoned one is admitted. qpdf warns about each of those
+/// shapes, so a document reaching them is refused by its warning in any case.
+#[derive(Debug, Clone, Copy)]
+struct Level<'a> {
+    /// Whether the next token is a key.
+    expect_key: bool,
+    /// The last key, as written after its `/`.
+    key: &'a [u8],
+    /// Integers seen in the current value: two before `R` make a reference.
+    pending: u8,
+    /// Whether the value is a container still open below this one.
+    in_container: bool,
+    /// Whether the dictionary stopped reading as qpdf reads it.
+    poisoned: bool,
+}
+
+impl<'a> Level<'a> {
+    const fn new() -> Self {
+        Self {
+            expect_key: true,
+            key: b"",
+            pending: 0,
+            in_container: false,
+            poisoned: false,
+        }
+    }
+
+    /// The value just ended: the next token is a key.
+    const fn value_done(&mut self) {
+        self.expect_key = true;
+        self.pending = 0;
+        self.in_container = false;
+    }
+
+    /// Advance past one significant token read at this dictionary's level (not a close).
+    fn step(&mut self, token: Token<'a>) {
+        if self.poisoned {
+            return;
+        }
+        if self.expect_key {
+            match token {
+                Token::Name { written, .. } => {
+                    self.key = written;
+                    self.expect_key = false;
+                    self.pending = 0;
+                }
+                _ => self.poisoned = true,
+            }
+            return;
+        }
+        match (token, self.pending) {
+            (Token::Integer(_), 0 | 1) => self.pending += 1,
+            (Token::Word(b"R"), 2) => self.value_done(),
+            (Token::Open(_), 0) => self.in_container = true,
+            // AN INTEGER WAS THE VALUE, and this name is the next key.
+            (Token::Name { written, .. }, 1) => {
+                self.key = written;
+                self.pending = 0;
+            }
+            (Token::Name { .. } | Token::Word(_) | Token::Scalar, 0) => self.value_done(),
+            _ => self.poisoned = true,
+        }
+    }
+
+    /// A container this dictionary holds has closed.
+    const fn container_closed(&mut self) {
+        if self.in_container {
+            self.value_done();
+        } else {
+            self.poisoned = true;
+        }
+    }
+}
+
+/// What an empty name is, by where it stands.
+enum EmptyName {
+    /// A value under `/Dest`, followed by white space the measurement admits: read alike.
+    Value,
+    /// A key of the top-level dictionary of the object numbered here: recorded for the caller.
+    TopLevelKey(i32),
+    /// Anything else, and every name that is not empty: refused.
+    Refused,
+}
+
+/// The parent keys under which an empty-name value is admitted (owner, 2026-10-15): an allowlist,
+/// so a key not on it refuses. `Dest` as written, so an escaped spelling of it refuses too.
+const EMPTY_VALUE_PARENTS: [&[u8]; 1] = [b"Dest"];
+
+/// Where an empty name stands, for a name [`name_reads_alike`] refused (owner, 2026-10-15).
+///
+/// The empty name was measured in a dictionary, as a key and as a value, before every follower;
+/// the details are in the private measurement. Admitted, and nothing else: a **value** under a key
+/// in [`EMPTY_VALUE_PARENTS`], followed by CR, FF, LF, NUL, space or tab; and, recorded for the
+/// caller to rule on, a **key** of an object's own top-level dictionary followed by a byte measured
+/// to end the name in the same place. A name that is not empty, an empty name in an array or
+/// outside any container, in a dictionary this cannot follow, or under any other key, refuses.
+fn empty_name_position(
+    written: &[u8],
+    next: Option<u8>,
+    level: Option<&Option<Level<'_>>>,
+    depth: usize,
+    holder: Option<i32>,
+) -> EmptyName {
+    if !written.is_empty() {
+        return EmptyName::Refused;
+    }
+    let Some(Some(level)) = level else {
+        return EmptyName::Refused;
+    };
+    if level.poisoned {
+        return EmptyName::Refused;
+    }
+    let value_follower = matches!(next, Some(b'\r' | 0x0c | b'\n' | 0 | b' ' | b'\t'));
+    let key_follower = matches!(
+        next,
+        Some(b'\r' | 0x0c | b'[' | b'\n' | b'(' | b'<' | 0 | b'%' | b'/' | b' ' | b'\t')
+    );
+    if !level.expect_key
+        && level.pending == 0
+        && !level.in_container
+        && value_follower
+        && EMPTY_VALUE_PARENTS.contains(&level.key)
+    {
+        return EmptyName::Value;
+    }
+    if level.expect_key
+        && depth == 1
+        && key_follower
+        && let Some(object) = holder
+    {
+        return EmptyName::TopLevelKey(object);
+    }
+    EmptyName::Refused
+}
+
 impl<'c> Scan<'c> {
     fn new(length: usize, checkpoint: &'c mut dyn FnMut() -> Result<()>) -> Self {
         Self {
@@ -582,6 +731,10 @@ impl<'c> Scan<'c> {
         // THE INNERMOST CONTAINER, as a capped stack: no recursion. Only where the bytes are judged
         // as written; qpdf's rewriting holds no nulls in dictionaries.
         let mut containers: Vec<Container> = Vec::new();
+        // THE DICTIONARIES' KEY AND VALUE POSITIONS, one entry per container on `containers`
+        // (`None` for an array), so that an empty name can be judged by where it stands. Kept
+        // only where the bytes are judged as written.
+        let mut levels: Vec<Option<Level<'_>>> = Vec::new();
         // The two significant tokens before this one, the newer first, and whether a comment
         // came between each and the one after it.
         let mut newer: Option<(Significant<'_>, bool)> = None;
@@ -604,9 +757,24 @@ impl<'c> Scan<'c> {
             }
             // A NAME PDFIUM MAY READ APART from qpdf, wherever it is: a key, a value, or the token
             // after a value, which qpdf reads too.
-            if self.judge_names && token == (Token::Name { alike: false }) {
-                self.found.irregular = Some(Irregular::NameReadDifferently);
-                return Ok(end(false, 0, false));
+            if self.judge_names
+                && let Token::Name {
+                    written,
+                    alike: false,
+                    next,
+                } = token
+            {
+                match empty_name_position(written, next, levels.last(), containers.len(), holder) {
+                    EmptyName::Value => {}
+                    EmptyName::TopLevelKey(object) => self.found.empty_keys.push(Holder {
+                        object: Some(object),
+                        direct: true,
+                    }),
+                    EmptyName::Refused => {
+                        self.found.irregular = Some(Irregular::NameReadDifferently);
+                        return Ok(end(false, 0, false));
+                    }
+                }
             }
             if self.judge_names && lexer.vertical_tab {
                 self.found.irregular = Some(Irregular::SyntaxReadDifferently);
@@ -683,6 +851,12 @@ impl<'c> Scan<'c> {
             older = newer;
             newer = Some((significant, comment_since_newer));
             comment_since_newer = false;
+            if self.judge_names
+                && let Some(Some(level)) = levels.last_mut()
+                && !matches!(token, Token::Close(_))
+            {
+                level.step(token);
+            }
             match token {
                 Token::Open(kind) => {
                     depth = depth.saturating_add(1);
@@ -692,6 +866,7 @@ impl<'c> Scan<'c> {
                             return Ok(end(false, 0, false));
                         }
                         containers.push(kind);
+                        levels.push((kind == Container::Dictionary).then(Level::new));
                     }
                 }
                 Token::Close(_) => {
@@ -700,6 +875,11 @@ impl<'c> Scan<'c> {
                     // A CLOSE OF THE OTHER KIND is input qpdf warns about, and the warning refuses;
                     // the stack follows the reader's nesting regardless.
                     containers.pop();
+                    levels.pop();
+                    // THE CONTAINER JUST CLOSED was its parent's value, or a key no reader takes.
+                    if let Some(Some(parent)) = levels.last_mut() {
+                        parent.container_closed();
+                    }
                 }
                 Token::Integer(_) if depth == 0 => {
                     integers_outside += 1;
@@ -852,8 +1032,15 @@ enum Token<'a> {
     Word(&'a [u8]),
     /// `%` to the end of the line.
     Comment,
-    /// A name, and whether [`name_reads_alike`] accepts it.
-    Name { alike: bool },
+    /// A name, as written after its `/`, and whether [`name_reads_alike`] accepts it.
+    Name {
+        /// The bytes after the `/`, as qpdf's tokeniser ends the name.
+        written: &'a [u8],
+        /// Whether [`name_reads_alike`] accepts it.
+        alike: bool,
+        /// The byte after the name, if any.
+        next: Option<u8>,
+    },
     /// A string, a hex string, or a delimiter qpdf would warn about.
     Scalar,
 }
@@ -925,7 +1112,9 @@ impl<'a> Lexer<'a> {
                 self.regular_run();
                 let name = self.bytes.get(start..self.at).unwrap_or_default();
                 Token::Name {
+                    written: name,
                     alike: name_reads_alike(name, self.peek()),
+                    next: self.peek(),
                 }
             }
             b')' | b'>' | b'{' | b'}' => Token::Scalar,
@@ -1016,8 +1205,11 @@ pub const MAX_NAME_WRITTEN: usize = 255;
 /// - a byte that is not white space, a delimiter, `#`, 0x80 or 0xFF: the 236 measured alike;
 /// - `#` and two hex digits in one case, other than `#00`: the 411 escapes measured alike.
 ///   Mixed case (`#aF`) was not measured and refuses;
-/// - one byte at least, and at most [`MAX_NAME_WRITTEN`] as written. The empty name was not
-///   measured and refuses.
+/// - one byte at least, and at most [`MAX_NAME_WRITTEN`] as written. The empty name (`/` with
+///   nothing after it) refuses here; it was measured since (2026-10-15), the details are in the
+///   private measurement, and it is admitted only in the positions the scan's
+///   `empty_name_position` names -- as a `/Dest` value before white space, and, for the caller to
+///   rule on, as a key of an object's own dictionary.
 ///
 /// A name followed by a vertical tab refuses too. Which reader reads each refused shape how is in
 /// the private measurement, not here. **The edges, measured since** (2026-10-14): as a name's first
@@ -1201,6 +1393,147 @@ mod tests {
 
     /// The scan reports it, in a file's object, in an object stream's member and after a value,
     /// and does not judge a string's bytes.
+    /// `body` as object 1, the scan's verdict on its names: `Ok(empty keys recorded)` or the
+    /// irregularity.
+    fn names(body: &[u8]) -> core::result::Result<Vec<super::Holder>, Irregular> {
+        let mut bytes = b"1 0 obj\n".to_vec();
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(b"\nendobj\n");
+        let found = file(&bytes);
+        found.irregular.map_or(Ok(found.empty_keys), Err)
+    }
+
+    const TOP: super::Holder = super::Holder {
+        object: Some(1),
+        direct: true,
+    };
+
+    /// THE EMPTY NAME AS A VALUE (owner, 2026-10-15): under `/Dest`, before the six white-space
+    /// bytes measured, and nowhere else.
+    #[test]
+    fn an_empty_name_is_admitted_as_a_dest_value_before_white_space_only() {
+        for follower in [b'\r', 0x0c, b'\n', 0, b' ', b'\t'] {
+            for after in [b">>".as_slice(), b"/Rotate 90 >>"] {
+                let mut body = b"<< /Type /Annot /Dest /".to_vec();
+                body.push(follower);
+                body.extend_from_slice(after);
+                assert_eq!(names(&body), Ok(Vec::new()), "follower {follower:#04x}");
+            }
+        }
+        // THE TWINS: a follower the measurement did not admit, under the same key.
+        for body in [
+            b"<< /Dest /\x0b>>".as_slice(),
+            b"<< /Dest />>",
+            b"<< /Dest /] >>",
+            b"<< /Dest /% x\n>>",
+            b"<< /Dest //A >>",
+            b"<< /Dest /(x) >>",
+        ] {
+            assert!(names(body).is_err(), "{}", String::from_utf8_lossy(body));
+        }
+    }
+
+    /// AN ALLOWLIST OF PARENT KEYS, so a key whose value means something refuses.
+    #[test]
+    fn an_empty_value_under_any_other_key_refuses() {
+        for key in [
+            "K", "Subtype", "S", "Type", "BaseFont", "Filter", "AS", "D#65st", "Dests",
+        ] {
+            let body = format!("<< /{key} / >>");
+            assert_eq!(
+                names(body.as_bytes()),
+                Err(Irregular::NameReadDifferently),
+                "{body}"
+            );
+        }
+        assert_eq!(names(b"<< /Dest / >>"), Ok(Vec::new()), "the twin");
+    }
+
+    /// WHERE THE VALUE IS, followed exactly: after a reference, after an integer value, and after a
+    /// name value that is `Dest`.
+    #[test]
+    fn the_scan_follows_keys_and_values_to_place_an_empty_name() {
+        assert_eq!(names(b"<< /P 3 0 R /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /P 3 /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(
+            names(b"<< /P 3 0 /Dest / >>"),
+            Err(Irregular::NameReadDifferently),
+            "two integers and no R: the dictionary is not followed"
+        );
+        assert_eq!(names(b"<< /S /Dest /Dest / >>"), Ok(Vec::new()));
+        // `/Dest` AS A VALUE: the empty name after it is a key, recorded and not admitted here.
+        assert_eq!(names(b"<< /S /Dest / 1 >>"), Ok(vec![TOP]));
+        assert_eq!(names(b"<< /A [1 2] /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /A << /B 1 >> /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(
+            names(b"<< /A << /B 1 >> 7 /Dest / >>"),
+            Err(Irregular::NameReadDifferently),
+            "an integer where a key belongs"
+        );
+    }
+
+    /// IN AN ARRAY, OUTSIDE ANY CONTAINER, OR AS A KEY BELOW THE TOP LEVEL: refused.
+    #[test]
+    fn an_empty_name_anywhere_else_refuses() {
+        for body in [
+            b"<< /K [/ ] >>".as_slice(),
+            b"<< /K [/Dest / ] >>",
+            b"[/ ]",
+            b"/ ",
+            b"<< /A << / 1 >> >>",
+            b"<< /A [<< / 1 >>] >>",
+        ] {
+            assert_eq!(
+                names(body),
+                Err(Irregular::NameReadDifferently),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        // A TRAILER has no holder, so its empty key is never one the caller could admit.
+        let found = file(b"trailer\n<< / 1 >>\n");
+        assert_eq!(found.irregular, Some(Irregular::NameReadDifferently));
+    }
+
+    /// AN EMPTY KEY OF AN OBJECT'S OWN DICTIONARY is recorded, with its holder, for the caller --
+    /// before the followers the measurement found end the name alike, and no others.
+    #[test]
+    fn an_empty_top_level_key_is_recorded_not_admitted() {
+        for body in [
+            b"<< / [3 0 R /XYZ 0 690 0] >>".as_slice(),
+            b"<< /[1] >>",
+            b"<< /\n1 >>",
+            b"<< //X >>",
+        ] {
+            assert_eq!(
+                names(body),
+                Ok(vec![TOP]),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        for body in [
+            b"<< /] >>".as_slice(),
+            b"<< /> >>",
+            b"<< /{ >>",
+            b"<< /) >>",
+        ] {
+            assert!(names(body).is_err(), "{}", String::from_utf8_lossy(body));
+        }
+        // IN AN OBJECT STREAM, the member's number is the holder.
+        let found = object_stream(b"5 0 << / 1 >>", 1, 4);
+        assert_eq!(found.irregular, None);
+        assert_eq!(
+            found.empty_keys,
+            vec![super::Holder {
+                object: Some(5),
+                direct: true
+            }]
+        );
+        let found = object_stream(b"5 0 << /Dest / >>", 1, 4);
+        assert_eq!((found.irregular, found.empty_keys), (None, Vec::new()));
+    }
+
     #[test]
     fn the_scan_reports_a_name_outside_the_allowlist_and_ignores_strings() {
         let bad = b"1 0 obj\n<< /Ke\x80y 1 >>\nendobj\n";

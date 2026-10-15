@@ -83,6 +83,7 @@ const FIRST: Name = Name::literal(b"/First\0");
 
 /// The trailer's catalog.
 const ROOT: Name = Name::literal(b"/Root\0");
+const DESTS: Name = Name::literal(b"/Dests\0");
 
 /// How many lookups run between two reads of the deadline.
 const LOOKUPS_PER_CHECKPOINT: usize = 256;
@@ -113,6 +114,10 @@ pub(crate) struct ReferenceRefusals {
     /// than refusing in this pass: redaction's, so that the refusals its evasion fixtures pin
     /// still name themselves first.
     pub(crate) defer_null_value: bool,
+    /// Whether an empty name written as a key of the catalog's `/Dests` dictionary is admitted:
+    /// split's, because no part receives the source catalog (owner, 2026-10-15). Every other empty
+    /// key refuses as [`Self::name`], and every empty key refuses where this is `false`.
+    pub(crate) admit_dests_empty_key: bool,
 }
 
 /// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
@@ -124,6 +129,9 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     syntax: syntax_read_differently,
     null_value: Some(null_value),
     defer_null_value: true,
+    // REDACTION KEEPS THE CATALOG, so an empty key there is one the readers do not resolve alike
+    // in the document it hands back.
+    admit_dests_empty_key: false,
 };
 
 /// What an irregular reference was, for any operation's refusal of it. `operation` names who
@@ -257,6 +265,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
     // references so the object streams' merge below does not need to know about them.
     let mut null_holders = core::mem::take(&mut wanted.null_values);
     let mut dictionary_references = core::mem::take(&mut wanted.dictionary_references);
+    let mut empty_keys = core::mem::take(&mut wanted.empty_keys);
     // The numbers object streams list as members: no header in the file speaks for them. Capped
     // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
     // (ADR 0007), and every stream's decoded bytes are already held while it is read.
@@ -303,6 +312,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         listed.extend(members.members);
         null_holders.extend(members.null_values);
         dictionary_references.extend(members.dictionary_references);
+        empty_keys.extend(members.empty_keys);
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
             return Err((refusals.unreadable)(Irregular::BeyondCaps));
         }
@@ -352,6 +362,21 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
             && object.object()? == (*number, *generation);
         if nothing && !declared {
             return Err((refusals.nothing)());
+        }
+    }
+    // EVERY EMPTY KEY REFUSES, unless the operation admits the catalog's `/Dests` dictionary and
+    // that is the object holding it.
+    if !empty_keys.is_empty() {
+        let dests = if refusals.admit_dests_empty_key {
+            catalog_dests(document, &wanted, &listings)?
+        } else {
+            None
+        };
+        if empty_keys
+            .iter()
+            .any(|holder| !holder.direct || dests.is_none() || holder.object != dests)
+        {
+            return Err((refusals.name)());
         }
     }
     let mut drops_a_null = false;
@@ -428,6 +453,41 @@ fn null_value_found<D: PdfDocument>(
                 && !listed.contains(number)
         });
     Ok(literal || declared)
+}
+
+/// The number of the catalog's `/Dests` dictionary, when it is an indirect object written exactly
+/// once, as the null-value exemption reads the catalog: the `/Root` qpdf resolves from the trailer,
+/// and its `/Dests` value. `None` for anything else -- no catalog, a direct `/Dests`, one written
+/// twice or never -- so no empty key is admitted then.
+fn catalog_dests<D: PdfDocument>(
+    document: &D,
+    wanted: &Found,
+    listings: &[c_int],
+) -> Result<Option<c_int>> {
+    let trailer = document.trailer()?;
+    let root = trailer.key(&ROOT);
+    let mut found = None;
+    if root.type_code() == object_type::DICTIONARY {
+        let dests = root.key(&DESTS);
+        if dests.type_code() == object_type::DICTIONARY {
+            let (number, generation) = dests.object()?;
+            let headed = wanted.declarations.get(&number);
+            let headers = headed.map_or(0, |declared| declared.headers);
+            let listed_times = listings.iter().filter(|listed| **listed == number).count();
+            let once = match (headers, listed_times) {
+                (1, 0) => headed.is_some_and(|declared| declared.generations.contains(&generation)),
+                (0, 1) => true,
+                _ => false,
+            };
+            if number > 0 && once {
+                found = Some(number);
+            }
+        }
+        dests.drained()?;
+    }
+    root.drained()?;
+    trailer.drained()?;
+    Ok(found)
 }
 
 /// The scan's answer, or the refusal it calls for.

@@ -1000,6 +1000,33 @@ fn a_name_inside_the_measured_allowlist_redacts() {
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse (#329; `name_reads_alike`): neither was
 /// measured, and until now only the unit test pinned them. In a page dictionary, benign. The twins
 /// redact: a one-byte name, and the same escape in one case.
+/// REDACTION KEEPS THE CATALOG, so the empty `/Dests` key split admits is refused here, on both
+/// engines (owner, 2026-10-15); the empty `/Dest` value is admitted on both.
+#[test]
+fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_admits_the_dest_value() {
+    let mut objects = page_objects("");
+    objects[0].2 = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>".to_owned();
+    objects.push((6, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned()));
+    refused_on_both(
+        &classic(&objects),
+        "name-read-differently",
+        "an empty /Dests key",
+    );
+    // THE TWIN: the same /Dests with a named key redacts.
+    let mut named = page_objects("");
+    named[0].2 = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>".to_owned();
+    named.push((6, 0, "<< /A [3 0 R /XYZ 0 400 0] >>".to_owned()));
+    redacts_on_both(&classic(&named), "a named /Dests key");
+    // THE VALUE, in a link annotation outside the region.
+    let mut link = page_objects("");
+    link.push((
+        6,
+        0,
+        "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /\n/F 4 >>".to_owned(),
+    ));
+    redacts_on_both(&classic(&link), "/Dest / in a link");
+}
+
 #[test]
 fn the_empty_name_and_a_mixed_case_escape_are_refused() {
     for (what, extra, twin) in [

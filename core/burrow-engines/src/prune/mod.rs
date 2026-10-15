@@ -649,6 +649,9 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         syntax: split_syntax_read_differently,
         null_value: Some(split_null_value),
         defer_null_value: false,
+        // NO PART RECEIVES THE SOURCE CATALOG, so its `/Dests` dictionary's empty key never reaches
+        // one (owner, 2026-10-15).
+        admit_dests_empty_key: true,
     };
 
 fn split_reference_to_nothing() -> Error {
