@@ -27,6 +27,8 @@ import {
   REFUSES_MARK,
   REMOVED_MARK,
   SCAN_MARK,
+  SCAN_NOT_A_LINE_MARK,
+  SCAN_REFUSED_MARK,
   VERIFIES_LIMIT_MARK,
   VERIFIES_MARK,
   WHERE_TO_LOOK_MARK,
@@ -121,11 +123,10 @@ import {
 
       <p>
         A scanned page is usually one picture of the whole page, so the letters you can see are part
-        of the picture rather than text in the file. If the area you select covers a picture, the
-        page is refused. Taking those letters out would mean darkening the pixels inside the area
-        you chose and saving the picture again, and {SCAN_MARK}. That is a step this tool has still
-        to take, not a line it has drawn — until it does, a scanned page is refused rather than
-        handed back looking redacted.
+        of the picture rather than text in the file. {SCAN_REFUSED_MARK} Taking those letters out would
+        mean darkening the pixels inside the area you chose and saving the picture again, and
+        {SCAN_MARK}. {SCAN_NOT_A_LINE_MARK} — until it does, a scanned page is refused rather than handed
+        back looking redacted.
       </p>
     </details>
   </div>

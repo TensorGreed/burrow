@@ -17,12 +17,14 @@
  *
  * # Wording
  *
- * The §7 marks are verbatim from ADR 0029 §7, which says "Not Only PDF" and never "burrow"
- * because it is written the way it will be served. Two marks are not in §7's quoted block and
- * were written for this page in its voice: the original file is unchanged (`ORIGINAL_MARK`),
- * and the scanned-page paragraph (`SCAN_MARK`), which ADR 0029's *Image re-encoding* section
- * requires to say why in a way that does not read as permanent and does not imply OCR -- the
- * block is writing an edited picture back, not recognising text in it.
+ * The §7 marks (`SECTION_7_MARKS`) are verbatim from ADR 0029 §7, which says "Not Only PDF" and
+ * never "burrow" because it is written the way it will be served; `redact-copy.test.ts` reads §7
+ * out of the ADR and checks each one is in it, so the module cannot drift from the decision. Four
+ * marks are not in §7's quoted block and were written for this page in its voice
+ * (`PAGE_MARKS`): the original file is unchanged, and the scanned-page paragraph's three
+ * sentences, which ADR 0029's *Image re-encoding* section requires to say why in a way that does
+ * not read as permanent and does not imply OCR -- the block is writing an edited picture back,
+ * not recognising text in it.
  *
  * # The page is held
  *
@@ -88,8 +90,20 @@ export const ORIGINAL_MARK = "The file you chose is not changed.";
  */
 export const SCAN_MARK = "Not Only PDF cannot write an edited picture back into the file yet";
 
-/** Every mark the built page must carry. The count is the measurement. */
-export const REDACT_MARKS = [
+/**
+ * Written for this page: the refusal a person acts on. `[image-in-region]` refuses any
+ * intersection, clipping ignored, and a refusal returns no file at all -- so "touches any part"
+ * and "the document", not "covers" and "the page".
+ */
+export const SCAN_REFUSED_MARK =
+  "If the area you select touches any part of a picture, Not Only PDF refuses the document.";
+
+/** Written for this page: that the scan refusal is a step still to take, not a policy. */
+export const SCAN_NOT_A_LINE_MARK =
+  "That is a step this tool has still to take, not a line it has drawn";
+
+/** The marks quoted verbatim from ADR 0029 §7; the test checks each against the ADR. */
+export const SECTION_7_MARKS = [
   REMOVED_MARK,
   NOT_CHANGED_MARK,
   NOT_CHANGED_WHY_MARK,
@@ -101,9 +115,18 @@ export const REDACT_MARKS = [
   REFUSES_MARK,
   VERIFIES_MARK,
   VERIFIES_LIMIT_MARK,
+] as const;
+
+/** The marks written for this page, which §7 does not supply. */
+export const PAGE_MARKS = [
   ORIGINAL_MARK,
   SCAN_MARK,
+  SCAN_REFUSED_MARK,
+  SCAN_NOT_A_LINE_MARK,
 ] as const;
+
+/** Every mark the built page must carry. The count is the measurement. */
+export const REDACT_MARKS = [...SECTION_7_MARKS, ...PAGE_MARKS] as const;
 
 /**
  * Claims the page must never make, each with a fixture it must catch and a near miss it must
@@ -113,6 +136,11 @@ export const REDACT_MARKS = [
  * ADR 0029 §6 says what verification does not establish: that the secret is gone, that the
  * region is blank, that pictures and shapes were redacted, that metadata was touched. A page
  * saying any of those is overclaiming in the one place an overclaim leaks a secret.
+ *
+ * WHAT THIS LIST IS NOT: a judge of meaning. Each rule catches the common wordings of one claim,
+ * and its fixtures say which; a sentence that makes the claim in words none of them anticipated
+ * passes. It stops the easy overclaim from landing unnoticed in an edit, and it does not stand in
+ * for reading the page against §6 and §7 when the copy changes.
  */
 export const FORBIDDEN_CLAIMS: readonly {
   name: string;
@@ -152,13 +180,14 @@ export const FORBIDDEN_CLAIMS: readonly {
   },
   {
     name: "irreversible",
-    pattern: /\b(irreversibl[ey]|unrecoverable|irrecoverabl[ey]|cannot be recovered)\b/i,
+    pattern:
+      /\b(irreversibl[ey]|unrecoverable|irrecoverabl[ey]|can(not|'t| never) be (recovered|restored|undone))\b|\bnothing\b[^.]*\bcan be (recovered|restored)\b/i,
     caught: "The removal is irreversible.",
     nearMiss: "The removal is verified.",
   },
   {
     name: "gone for good",
-    pattern: /\b(gone for good|forever)\b/i,
+    pattern: /\b(for good|forever)\b/i,
     caught: "Your secret is gone for good.",
     nearMiss: "The alternative text is gone.",
   },
@@ -183,7 +212,7 @@ export const FORBIDDEN_CLAIMS: readonly {
   {
     name: "pictures or shapes are redacted",
     pattern:
-      /\b(images?|pictures?|photos?|shapes?|graphics|drawings?) (are|is|get|gets) (also )?(redacted|removed|blacked out)\b|\bredacts? (images|pictures|photos|shapes|graphics)\b/i,
+      /\b(images?|pictures?|photos?|shapes?|graphics|drawings?)(\s+[\w']+){0,4}?\s+(are|is|get|gets) (also )?(redacted|removed|blacked out)\b|\bredacts? (images|pictures|photos|shapes|graphics)\b/i,
     caught: "Pictures are redacted too.",
     nearMiss: "It cannot read a secret drawn as a picture.",
   },
@@ -193,6 +222,12 @@ export const FORBIDDEN_CLAIMS: readonly {
       /\b(scrub|sanitis|sanitiz)|\bmetadata (is|are|gets) (also )?(removed|stripped|cleaned|cleared|wiped)\b|\b(removes?|strips?|cleans?|clears?|wipes?) (all |the |its )*metadata\b/i,
     caught: "It also strips the metadata.",
     nearMiss: "The document's own XMP metadata is not changed.",
+  },
+  {
+    name: "safe to share",
+    pattern: /\bsafe to (share|send|publish|post)\b/i,
+    caught: "Your file is now safe to share.",
+    nearMiss: "Share it once you have checked the properties.",
   },
   {
     name: "text recognition",
