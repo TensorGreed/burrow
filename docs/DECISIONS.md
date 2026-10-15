@@ -168,6 +168,16 @@ one is decided in an issue, with the same three parts.
     refusal rate is the launch metric; and the final spec-review round itself, which hunts the
     whole class by design.
 
+18. **A release that closes a live leak may re-record and raise its size budgets to their policy
+    minimums without asking, while the base module's real growth in that PR is under 10%.** The
+    lines move to exactly `ceil(measured x (1 + policy))`, each with a reason naming the PRs that
+    grew it, and the batch summary reports every line's before and after numbers. Growth of 10% or
+    more in the base module, or any change to a policy or to a hard limit, still stops for the
+    owner. *Decided:* owner, 2026-10-14, approving the null-value slice's raise (base 91,307 ->
+    97,962, redaction 262,708 -> 271,294, total 538,617 -> 544,473). *Does not cover:* a release
+    that closes no live leak, which keeps the size-budget rule as it was (growth inside a budget is
+    re-recorded with a reason; a budget change is the owner's); and the headroom policy itself.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new acceptance rule from here (rule 17): **before writing code**, give the
