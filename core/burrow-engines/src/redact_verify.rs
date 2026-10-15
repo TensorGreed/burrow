@@ -194,6 +194,21 @@ pub trait ClearedWitness {
     /// a document burrow wrote and cannot walk is one it should not hand back.
     fn glyphs_on(&self, read: &Self::Read, page: usize) -> Result<Vec<Glyph>>;
 
+    /// As [`Self::glyphs_on`], with the marked-content work of loading `page`: the same walk's
+    /// (`pdfsyntax::geometry::glyphs_and_marked_work_in`, every form once per draw) plus every
+    /// Type 3 glyph procedure the drawn fonts carry. The second reading refuses above a ceiling
+    /// before PDFium loads the page (#206). Required rather than defaulted to zero: a witness that
+    /// reported no work would switch the ceiling off.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::glyphs_on`].
+    fn glyphs_and_marked_work_on(
+        &self,
+        read: &Self::Read,
+        page: usize,
+    ) -> Result<(Vec<Glyph>, u64)>;
+
     /// How many codes the fonts `cut` names still **map** -- in `/ToUnicode` or `/Differences` --
     /// that `drawn` says they no longer draw.
     ///
@@ -249,6 +264,37 @@ pub fn region_is_cleared<W: ClearedWitness>(
     bytes: &[u8],
     expected: &Cleared,
 ) -> Result<()> {
+    region_is_cleared_reporting(witness, bytes, expected).map(|_| ())
+}
+
+/// What the read-back walked, for the second reading to be held against (#206).
+///
+/// Both numbers are burrow's own reading of the OUTPUT: the frame the region was converted with,
+/// and how many glyphs the walk placed on the page. [`crate::redact_read_back`] takes the frame
+/// rather than asking PDFium for one, so the region it tests PDFium's characters against is the
+/// region this check tested burrow's glyphs against; it checks PDFium's page size against it
+/// separately.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Walked {
+    /// The output page's frame, as the walk read it.
+    pub frame: PageFrame,
+    /// How many glyphs the walk placed on the output page, in the region or not.
+    pub glyphs: usize,
+    /// The marked-content work of loading the output page, as
+    /// [`ClearedWitness::glyphs_and_marked_work_on`] counts it.
+    pub marked_work: u64,
+}
+
+/// As [`region_is_cleared`], returning what the walk read so a second reading can be held to it.
+///
+/// # Errors
+///
+/// As [`region_is_cleared`].
+pub fn region_is_cleared_reporting<W: ClearedWitness>(
+    witness: &W,
+    bytes: &[u8],
+    expected: &Cleared,
+) -> Result<Walked> {
     // A FRESH ENGINE. The handle that produced the bytes holds a page tree it built and then
     // edited, and an engine in a bad state agrees with itself.
     let fresh = witness.fresh();
@@ -257,12 +303,14 @@ pub fn region_is_cleared<W: ClearedWitness>(
         .map_err(|error| wrapped("it cannot be read back", error))?;
 
     // 1. NOTHING THE REGION REACHES IS STILL DRAWN.
-    let glyphs = fresh.glyphs_on(&read, expected.page).map_err(|error| {
-        wrapped(
-            &format!("its page {} cannot be walked", expected.page),
-            error,
-        )
-    })?;
+    let (glyphs, marked_work) = fresh
+        .glyphs_and_marked_work_on(&read, expected.page)
+        .map_err(|error| {
+            wrapped(
+                &format!("its page {} cannot be walked", expected.page),
+                error,
+            )
+        })?;
     // THE FRAME COMES FROM THE OUTPUT. See `ClearedWitness::frame_of`.
     let frame = fresh
         .frame_of(&read, expected.page)
@@ -323,7 +371,11 @@ pub fn region_is_cleared<W: ClearedWitness>(
         )));
     }
 
-    Ok(())
+    Ok(Walked {
+        frame,
+        glyphs: glyphs.len(),
+        marked_work,
+    })
 }
 
 /// The one shape of rejection this module produces.
@@ -421,6 +473,14 @@ mod tests {
         fn glyphs_on(&self, _read: &Self::Read, page: usize) -> crate::Result<Vec<Glyph>> {
             self.asked.borrow_mut().push(("glyphs_on", page));
             Ok(self.glyphs.clone())
+        }
+
+        fn glyphs_and_marked_work_on(
+            &self,
+            read: &Self::Read,
+            page: usize,
+        ) -> crate::Result<(Vec<Glyph>, u64)> {
+            Ok((self.glyphs_on(read, page)?, 0))
         }
 
         fn orphaned_codes(
@@ -763,6 +823,14 @@ mod limit_tests {
                 requested: 61_000,
                 allowed: 60_000,
             })
+        }
+
+        fn glyphs_and_marked_work_on(
+            &self,
+            read: &Self::Read,
+            page: usize,
+        ) -> Result<(Vec<Glyph>, u64)> {
+            Ok((self.glyphs_on(read, page)?, 0))
         }
 
         fn orphaned_codes(

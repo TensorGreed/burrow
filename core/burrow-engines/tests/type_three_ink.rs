@@ -591,18 +591,25 @@ fn many_names_for_one_type_three_font_stop_at_the_deadline() {
 /// draws nothing and is far from the region, so `Ok` is right.
 #[test]
 fn a_type_three_font_naming_itself_in_its_own_resources_redacts() {
+    // A HELVETICA `K` BESIDE IT, also far from the region, for #206's R2. The procedure draws
+    // nothing, and PDFium places no character for a Type 3 glyph whose procedure draws nothing
+    // (measured: 0 characters, and 1 for the same glyph filling a square) -- so without a glyph
+    // PDFium does read, the second reading sees an empty page where burrow places one, and
+    // refuses the `Ok` this test pins. A procedure that paints instead is refused for its own
+    // reason, `[type-three-procedure-paints]`, so the readable glyph has to be another font's.
+    let content = format!("{} BT /F1 12 Tf 10 380 Td (K) Tj ET", show(FAR));
     let pdf = page(
-        &show(FAR),
+        &content,
         b"10 0 d0\n",
         "0 0 10 10",
         10,
         "<< /Font << /T3 5 0 R >> >>",
-        "",
-        &[],
+        "/Font << /T3 5 0 R /F1 8 0 R >>",
+        &["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"],
     );
     assert!(
-        pdf.windows(b"/Font << /T3 5 0 R >>".len())
-            .filter(|w| *w == b"/Font << /T3 5 0 R >>")
+        pdf.windows(b"/T3 5 0 R".len())
+            .filter(|w| *w == b"/T3 5 0 R")
             .count()
             >= 2,
         "the font's own resources name it, as the page's do"

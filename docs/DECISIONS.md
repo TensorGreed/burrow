@@ -19,6 +19,9 @@ one is decided in an issue, with the same three parts.
    adjust the rule. *Decided:* #227 (the census), #242 (measuring a rule's false-refusal rate on
    real documents). *Does not cover:* fixtures — deliberately malformed, not counted against the
    1%-real bar.
+   **A reviewer's reading of a dependency's behaviour is a claim, not a measurement:** a bound or a
+   narrowing that rests on one is measured before it merges (owner, 2026-10-15, #206, whose Type 3
+   charge counted drawn codes only on a reviewer's reading of PDFium until it was timed).
 
 3. **Fail closed.** A removal nothing observed is not a measured removal; a verify must witness the
    removal, not infer it from a blind instrument. *Decided:* ADR 0029 §8. *Does not cover:* channels no instrument observed — those

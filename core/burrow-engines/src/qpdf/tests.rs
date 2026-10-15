@@ -1953,3 +1953,519 @@ mod propagation {
         );
     }
 }
+
+// #206: the second reading, wired into the operation that ships natively. The rules themselves are
+// held by a lying fake in `redact_read_back::tests`; these hold that `redact_page` asks PDFium at
+// all, that a disagreement it reports reaches the caller as a refusal, and that an honest document
+// still redacts.
+#[cfg(all(
+    test,
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+mod second_reading {
+    use super::super::Qpdf;
+    use crate::PageRedactor;
+    use crate::pdfsyntax::region::Region;
+    use crate::redact::hooks::{
+        READER_DROPS_A_PAGE, SECOND_READING_FAILS, SECOND_READING_PAGE, SECOND_READINGS,
+        WIDTHS_MISREAD, WIDTHS_MISREAD_COUNT, WRITER_DROPS_A_PAGE,
+    };
+    use burrow_types::{Error, Limits, SystemClock};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    /// A two-page document. Page 0 draws `content`; page 1 is blank. Plain, visible text in a
+    /// standard font: what each test plants is in the walk or the engine, never in the file.
+    fn document(content: &str) -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    /// Two glyphs at 100 pt from x = 10. The first is outside the region on any reading; the
+    /// second's origin is at 10 + 55.6 = 65.6, inside it, carried there by the first's width.
+    const CARRIED_BY_A_WIDTH: &str = "BT /F1 100 Tf 10 700 Td (KK) Tj ET\n";
+
+    /// Both glyphs where the content stream says, one inside the region and one outside.
+    const PLAIN: &str = "BT /F1 24 Tf 72 700 Td (K) Tj ET\nBT /F1 24 Tf 72 100 Td (S) Tj ET\n";
+
+    /// The region `[40, 540] x [632, 752]` in content space.
+    fn redact(content: &str) -> burrow_types::Result<Vec<u8>> {
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        Qpdf.redact_page(&document(content), 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Every hook off, and the counters zeroed, so one test's plant cannot reach the next.
+    fn reset() {
+        WIDTHS_MISREAD.with(|flag| flag.set(false));
+        WIDTHS_MISREAD_COUNT.with(|n| n.set(0));
+        SECOND_READING_FAILS.with(|flag| flag.set(false));
+        SECOND_READING_PAGE.with(|page| page.set(None));
+        SECOND_READINGS.with(|n| n.set(0));
+        READER_DROPS_A_PAGE.with(|flag| flag.set(false));
+        WRITER_DROPS_A_PAGE.with(|flag| flag.set(false));
+    }
+
+    fn readings() -> usize {
+        SECOND_READINGS.with(std::cell::Cell::get)
+    }
+
+    /// The bracketed rule a rejection names.
+    fn rule_of(result: burrow_types::Result<Vec<u8>>) -> String {
+        match result {
+            Ok(_) => "Ok".to_owned(),
+            Err(Error::OutputRejected(message)) => message
+                .rsplit('[')
+                .next()
+                .and_then(|rest| rest.split(']').next())
+                .map_or_else(|| format!("no rule in {message:?}"), str::to_owned),
+            Err(other) => format!("not a rejection: {other}"),
+        }
+    }
+
+    #[test]
+    fn an_honest_document_redacts_and_the_renderer_was_asked() {
+        reset();
+        let result = redact(PLAIN);
+        let asked = readings();
+        reset();
+        assert_eq!(rule_of(result), "Ok");
+        assert_eq!(
+            asked, 1,
+            "the second reading must run on every native redaction"
+        );
+    }
+
+    #[test]
+    fn r1_a_placement_defect_burrow_makes_twice_is_refused_by_the_renderer() {
+        // THE CASE THE SECOND READING EXISTS FOR. The font reader misreads `/Widths`, in both of
+        // burrow's passes, as a real placement defect would: the operation places the second
+        // glyph at x = 15.6, outside the region, removes nothing, and burrow's own verification
+        // agrees. Only PDFium puts it inside.
+        //
+        // TWIN FIRST: the same document with the reader correct redacts, so the refusal below is
+        // the defect's and not the document's.
+        reset();
+        let twin = redact(CARRIED_BY_A_WIDTH);
+        reset();
+        assert_eq!(rule_of(twin), "Ok", "the twin, with the reader correct");
+
+        WIDTHS_MISREAD.with(|flag| flag.set(true));
+        let planted = redact(CARRIED_BY_A_WIDTH);
+        let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
+        let asked = readings();
+        reset();
+        assert!(
+            misread > 0,
+            "the planted defect did not apply: no font's widths were read"
+        );
+        assert_eq!(asked, 1, "the second reading ran");
+        assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
+    }
+
+    /// As [`document`], with `fonts` added to the page's `/Font` (beside `/F1`), `xobjects` as its
+    /// `/XObject`, and `extra` as objects 7 onwards. Every fixture below draws plain visible
+    /// text; what varies is how its marked content is nested, and where.
+    fn document_with(content: &str, fonts: &str, xobjects: &str, extra: &[String]) -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 5 0 R {fonts}>> /XObject << {xobjects}>> >> \
+                 /Contents 4 0 R >>"
+            ),
+            stream("", content),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        objects.extend(extra.iter().cloned());
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{object}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    /// A stream object holding `data`, with `dictionary`'s entries before its `/Length`.
+    fn stream(dictionary: &str, data: &str) -> String {
+        format!(
+            "<< {dictionary} /Length {} >>\nstream\n{data}endstream",
+            data.len()
+        )
+    }
+
+    /// As [`redact`], over [`document_with`]; and how many times PDFium loaded the page.
+    fn redact_with(
+        content: &str,
+        fonts: &str,
+        xobjects: &str,
+        extra: &[String],
+    ) -> (String, usize) {
+        reset();
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        let pdf = document_with(content, fonts, xobjects, extra);
+        let result = Qpdf
+            .redact_page(&pdf, 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes);
+        let read = readings();
+        reset();
+        (rule_of(result), read)
+    }
+
+    /// `depth` nested `BMC` sequences around `inner`.
+    fn wrapped_in(depth: usize, inner: &str) -> String {
+        format!(
+            "{}{inner}{}",
+            "/Span BMC\n".repeat(depth),
+            "EMC\n".repeat(depth)
+        )
+    }
+
+    /// Visible text outside the region, as a form draws it.
+    const FORM_TEXT: &str = "BT /F1 12 Tf 300 300 Td (K) Tj ET\n";
+
+    /// A Form XObject over the whole page drawing `data`, as object 7, which the page names `/Fm0`.
+    const FORM_RESOURCES: &str = "/Fm0 7 0 R ";
+    fn form(data: &str) -> Vec<String> {
+        vec![stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+            data,
+        )]
+    }
+
+    /// The outcome of redacting `content` alone, and whether PDFium loaded the page.
+    fn verdict(content: &str) -> (String, usize) {
+        redact_with(content, "", "", &[])
+    }
+
+    #[test]
+    fn a_page_nested_past_the_ceiling_is_refused_before_pdfium_loads_it() {
+        // THE TWIN: the plain page nested 300 deep, about 90,000 of marked-content work against
+        // the ceiling's 1,000,000, is read and redacted.
+        assert_eq!(
+            verdict(&wrapped_in(300, PLAIN)),
+            ("Ok".to_owned(), 1),
+            "nested 300 deep, under the ceiling"
+        );
+        // 1,500 deep is about 2,250,000, past it.
+        assert_eq!(
+            verdict(&wrapped_in(1_500, PLAIN)),
+            ("second-reading-nesting".to_owned(), 0),
+            "the page past the ceiling must never reach PDFium's page load"
+        );
+    }
+
+    #[test]
+    fn a_form_cannot_close_the_marks_open_where_it_is_drawn() {
+        // THE PER-STREAM FLOOR. The page opens 500 marks and draws a form whose first act is to
+        // close 500. PDFium keeps a mark stack per stream, so the form cannot close the page's,
+        // and every operation after its `EMC`s is still read 500 deep. A count the form could
+        // close read them at depth zero.
+        let page = format!("{PLAIN}{}", wrapped_in(500, "/Fm0 Do\n"));
+        let closing = |shows: usize| {
+            form(&format!(
+                "{}{}",
+                "EMC\n".repeat(500),
+                FORM_TEXT.repeat(shows)
+            ))
+        };
+        // THE TWIN: 100 shows after the `EMC`s, 500 operations at depth 500 -- about 750,000 in
+        // all -- is read and redacted.
+        assert_eq!(
+            redact_with(&page, "", FORM_RESOURCES, &closing(100)),
+            ("Ok".to_owned(), 1),
+            "100 shows"
+        );
+        // 600 shows is 3,000 operations at depth 500 -- about 2,000,000, past the ceiling. With
+        // the form able to close the page's marks, the same page counts about 375,000.
+        assert_eq!(
+            redact_with(&page, "", FORM_RESOURCES, &closing(600)),
+            ("second-reading-nesting".to_owned(), 0),
+            "600 shows after the form's EMCs must be counted at the page's depth"
+        );
+    }
+
+    #[test]
+    fn every_draw_of_a_form_is_counted() {
+        // TOTAL WORK ACROSS DRAWS. PDFium parses a form again at every `Do`, so the work of a
+        // form nested 300 deep -- about 91,500 -- is paid once per draw. A count of the form's
+        // first draw only, or of its deepest point, sees one draw however many there are.
+        let nested = form(&wrapped_in(300, FORM_TEXT));
+        let page = |draws: usize| format!("{PLAIN}{}", "/Fm0 Do\n".repeat(draws));
+        assert_eq!(
+            redact_with(&page(5), "", FORM_RESOURCES, &nested),
+            ("Ok".to_owned(), 1),
+            "5 draws, about 457,500"
+        );
+        assert_eq!(
+            redact_with(&page(20), "", FORM_RESOURCES, &nested),
+            ("second-reading-nesting".to_owned(), 0),
+            "20 draws, about 1,830,000, must be counted as 20"
+        );
+    }
+
+    /// A Type 3 font as object `at`, whose codes `first..first + codes` are the names `/g0..`,
+    /// each glyph 1000 units wide, with `/CharProcs` the given dictionary (direct or a reference).
+    fn type_three_font(first: usize, codes: usize, char_procs: &str) -> String {
+        let names: String = (0..codes).map(|i| format!("/g{i} ")).collect();
+        let widths = "1000 ".repeat(codes);
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+             /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs {char_procs} \
+             /Encoding << /Type /Encoding /Differences [{first} {names}] >> \
+             /FirstChar {first} /LastChar {} /Widths [{widths}] >>",
+            first + codes - 1
+        )
+    }
+
+    /// Visible Type 3 text outside the region: font `/T{font}` at 1 pt, showing `codes` codes from 1.
+    fn shows(font: usize, codes: usize) -> String {
+        let hex: String = (1..=codes).map(|code| format!("{code:02X}")).collect();
+        format!("BT /T{font} 1 Tf 300 {} Td <{hex}> Tj ET\n", 300 + font)
+    }
+
+    #[test]
+    fn type_three_procedures_are_counted_for_every_code_drawn() {
+        // TYPE 3 PROCEDURES. PDFium parses a Type 3 glyph's procedure when it loads the page, and
+        // the walk never enters one. One font with `codes` codes, each its own procedure nested
+        // 150 deep -- about 22,500 apiece -- every code drawn, outside the region, beside the
+        // plain page's text.
+        let run = |codes: usize| {
+            let procs: String = (0..codes)
+                .map(|i| format!("/g{i} {} 0 R ", 8 + i))
+                .collect();
+            let mut objects = vec![type_three_font(1, codes, &format!("<< {procs}>>"))];
+            for _ in 0..codes {
+                objects.push(stream("", &format!("1000 0 d0\n{}", wrapped_in(150, ""))));
+            }
+            redact_with(
+                &format!("{PLAIN}{}", shows(0, codes)),
+                "/T0 7 0 R ",
+                "",
+                &objects,
+            )
+        };
+        assert_eq!(run(10), ("Ok".to_owned(), 1), "10 codes, about 225,000");
+        assert_eq!(
+            run(60),
+            ("second-reading-nesting".to_owned(), 0),
+            "60 codes, about 1,350,000, must each be counted"
+        );
+    }
+
+    #[test]
+    fn a_procedure_shared_by_codes_and_fonts_is_counted_for_each_of_them() {
+        // ONE PROCEDURE, MANY PARSES. PDFium keeps a Type 3 font's glyphs per font object and code,
+        // so a procedure named under 255 codes, in each of 8 font objects sharing one `/CharProcs`
+        // dictionary, is parsed 2,040 times at the load. Counted once per stream it read as one
+        // procedure -- under the ceiling -- and the uninterruptible load ran for seconds (#206's
+        // second review). The procedure is nested 600 deep, about 360,000: one parse is under the
+        // ceiling, 2,040 are far past it.
+        let procedure = stream("", &format!("1 0 d0\n{}", wrapped_in(600, "")));
+        let run = |fonts: usize, codes: usize| {
+            // Object 7 the shared `/CharProcs`, 8 the procedure, 9.. the fonts.
+            let names: String = (0..codes).map(|i| format!("/g{i} 8 0 R ")).collect();
+            let mut objects = vec![format!("<< {names}>>"), procedure.clone()];
+            let mut resources = String::new();
+            let mut page = PLAIN.to_owned();
+            for font in 0..fonts {
+                objects.push(type_three_font(1, codes, "7 0 R"));
+                resources.push_str(&format!("/T{font} {} 0 R ", 9 + font));
+                page.push_str(&shows(font, codes));
+            }
+            let started = std::time::Instant::now();
+            let outcome = redact_with(&page, &resources, "", &objects);
+            (outcome, started.elapsed())
+        };
+        // THE TWIN: one font, one code, one parse -- read and redacted.
+        let (twin, _) = run(1, 1);
+        assert_eq!(twin, ("Ok".to_owned(), 1), "one font drawing one code");
+        // PAST IT: refused before PDFium loads the page. `read == 0` is the check; the time is
+        // reported, not asserted. Run alone it is milliseconds (39 ms in a debug build on
+        // 2026-10-15, against about 4 s for the load it prevents). Inside the parallel suite the
+        // wall clock also holds the wait for PDFium's one engine thread, which every test
+        // shares and the operation's page-size read still uses: 1.8 s was measured there, none of
+        // it this refusal's.
+        let (past, took) = run(8, 255);
+        assert_eq!(
+            past,
+            ("second-reading-nesting".to_owned(), 0),
+            "8 fonts x 255 codes of one procedure must be counted 2,040 times"
+        );
+        println!("refused in {took:?}");
+    }
+
+    #[test]
+    fn the_second_reading_spends_the_operations_budget() {
+        // THE CLOCK PASSES THE BUDGET AS THE SECOND READING BEGINS, and not before: the redaction
+        // and burrow's own verification run inside it. The reading must spend the OPERATION's
+        // deadline, so the outcome is the operation's -- `LimitExceeded` on `max_duration_ms`,
+        // never a verdict on the page -- and it must come at the reading's first open, before any
+        // page is asked for. A reading that started a fresh deadline of its own would open the
+        // input, count it, and go on to read the page.
+        use crate::redact::hooks::ON_SECOND_READING;
+        reset();
+        let clock = Arc::new(burrow_types::ManualClock::new(0));
+        let limits = Limits::with(|l| l.max_duration_ms = 60_000);
+        let options =
+            crate::OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn burrow_types::Clock>);
+        let advanced = Arc::clone(&clock);
+        ON_SECOND_READING.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || advanced.advance(61_000)));
+        });
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        let outcome = Qpdf
+            .redact_page(&document(PLAIN), 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes);
+        ON_SECOND_READING.with(|slot| *slot.borrow_mut() = None);
+        let read = readings();
+        let now = burrow_types::Clock::now_ms(clock.as_ref());
+        reset();
+        assert_eq!(
+            now, 61_000,
+            "the clock was advanced by the second reading, and only there"
+        );
+        match outcome {
+            Err(Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            }) => {}
+            other => panic!(
+                "past the budget during the second reading must be the operation's time limit: \
+                 {:?}",
+                other.map(|_| ())
+            ),
+        }
+        assert_eq!(
+            read, 0,
+            "the page was asked for after the budget had run out"
+        );
+    }
+
+    #[test]
+    fn r4_an_output_short_of_a_page_is_refused() {
+        reset();
+        WRITER_DROPS_A_PAGE.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        let applied = !WRITER_DROPS_A_PAGE.with(std::cell::Cell::get);
+        reset();
+        assert!(applied, "the writer never dropped the page");
+        assert_eq!(rule_of(result), "second-reading-page-count");
+    }
+
+    #[test]
+    fn r5_an_input_qpdf_reads_short_of_a_page_is_refused() {
+        // #111: qpdf loses a page as it reads, so the promise and qpdf's own reading of the output
+        // agree with each other. Only another engine's count of the input can refuse.
+        reset();
+        READER_DROPS_A_PAGE.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        let applied = !READER_DROPS_A_PAGE.with(std::cell::Cell::get);
+        reset();
+        assert!(applied, "the reader never dropped the page");
+        assert_eq!(rule_of(result), "second-reading-input-page-count");
+    }
+
+    #[test]
+    fn a_reading_of_another_page_is_refused() {
+        reset();
+        SECOND_READING_PAGE.with(|page| page.set(Some(1)));
+        let result = redact(PLAIN);
+        let asked = readings();
+        reset();
+        assert_eq!(asked, 1);
+        assert_eq!(rule_of(result), "second-reading-wrong-page");
+    }
+
+    #[test]
+    fn a_failing_second_reading_stops_the_operation_returning_bytes() {
+        // KILLS: discarding `region_is_cleared_twice`'s result, or calling `region_is_cleared`
+        // alone. The honest run above is this test's twin.
+        reset();
+        SECOND_READING_FAILS.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        reset();
+        assert_eq!(rule_of(result), "second-reading-unavailable");
+    }
+}

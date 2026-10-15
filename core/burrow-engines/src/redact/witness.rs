@@ -137,6 +137,31 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         glyphs_in(&content, &resources, &self.watch(read))
     }
 
+    fn glyphs_and_marked_work_on(
+        &self,
+        read: &Self::Read,
+        page: usize,
+    ) -> Result<(Vec<Glyph>, u64)> {
+        read.deadline.checkpoint(self.clock.as_ref())?;
+        let handle = read.page(page)?;
+        let content = read.content(page)?;
+        let resources = PageResources::of(&handle)?;
+        let watch = self.watch(read);
+        let (glyphs, walked) =
+            crate::pdfsyntax::geometry::glyphs_and_marked_work_in(&content, &resources, &watch)?;
+        // AND THE TYPE 3 PROCEDURES PDFium parses at the load, once per font object and code drawn,
+        // which the walk never enters (#206's reviews).
+        let mut drawn: BTreeMap<ScopedFont, BTreeSet<u32>> = BTreeMap::new();
+        for glyph in &glyphs {
+            drawn
+                .entry(glyph.source.font.clone())
+                .or_default()
+                .insert(glyph.source.code);
+        }
+        let procedures = super::steps::type_three_marked_work(&resources, &drawn, &watch)?;
+        Ok((glyphs, walked.saturating_add(procedures)))
+    }
+
     fn orphaned_codes(
         &self,
         read: &Self::Read,

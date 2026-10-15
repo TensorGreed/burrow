@@ -23,8 +23,9 @@
 //! # Why its own PDFium, not the oracle's
 //!
 //! The gate's mutation needs PDFium initialised with a user font path, which only
-//! `FPDF_InitLibraryWithConfig` can give, and the oracle initialises with `FPDF_InitLibrary`. This
-//! binary initialises exactly once, on one thread, behind a lock, as `core/CLAUDE.md` requires.
+//! `FPDF_InitLibraryWithConfig` can give, and the oracle runs on the library's own engine thread,
+//! which initialises with `FPDF_InitLibrary` (#206). This binary does not use the oracle, and
+//! initialises exactly once, on one thread, behind a lock, as `core/CLAUDE.md` requires.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 #![allow(

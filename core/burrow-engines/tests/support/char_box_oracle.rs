@@ -105,7 +105,11 @@ use std::os::raw::{c_char, c_double, c_float, c_int, c_void};
 /// **This is not a knob.** A run that disagrees by more than this means the geometry is wrong,
 /// or that burrow and PDFium disagree about something real and it gets investigated and written
 /// down. Raising it to make a run pass is the one edit this constant exists to forbid.
-pub const TOLERANCE_PT: f64 = 0.05;
+///
+/// **The registered value lives in the library since #206**, where the runtime second reading
+/// uses it: `burrow_engines::redact_read_back::TOLERANCE_PT`. This is that constant, not a copy,
+/// so the test oracle and the runtime cannot drift apart.
+pub const TOLERANCE_PT: f64 = burrow_engines::redact_read_back::TOLERANCE_PT;
 
 /// How much larger than PDFium's loose box burrow's conservative box may be, by area.
 ///
@@ -177,7 +181,6 @@ struct FsRectF {
 // and the rpath do come from build.rs, so only the name is needed.
 #[link(name = "pdfium")]
 unsafe extern "C" {
-    fn FPDF_InitLibrary();
     fn FPDF_LoadMemDocument64(
         data: *const c_void,
         size: usize,
@@ -640,41 +643,19 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    type Job = Box<dyn FnOnce() + Send>;
-    static QUEUE: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Job>>> =
-        std::sync::OnceLock::new();
-
-    let sender = QUEUE.get_or_init(|| {
-        let (sender, receiver) = std::sync::mpsc::channel::<Job>();
-        std::thread::Builder::new()
-            .name("pdfium-oracle".to_owned())
-            .spawn(move || {
-                // ONE CALLER, ONE THREAD, structurally -- the same property ADR 0011 gets for
-                // the shipped engine.
-                // SAFETY: this is the only `FPDF_InitLibrary` call in this binary, and it
-                // happens before any other PDFium call on the only thread that makes them.
-                unsafe { FPDF_InitLibrary() };
-                while let Ok(job) = receiver.recv() {
-                    job();
-                }
-            })
-            .expect("the oracle's PDFium thread should start");
-        std::sync::Mutex::new(sender)
-    });
-
-    let (reply, answer) = std::sync::mpsc::channel();
-    sender
-        .lock()
-        .expect("the oracle's queue is not poisoned")
-        .send(Box::new(move || {
-            // A panic inside the job would kill the worker and hang every later caller, so it is
-            // caught and re-raised on the CALLER's thread, where the test harness can report it
-            // against the test that caused it.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-            let _ = reply.send(outcome);
-        }))
-        .expect("the oracle's PDFium thread should be alive");
-    match answer.recv().expect("the oracle's PDFium thread replied") {
+    // THE LIBRARY'S OWN ENGINE THREAD. This used to start a thread of its own and call
+    // `FPDF_InitLibrary` there, as "the only `FPDF_InitLibrary` call in this binary" -- which
+    // stopped being true when every native redaction began reading its output through PDFium
+    // (#206). Two PDFium threads with two inits is the undefined behaviour `pdfium/thread.rs`
+    // records, so there is one again: the library's, initialised once by the library.
+    //
+    // A panic inside the job would poison the engine for every later test, so it is caught there
+    // and re-raised on the CALLER's thread, where the harness reports it against the test.
+    let outcome = burrow_engines::pdfium::run_on_engine_thread(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+    })
+    .expect("the PDFium engine thread is reachable");
+    match outcome {
         Ok(value) => value,
         Err(panic) => std::panic::resume_unwind(panic),
     }

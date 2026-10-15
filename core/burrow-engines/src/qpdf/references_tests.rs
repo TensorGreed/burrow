@@ -223,6 +223,26 @@ fn redacts_on_both(bytes: &[u8], what: &str) -> Vec<u8> {
     natively
 }
 
+/// A twin PDFium CANNOT OPEN, and so two assertions (#206). With the second reading skipped, the
+/// twin redacts on both engines as it always did -- its own rule still does not refuse it. With
+/// the second reading, both refuse it, because a renderer with no answer is not a clean reading;
+/// and PDFium's failure to open it is measured, so that refusal is this and not some other rule.
+pub(super) fn redacts_where_pdfium_cannot_open(bytes: &[u8], what: &str) -> Vec<u8> {
+    use crate::redact::hooks::SECOND_READING_SKIPPED;
+    SECOND_READING_SKIPPED.with(|flag| flag.set(true));
+    let skipped = std::panic::catch_unwind(|| redacts_on_both(bytes, what));
+    SECOND_READING_SKIPPED.with(|flag| flag.set(false));
+    let output = skipped.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert!(
+        super::Qpdf
+            .renderer_page_size(bytes, 0, &options())
+            .is_err(),
+        "{what}: PDFium opens this, so the twin should redact with the second reading too"
+    );
+    refused_on_both(bytes, "second-reading-unavailable", what);
+    output
+}
+
 /// PDFium's displayed size for page 0: the box, turned by whatever `/Rotate` it read.
 fn pdfium_size(bytes: &[u8]) -> (f64, f64) {
     super::Qpdf
@@ -1031,8 +1051,8 @@ fn a_name_in_a_glued_trailer_is_judged_as_written() {
         "name-read-differently",
         "256 bytes in a glued trailer",
     );
-    redacts_on_both(&trailer("/Ma#80rk 1"), "0x80 escaped in a glued trailer");
-    redacts_on_both(&trailer(""), "a glued trailer with no odd name");
+    redacts_where_pdfium_cannot_open(&trailer("/Ma#80rk 1"), "0x80 escaped in a glued trailer");
+    redacts_where_pdfium_cannot_open(&trailer(""), "a glued trailer with no odd name");
     let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
     redacts_on_both(
         text.replacen("/Root 1 0 R", "/Root 1 0 R /Ma#80rk 1", 1)
@@ -1228,7 +1248,7 @@ fn an_object_numbered_zero_is_never_the_catalog() {
         "null-value",
         "a null key in an object headed 0 0 obj",
     );
-    redacts_on_both(
+    redacts_where_pdfium_cannot_open(
         &with_object_zero(&text, "<< /Extra 1 >>"),
         "the twin, with no null",
     );

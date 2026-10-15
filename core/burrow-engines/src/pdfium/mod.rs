@@ -15,6 +15,9 @@ mod ffi;
 
 pub(crate) mod thread;
 
+// Redaction's second reading (#206): where PDFium places characters, and its page counts.
+pub(crate) mod read_back;
+
 use std::sync::Arc;
 
 use core::ffi::{c_char, c_int, c_void};
@@ -41,6 +44,38 @@ impl Pdfium {
     pub const fn new() -> Self {
         Self
     }
+}
+
+/// Run `work` on PDFium's engine thread and return what it returns. **Test support only.**
+///
+/// For the test-time geometry oracle (`tests/support/char_box_oracle.rs`), which declares its own
+/// `FPDF_*` symbols. It used to start a PDFium thread of its own and call `FPDF_InitLibrary` there,
+/// which was sound only while nothing else in its test binary touched PDFium. Since #206 every
+/// native redaction reads its output through this engine, so a test that redacts and then asks the
+/// oracle would be calling PDFium from two threads, with two inits -- the undefined behaviour ADR
+/// 0011 and `thread.rs` record. Routing the oracle's calls here makes the one thread the only one
+/// again.
+///
+/// **Not behind `cfg(test)`, and why.** Its caller is `tests/support/char_box_oracle.rs`, which
+/// integration tests compile against the library built WITHOUT `cfg(test)`, so a `cfg(test)`
+/// gate would remove it from exactly the build that needs it. A `test-support` cargo feature
+/// would gate it, at the cost of a new feature in every shipped build's manifest; not added. It
+/// takes no document and hands PDFium nothing, and every FFI call `work` makes is the caller's
+/// own `unsafe`, so what it exposes is the thread, not the engine.
+///
+/// `work` must not panic: a panic poisons the engine for the rest of the process. The oracle
+/// catches its own and re-raises it on the caller's thread.
+///
+/// # Errors
+///
+/// [`Error::Internal`] if the engine is poisoned or cannot be reached.
+#[doc(hidden)]
+pub fn run_on_engine_thread<T, F>(work: F) -> Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    thread::submit(move |_| Ok(work()))
 }
 
 /// An open PDFium document.
@@ -114,151 +149,166 @@ impl DocumentEngine for Pdfium {
     }
 
     fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Document> {
-        let limits = options.limits;
-
-        // Empty input can never be a document, and refusing it here also avoids handing
-        // PDFium the dangling (if correctly aligned) pointer an empty `Box<[u8]>` carries.
-        if bytes.is_empty() {
-            return Err(Error::Malformed("input is empty".to_owned()));
-        }
-
-        // 1. Input size, before the buffer goes anywhere near the engine.
-        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
-        // the size estimate, the structural pre-scan. Shared rather than spelled out
-        // here, so a path that pre-scans without estimating is not writable --- see
-        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
-        crate::estimate::before_open(&bytes, &limits)?;
-
-        // 4. The password copy, before the deadline starts: it is our work, not the
-        //    engine's, and a rejected password should not consume the caller's budget.
-        let password = crate::password::nul_terminated(options.password, "pdfium")?;
-
-        // 5. The budget for everything that follows, including later calls on the handle.
-        let clock = Arc::clone(&options.clock);
-        let deadline = Deadline::start(clock.as_ref(), &limits);
-        deadline.checkpoint(clock.as_ref())?;
-
-        let opened = thread::submit(move |registry| {
-            // a. Claim the id, then park the buffer. Both happen before the load, so the
-            //    only fallible step comes while there is still nothing to clean up, and
-            //    the pointer handed to PDFium is read from the buffer's final home.
-            let id = registry.reserve_id()?;
-            let (data, size) = registry.park_buffer(id, bytes);
-            let password_ptr = password
-                .as_ref()
-                .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
-
-            // From here on, `registry.remove(id)` is the single cleanup for every failure:
-            // it frees the buffer, and closes the document too once one is attached.
-            let before = crate::rss::resident_bytes();
-
-            // SAFETY: `data` is valid for `size` bytes -- it points into the buffer the
-            // registry now owns, which is not moved again until `remove`, and PDFium reads
-            // from it for as long as the document is open (`fpdfview.h:451`). `size` is
-            // non-zero, so the pointer is a real allocation. `password_ptr` is null, or
-            // points at a NUL-terminated buffer alive for the whole call. This runs inside
-            // a job, so it is on the engine thread and after init.
-            let (doc, code) =
-                unsafe { ffi::load_mem_document64(data.cast::<c_void>(), size, password_ptr) };
-
-            // The copy of the password has done its job; wipe it now rather than at the
-            // end of the closure.
-            drop(password);
-
-            if doc.is_null() {
-                // Failure is established by the null handle. The code only classifies it,
-                // and it was read in the same call, so it is this load's code.
-                registry.remove(id);
-                return Err(crate::codes::pdfium::map_failure(code));
-            }
-
-            // b. Hand the document to the registry immediately, so from here every exit --
-            //    including an unwind -- closes it exactly once.
-            //
-            // SAFETY: `doc` is non-null (checked above), came from the load on the line
-            // before, was loaded from the buffer parked under `id`, and is not yet closed.
-            unsafe { registry.attach(id, doc) };
-
-            let checked = (|| -> Result<u64> {
-                // c. The page count, immediately, before any page is touched.
-                //
-                // SAFETY: `doc` is non-null and open -- the registry holds it and nothing
-                // has closed it. Still inside the job, so still on the engine thread.
-                let (count, _code) = unsafe { ffi::get_page_count(doc) };
-                if count < 0 {
-                    // `_code` is deliberately unused. `fpdfview.h:625` says the error is
-                    // only meaningful for APIs whose own documentation mentions
-                    // `FPDF_GetLastError`, and `FPDF_GetPageCount`'s block does not. The
-                    // global would hold whatever some earlier call left there, so
-                    // classifying by it would pin another operation's error to this one --
-                    // a stale `FPDF_ERR_PASSWORD` would surface as `PasswordRequired` on a
-                    // document that is already open.
-                    return Err(crate::codes::pdfium::unreadable_page_tree());
-                }
-                let pages = page_count_to_u64(count)?;
-                if pages == 0 {
-                    return Err(Error::Malformed("document has no pages".to_owned()));
-                }
-
-                // d. The page limit, on a number the engine produced.
-                Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
-
-                // e. What the open actually cost. Step 2's estimate is blind to anything
-                //    the file *declares*, and a small file declaring an enormous structure
-                //    is exactly the case it misses.
-                crate::estimate::check_measured_memory(
-                    before,
-                    crate::rss::resident_bytes(),
-                    &limits,
-                )?;
-
-                Ok(pages)
-            })();
-
-            match checked {
-                Ok(pages) => Ok((id, pages)),
-                Err(error) => {
-                    // A document that has already broken a limit, or whose page tree
-                    // cannot be read, is never handed back.
-                    registry.remove(id);
-                    Err(error)
-                }
-            }
-        })?;
-
-        deadline.checkpoint(clock.as_ref())?;
-
-        let (id, pages) = opened;
-        Ok(PdfiumDocument {
-            id,
-            deadline,
-            clock,
-            pages_at_open: pages,
-            memory_at_open: crate::rss::resident_bytes(),
-        })
+        open_spending(bytes, options, None)
     }
 
     fn page_count(&self, doc: &Self::Document) -> Result<u64> {
-        // Against the clock captured at open, so the budget covers the whole operation and
-        // cannot be reset by handing in a different one.
-        doc.deadline.checkpoint(doc.clock.as_ref())?;
+        page_count_of(doc)
+    }
+}
 
-        let id = doc.id;
-        let pages = thread::submit(move |registry| {
-            let handle = registry.handle(id)?;
-            // SAFETY: `handle` came from the registry, so the document is open and its
-            // buffer is alive. Inside a job, so on the engine thread.
-            let (count, _code) = unsafe { ffi::get_page_count(handle) };
+/// [`DocumentEngine::open`]'s body, spending `deadline` when one is given rather than starting
+/// its own.
+///
+/// **A second reading spends the operation's budget (#206).** `open` starts a fresh deadline,
+/// which is right for an operation whose first step it is and wrong for a read-back inside one:
+/// `burrow_ops::verify::output` says in capitals that verification spends the operation's time.
+fn open_spending(
+    bytes: Box<[u8]>,
+    options: &OpenOptions<'_>,
+    spend: Option<Deadline>,
+) -> Result<PdfiumDocument> {
+    let limits = options.limits;
+
+    // Empty input can never be a document, and refusing it here also avoids handing
+    // PDFium the dangling (if correctly aligned) pointer an empty `Box<[u8]>` carries.
+    if bytes.is_empty() {
+        return Err(Error::Malformed("input is empty".to_owned()));
+    }
+
+    // 1. Input size, before the buffer goes anywhere near the engine.
+    // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+    // the size estimate, the structural pre-scan. Shared rather than spelled out
+    // here, so a path that pre-scans without estimating is not writable --- see
+    // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+    crate::estimate::before_open(&bytes, &limits)?;
+
+    // 4. The password copy, before the deadline starts: it is our work, not the
+    //    engine's, and a rejected password should not consume the caller's budget.
+    let password = crate::password::nul_terminated(options.password, "pdfium")?;
+
+    // 5. The budget for everything that follows, including later calls on the handle.
+    let clock = Arc::clone(&options.clock);
+    let deadline = spend.unwrap_or_else(|| Deadline::start(clock.as_ref(), &limits));
+    deadline.checkpoint(clock.as_ref())?;
+
+    let opened = thread::submit(move |registry| {
+        // a. Claim the id, then park the buffer. Both happen before the load, so the
+        //    only fallible step comes while there is still nothing to clean up, and
+        //    the pointer handed to PDFium is read from the buffer's final home.
+        let id = registry.reserve_id()?;
+        let (data, size) = registry.park_buffer(id, bytes);
+        let password_ptr = password
+            .as_ref()
+            .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
+
+        // From here on, `registry.remove(id)` is the single cleanup for every failure:
+        // it frees the buffer, and closes the document too once one is attached.
+        let before = crate::rss::resident_bytes();
+
+        // SAFETY: `data` is valid for `size` bytes -- it points into the buffer the
+        // registry now owns, which is not moved again until `remove`, and PDFium reads
+        // from it for as long as the document is open (`fpdfview.h:451`). `size` is
+        // non-zero, so the pointer is a real allocation. `password_ptr` is null, or
+        // points at a NUL-terminated buffer alive for the whole call. This runs inside
+        // a job, so it is on the engine thread and after init.
+        let (doc, code) =
+            unsafe { ffi::load_mem_document64(data.cast::<c_void>(), size, password_ptr) };
+
+        // The copy of the password has done its job; wipe it now rather than at the
+        // end of the closure.
+        drop(password);
+
+        if doc.is_null() {
+            // Failure is established by the null handle. The code only classifies it,
+            // and it was read in the same call, so it is this load's code.
+            registry.remove(id);
+            return Err(crate::codes::pdfium::map_failure(code));
+        }
+
+        // b. Hand the document to the registry immediately, so from here every exit --
+        //    including an unwind -- closes it exactly once.
+        //
+        // SAFETY: `doc` is non-null (checked above), came from the load on the line
+        // before, was loaded from the buffer parked under `id`, and is not yet closed.
+        unsafe { registry.attach(id, doc) };
+
+        let checked = (|| -> Result<u64> {
+            // c. The page count, immediately, before any page is touched.
+            //
+            // SAFETY: `doc` is non-null and open -- the registry holds it and nothing
+            // has closed it. Still inside the job, so still on the engine thread.
+            let (count, _code) = unsafe { ffi::get_page_count(doc) };
             if count < 0 {
-                // See the note in `open`: the error global is undefined after this call.
+                // `_code` is deliberately unused. `fpdfview.h:625` says the error is
+                // only meaningful for APIs whose own documentation mentions
+                // `FPDF_GetLastError`, and `FPDF_GetPageCount`'s block does not. The
+                // global would hold whatever some earlier call left there, so
+                // classifying by it would pin another operation's error to this one --
+                // a stale `FPDF_ERR_PASSWORD` would surface as `PasswordRequired` on a
+                // document that is already open.
                 return Err(crate::codes::pdfium::unreadable_page_tree());
             }
-            page_count_to_u64(count)
-        })?;
+            let pages = page_count_to_u64(count)?;
+            if pages == 0 {
+                return Err(Error::Malformed("document has no pages".to_owned()));
+            }
 
-        doc.deadline.checkpoint(doc.clock.as_ref())?;
-        Ok(pages)
-    }
+            // d. The page limit, on a number the engine produced.
+            Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
+
+            // e. What the open actually cost. Step 2's estimate is blind to anything
+            //    the file *declares*, and a small file declaring an enormous structure
+            //    is exactly the case it misses.
+            crate::estimate::check_measured_memory(before, crate::rss::resident_bytes(), &limits)?;
+
+            Ok(pages)
+        })();
+
+        match checked {
+            Ok(pages) => Ok((id, pages)),
+            Err(error) => {
+                // A document that has already broken a limit, or whose page tree
+                // cannot be read, is never handed back.
+                registry.remove(id);
+                Err(error)
+            }
+        }
+    })?;
+
+    deadline.checkpoint(clock.as_ref())?;
+
+    let (id, pages) = opened;
+    Ok(PdfiumDocument {
+        id,
+        deadline,
+        clock,
+        pages_at_open: pages,
+        memory_at_open: crate::rss::resident_bytes(),
+    })
+}
+
+/// [`DocumentEngine::page_count`]'s body.
+fn page_count_of(doc: &PdfiumDocument) -> Result<u64> {
+    // Against the clock captured at open, so the budget covers the whole operation and
+    // cannot be reset by handing in a different one.
+    doc.deadline.checkpoint(doc.clock.as_ref())?;
+
+    let id = doc.id;
+    let pages = thread::submit(move |registry| {
+        let handle = registry.handle(id)?;
+        // SAFETY: `handle` came from the registry, so the document is open and its
+        // buffer is alive. Inside a job, so on the engine thread.
+        let (count, _code) = unsafe { ffi::get_page_count(handle) };
+        if count < 0 {
+            // See the note in `open`: the error global is undefined after this call.
+            return Err(crate::codes::pdfium::unreadable_page_tree());
+        }
+        page_count_to_u64(count)
+    })?;
+
+    doc.deadline.checkpoint(doc.clock.as_ref())?;
+    Ok(pages)
 }
 
 /// Narrow a zero-based page index for PDFium's `int`, having established it is in range.

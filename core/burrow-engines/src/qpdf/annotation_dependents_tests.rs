@@ -145,6 +145,25 @@ fn removes_on_both(bytes: &[u8], gone: &[&str], what: &str) -> Vec<u8> {
     natively
 }
 
+/// As [`removes_on_both`], for a twin PDFium CANNOT OPEN (#206): with the second reading skipped
+/// it removes as it always did, so its own rule still does not refuse it; with the second reading,
+/// both engines refuse it, with PDFium's failure to open it measured rather than assumed.
+fn removes_where_pdfium_cannot_open(bytes: &[u8], gone: &[&str], what: &str) {
+    use crate::redact::graph::OpensForRedaction as _;
+    use crate::redact::hooks::SECOND_READING_SKIPPED;
+    SECOND_READING_SKIPPED.with(|flag| flag.set(true));
+    let skipped = std::panic::catch_unwind(|| removes_on_both(bytes, gone, what));
+    SECOND_READING_SKIPPED.with(|flag| flag.set(false));
+    skipped.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert!(
+        super::Qpdf
+            .renderer_page_size(bytes, 0, &options())
+            .is_err(),
+        "{what}: PDFium opens this, so the twin should redact with the second reading too"
+    );
+    refused_on_both(bytes, "second-reading-unavailable", what);
+}
+
 fn refused_on_both(bytes: &[u8], rule: &str, what: &str) {
     for (engine, outcome) in on_both(bytes) {
         match outcome {
@@ -1022,7 +1041,7 @@ fn a_trailer_the_bytes_hide_is_read_as_qpdf_reads_it() {
         "an object only a glued trailer names",
     );
     // THE NEAR-MISS: the same glued trailer, naming nothing removed.
-    removes_on_both(
+    removes_where_pdfium_cannot_open(
         &with_glued_trailer(&objects, ""),
         &["GLUEDSECRET"],
         "a glued trailer naming nothing",
