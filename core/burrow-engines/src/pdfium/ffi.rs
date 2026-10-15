@@ -243,10 +243,12 @@ unsafe extern "C" {
     // characters, and answer where PDFium places each one (its pen origin) and whether PDFium
     // invented it. The ink box (`FPDFText_GetCharBox`) is deliberately not declared until #344
     // (see `redact_read_back`'s R1). No function that returns a character's Unicode or a page's
-    // text is named anywhere in this crate's source -- `FPDFText_GetUnicode`, `FPDFText_GetText`,
-    // `FPDFText_GetBoundedText` and the rest -- because a reading that decodes through the font
-    // verifies the document's own claim about itself (spike 0006, channel 21). "A function that
-    // cannot be called cannot leak", the rule `codes/qpdf.rs` keeps for qpdf's error text.
+    // text is named anywhere in this crate's library source (`src/`) -- `FPDFText_GetUnicode`,
+    // `FPDFText_GetText`, `FPDFText_GetBoundedText` and the rest. The one exception is the
+    // test-only oracle in `tests/support/char_box_oracle.rs`, which never ships. The reason is
+    // that a reading that decodes through the font verifies the document's own claim about itself
+    // (spike 0006, channel 21). "A function that cannot be called cannot leak", the rule
+    // `codes/qpdf.rs` keeps for qpdf's error text.
     // `redact_read_back::tests::the_pdfium_text_functions_named_are_the_five_permitted` holds the
     // set of `FPDFText_*`, `FPDFTextObj_*` and `FPDFLink_*` names in code, `link_name` included,
     // to exactly these five.

@@ -1998,9 +1998,9 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 ///
 /// Since #206 every native redaction is read a second time, and a page nested past
 /// `redact_read_back::MAX_MARKED_WORK` is refused before PDFium loads it -- PDFium's page load
-/// grows with nesting depth. So the large cases now end in `[second-reading-nesting]`, after the
-/// walk and the rewrite have run in full, and the clock still measures those; the cases under the
-/// ceiling redact, and carry the report that shows the work was done.
+/// grows with marked-content nesting. So the large cases now end in `[second-reading-nesting]`,
+/// after the walk and the rewrite have run in full, and the clock still measures those; the cases
+/// under the ceiling redact, and carry the report that shows the work was done.
 ///
 /// So: 8k, 16k and 60k, and the bound is wall clock because that is what was wrong. The margin
 /// is wide (roughly 14x the measured 0.72 s) so an ordinary slow machine does not fail it, and a

@@ -60,9 +60,11 @@
 //! channel 21), so it is not taken as a second opinion. Where a character is placed is read
 //! instead -- but mapping is not wholly out of it: PDFium decides WHETHER to report a character
 //! partly from its mapping, so a mapping can remove a character from this reading (see
-//! "Characters PDFium does not report" below). The PDFium text functions this crate's source
-//! may name are exactly five, and `tests::the_pdfium_text_functions_named_are_the_five_permitted`
-//! refuses any other, with a probe per rejected name.
+//! "Characters PDFium does not report" below). The PDFium text functions this crate's library
+//! source (`src/`) may name are exactly five -- the test-only oracle under `tests/support/`, which
+//! never ships, is outside it -- and
+//! `tests::the_pdfium_text_functions_named_are_the_five_permitted` refuses any other, with a probe
+//! per rejected name.
 //!
 //! # What this leaves undetectable, stated because the rules could be read as covering it
 //!

@@ -474,6 +474,10 @@ const REJECTED: &[&str] = &[
 /// Every `FPDFText_*`, `FPDFTextObj_*` and `FPDFLink_*` name in `source`'s CODE -- comments
 /// stripped, string literals kept, so a `#[link_name = "..."]` attribute binding one of them to an
 /// innocent Rust name is counted as the name it binds.
+///
+/// A scan, not a parse, with two misses stated: a line is cut at its first `//`, so a name after a
+/// string literal containing `//` on the same line is not seen; and a name assembled at compile
+/// time (`concat!`) is not seen. Neither is reachable by accident.
 fn named(source: &str) -> std::collections::BTreeSet<String> {
     let mut found = std::collections::BTreeSet::new();
     for line in source.lines() {
