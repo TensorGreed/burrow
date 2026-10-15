@@ -98,7 +98,6 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
         .any(|window| window == needle.as_bytes())
 }
 
-///
 /// THE POST-LAUNCH REMOVAL, SWITCHED ON for the call (#136 D3). For launch the operation refuses
 /// an annotation the region reaches; every test here is about what that removal, once it ships,
 /// must take with it, so it is switched on for both engines and off again when the call returns.

@@ -166,18 +166,23 @@ pub(crate) fn annotations_removed() -> bool {
     ANNOTATIONS_REMOVED.with(std::cell::Cell::get)
 }
 
-/// Switch the post-launch removal on until the guard drops.
-#[must_use = "the removal is switched off again when the guard drops"]
+/// Switch the post-launch removal on until the guard drops. Re-entrant: the guard restores what
+/// it found, so a nested guard dropping first does not switch an outer one's removal off.
+#[must_use = "the removal is switched back when the guard drops"]
 pub(crate) fn removing_annotations() -> RemovingAnnotations {
-    ANNOTATIONS_REMOVED.with(|flag| flag.set(true));
-    RemovingAnnotations
+    RemovingAnnotations {
+        previous: ANNOTATIONS_REMOVED.with(|flag| flag.replace(true)),
+    }
 }
 
 /// See [`removing_annotations`].
-pub(crate) struct RemovingAnnotations;
+pub(crate) struct RemovingAnnotations {
+    /// The switch as the guard found it, restored on drop.
+    previous: bool,
+}
 
 impl Drop for RemovingAnnotations {
     fn drop(&mut self) {
-        ANNOTATIONS_REMOVED.with(|flag| flag.set(false));
+        ANNOTATIONS_REMOVED.with(|flag| flag.set(self.previous));
     }
 }
