@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { framesOf, readRegion } from "./redact-region.js";
+import { framesOf, readRegion, shownSize } from "./redact-region.js";
 
 const LETTER = { width: 612, height: 792 };
 const typed = (left: string, top: string, width: string, height: string) => ({
@@ -26,7 +26,12 @@ describe("the region a run takes, as typed (#136, S3)", () => {
       problem: "The area runs past the edge of the page, which is 612 by 792 points.",
     });
     expect(readRegion(typed("1", "0", "612", "792"), LETTER).ok).toBe(false);
-    expect(readRegion(typed("0", "0.5", "612", "792"), LETTER).ok).toBe(false);
+    // Under a point past the edge is the edge, clamped; a point past it is refused.
+    expect(readRegion(typed("0", "0.5", "612", "792"), LETTER)).toEqual({
+      ok: true,
+      region: { left: 0, top: 0.5, width: 612, height: 791.5 },
+    });
+    expect(readRegion(typed("0", "1", "612", "792"), LETTER).ok).toBe(false);
   });
 
   it("refuses what Number() would have read as something the person did not type", () => {
@@ -52,9 +57,31 @@ describe("the region a run takes, as typed (#136, S3)", () => {
   });
 
   it("refuses a box longer than it will read, without parsing it", () => {
-    const long = "1".repeat(33);
-    expect(readRegion(typed(long, "0", "10", "10"), LETTER).ok).toBe(false);
-    expect(readRegion(typed("1".repeat(3), "0", "10", "10"), LETTER).ok).toBe(true);
+    // 33 characters whose value is IN RANGE (a zero with a long decimal part), so the refusal is
+    // the length rule's and not the frame's.
+    const long = `0.${"0".repeat(31)}`;
+    expect(long).toHaveLength(33);
+    expect(readRegion(typed(long, "0", "10", "10"), LETTER)).toEqual({
+      ok: false,
+      problem: "From the left needs a number of points, like 72 or 12.5.",
+    });
+    // The near-miss: 32 characters is read.
+    expect(readRegion(typed(`0.${"0".repeat(30)}`, "0", "10", "10"), LETTER).ok).toBe(true);
+  });
+
+  it("accepts what the hint shows on an A4 page, whose frame is not whole points", () => {
+    const A4 = { width: 595.276, height: 841.89 };
+    expect(shownSize(A4)).toBe("595 by 841");
+    // The size the hint shows, and the next whole point, which is under a point past the edge.
+    expect(readRegion(typed("0", "0", "595", "841"), A4).ok).toBe(true);
+    expect(readRegion(typed("0", "0", "596", "842"), A4)).toEqual({
+      ok: true,
+      region: { left: 0, top: 0, width: 595.276, height: 841.89 },
+    });
+    expect(readRegion(typed("0", "0", "597", "841"), A4)).toEqual({
+      ok: false,
+      problem: "The area runs past the edge of the page, which is 595 by 841 points.",
+    });
   });
 
   it("refuses a zero width or height, naming the box at fault otherwise", () => {
@@ -79,6 +106,8 @@ describe("every page's frame, from a page_frames reply", () => {
 
   it("does not trust a reply whose arrays disagree or whose sizes contradict the refusal", () => {
     expect(framesOf([612, 792], ["", ""])).toBeNull();
+    // Length alone: two pages' sizes for one page's refusals.
+    expect(framesOf([612, 792, 0, 0], [""])).toBeNull();
     expect(framesOf([612, 792, 1], ["", ""])).toBeNull();
     expect(framesOf(undefined, [])).toBeNull();
     // A refused page with a size, and an accepted page without one.

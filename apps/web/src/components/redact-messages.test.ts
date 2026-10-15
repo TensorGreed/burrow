@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,81 +17,104 @@ import {
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 
-/** Every `.rs` file under `dir`, recursively. */
-function rustFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) out.push(...rustFiles(path));
-    else if (path.endsWith(".rs")) out.push(path);
-  }
-  return out;
+/**
+ * Every refusal rule id the engine lists, from the committed copy of its table.
+ *
+ * THE ENGINE'S OWN LIST, NEVER A PARSE OF THE SOURCE. `burrow_engines::redact::rules::RULE_IDS`
+ * is held by Rust tests to every id the redaction path brackets, whatever its shape, and
+ * `tests/redaction/rule-ids.txt` is held to that table; this test reads the file. A rule added to
+ * the core with any name reaches this list, and fails here until it has a category.
+ */
+function engineRules(): string[] {
+  return readFileSync(join(REPO, "tests/redaction/rule-ids.txt"), "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+/** Every kind the binding can hand a page. */
+const KINDS = [
+  "PasswordRequired",
+  "LimitExceeded",
+  "OutputRejected",
+  "Malformed",
+  "Unsupported",
+  "InvalidArgument",
+  "EngineUnavailable",
+  "InputFailed",
+  "Io",
+  "Internal",
+];
+
+/** Every string this module can put on the page, for the copy checks below. */
+function everySentence(): string[] {
+  return [
+    ...Object.values(CATEGORIES).flatMap(({ title, next }) => [title, next]),
+    ...KINDS.flatMap((kind) => {
+      const { title, next } = messageFor({ kind });
+      return [title, next];
+    }),
+    ...[
+      "max_input_bytes",
+      "max_pages",
+      "max_duration_ms",
+      "max_memory_bytes",
+      "max_pixels",
+    ].flatMap((limit) => {
+      const { title, next } = messageFor({
+        kind: "LimitExceeded",
+        limit,
+        requested: "9000000",
+        allowed: "100",
+      });
+      return [title, next];
+    }),
+    ...resultNotes(1, 1),
+    ...resultNotes(3, 2),
+  ];
 }
 
 /**
- * The redaction rule vocabulary, derived from the source rather than typed here.
- *
- * Three shapes carry a rule id, and each is read:
- * - a hyphenated bracketed token anywhere in the engines' and operations' source (`[font-flags]`,
- *   however the message around it is written);
- * - the geometry walk's `Refusal` names, which are stamped into the bracket at run time
- *   (`Self::UnmatchedRestore => "q-without-save"`) and so never appear bracketed in the source;
- * - every rule in `tests/redaction/outcomes.tsv`, the committed record of what real cases refuse.
- *
- * `split-*` rules are split's, never a redaction's, and are left out. The probe below drives it on planted text.
+ * The visible text of `RedactTool.svelte`: its markup's text nodes and its script's string
+ * literals, comments taken out. What the island can put on screen besides this module's strings.
  */
-function vocabulary(sources: string[], outcomes: string): Set<string> {
-  const ids = new Set<string>();
-  for (const text of sources) {
-    for (const m of text.matchAll(/\[([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\]/g)) ids.add(m[1] ?? "");
-    for (const m of text.matchAll(/Self::\w+ => "([a-z0-9]+(?:-[a-z0-9]+)+)"/g))
-      ids.add(m[1] ?? "");
-  }
-  for (const m of outcomes.matchAll(/\[([a-z0-9-]+)\]/g)) ids.add(m[1] ?? "");
-  return new Set([...ids].filter((id) => id !== "" && !id.startsWith("split-")));
+function islandStrings(): string[] {
+  const source = readFileSync(new URL("./RedactTool.svelte", import.meta.url), "utf8");
+  const script = source.slice(source.indexOf("<script"), source.indexOf("</script>"));
+  const markup = source
+    .slice(source.indexOf("</script>") + "</script>".length, source.indexOf("<style"))
+    .replace(/<!--[\s\S]*?-->/g, " ");
+  const code = script.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  const literals = [...code.matchAll(/"([^"\n]{12,})"|`([^`\n]{12,})`/g)].map(
+    (m) => m[1] ?? m[2] ?? "",
+  );
+  const text = markup
+    .replace(/\{[^{}]*\}/g, " ")
+    .replace(/<[^>]*>/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => /[a-z]{3}/i.test(line));
+  return [...literals, ...text];
 }
 
-function realVocabulary(): Set<string> {
-  const sources = [
-    ...rustFiles(join(REPO, "core/burrow-engines/src")),
-    ...rustFiles(join(REPO, "core/burrow-ops/src")),
-  ].map((path) => readFileSync(path, "utf8"));
-  const outcomes = readFileSync(join(REPO, "tests/redaction/outcomes.tsv"), "utf8");
-  return vocabulary(sources, outcomes);
+function claimsIn(text: string): string[] {
+  return FORBIDDEN_CLAIMS.filter(({ pattern }) => pattern.test(text)).map(({ name }) => name);
 }
-
-/** Bracketed hyphenated words in the source that are not refusal rules. Each says why. */
-const NOT_RULES: Readonly<Record<string, string>> = {};
 
 describe("redaction's refusal categories (#136, S3 and S7)", () => {
-  it("places every rule the core can raise in a category", () => {
-    const found = realVocabulary();
-    // A COUNT, so a vocabulary that read nothing does not pass as "nothing unplaced".
-    expect(
-      found.size,
-      "the source scan found too few rules to be reading the core",
-    ).toBeGreaterThan(100);
-    const unplaced = [...found].filter((id) => !Object.hasOwn(RULES, id) && !(id in NOT_RULES));
+  it("places every rule the engine lists in a category", () => {
+    const listed = engineRules();
+    // A COUNT, so a list that read nothing does not pass as "nothing unplaced".
+    expect(listed.length, "the engine's rule table was not read").toBeGreaterThan(100);
+    const unplaced = listed.filter((id) => !Object.hasOwn(RULES, id));
     expect(unplaced, `rules with no category: ${unplaced.join(", ")}`).toEqual([]);
   });
 
-  it("places no rule the core does not raise", () => {
-    const found = realVocabulary();
-    const stale = Object.keys(RULES).filter((id) => !found.has(id));
-    expect(stale, `categorised rules the core no longer raises: ${stale.join(", ")}`).toEqual([]);
-  });
-
-  it("finds a rule in each of the three shapes, and leaves split's out (the scan's own probe)", () => {
-    const found = vocabulary(
-      [
-        'Err(Error::Unsupported("pdf redaction [planted-bracket]: x".into()))',
-        '            Self::Planted => "planted-geometry",',
-        '"split [split-planted]: never a redaction rule"',
-        "a word [notarule] without a hyphen is not read",
-      ],
-      'case\tpage\tUnsupported("pdf redaction [planted-outcome]")\n',
-    );
-    expect([...found].sort()).toEqual(["planted-bracket", "planted-geometry", "planted-outcome"]);
+  it("places no rule the engine does not list", () => {
+    const listed = new Set(engineRules());
+    const stale = Object.keys(RULES).filter((id) => !listed.has(id));
+    expect(stale, `categorised rules the engine does not list: ${stale.join(", ")}`).toEqual([]);
+    expect(Object.keys(RULES).length).toBe(listed.size);
   });
 
   it("uses between six and ten categories, each with a title and a next step", () => {
@@ -108,40 +131,32 @@ describe("redaction's refusal categories (#136, S3 and S7)", () => {
   });
 
   it("makes none of the page's forbidden claims and never names burrow", () => {
-    const sentences = [
-      ...Object.values(CATEGORIES).flatMap(({ title, next }) => [title, next]),
-      ...[
-        "PasswordRequired",
-        "LimitExceeded",
-        "OutputRejected",
-        "Malformed",
-        "Unsupported",
-        "InvalidArgument",
-        "EngineUnavailable",
-        "Internal",
-      ].flatMap((kind) => {
-        const { title, next } = messageFor({ kind });
-        return [title, next];
-      }),
-      ...resultNotes(1, 1),
-      ...resultNotes(3, 2),
-    ];
-    for (const text of sentences) {
+    for (const text of everySentence()) {
       expect(text.toLowerCase(), text).not.toContain("burrow");
-      for (const banned of ["sorry", "oops", "please", "an error occurred"]) {
+      for (const banned of ["sorry", "oops", "please", "an error occurred", "never"]) {
         expect(text.toLowerCase(), text).not.toContain(banned);
       }
-      const claims = FORBIDDEN_CLAIMS.filter(({ pattern }) => pattern.test(text)).map(
-        (c) => c.name,
-      );
-      expect(claims, text).toEqual([]);
+      expect(claimsIn(text), text).toEqual([]);
     }
   });
 
-  it("shows a rule id only if it is one of its own", () => {
+  it("puts nothing on screen from the island itself that makes a forbidden claim (L3)", () => {
+    const strings = islandStrings();
+    // A COUNT, so a parse that found nothing does not pass.
+    expect(strings.length, "the island's visible strings were not read").toBeGreaterThan(10);
+    expect(strings.some((s) => s.includes("Remove the text"))).toBe(true);
+    for (const text of strings) {
+      expect(text.toLowerCase(), text).not.toContain("burrow");
+      expect(claimsIn(text), text).toEqual([]);
+    }
+  });
+
+  it("reads a rule id only from the FIRST bracket, and only if it is one of its own (L1)", () => {
     expect(ruleOf("pdf redaction [image-in-region]: an image")).toBe("image-in-region");
-    // The first KNOWN token wins; an unknown one is skipped, never shown.
-    expect(ruleOf("[made-up-thing] then [font-flags]")).toBe("font-flags");
+    expect(ruleOf("pdf region [rotate]: a /Rotate that is not a right angle")).toBe("rotate");
+    // A known rule in a LATER bracket is not the message's rule, as Rust's FrameRule::of reads it.
+    expect(ruleOf("[made-up-thing] then [font-flags]")).toBe("");
+    expect(ruleOf("pdf redaction [other]: [font-flags]")).toBe("");
     expect(ruleOf("pdf redaction [made-up-thing]: x")).toBe("");
     expect(ruleOf("[IMAGE-IN-REGION]")).toBe("");
     expect(ruleOf(undefined)).toBe("");
@@ -149,15 +164,52 @@ describe("redaction's refusal categories (#136, S3 and S7)", () => {
     expect(ruleOf("[constructor]")).toBe("");
   });
 
-  it("answers a refusal with its category, and its rule id", () => {
-    const message = messageFor({
-      kind: "Unsupported",
-      message: "pdf redaction [vector-in-region]: x",
+  it("answers a refusal with its category and rule id, whether Unsupported or Malformed", () => {
+    expect(
+      messageFor({ kind: "Unsupported", message: "pdf redaction [vector-in-region]: x" }),
+    ).toEqual({ ...CATEGORIES.pictures, rule: "vector-in-region", retryable: true });
+    expect(messageFor({ kind: "Malformed", message: "pdf region [rotate]: x" })).toEqual({
+      ...CATEGORIES["page-shape"],
+      rule: "rotate",
+      retryable: true,
     });
-    expect(message).toEqual({ ...CATEGORIES.pictures, rule: "vector-in-region", retryable: true });
     expect(messageForRule("acroform-field").title).toBe(CATEGORIES.annotations.title);
     // An unknown rule falls back to the kind's sentence, with no id.
     expect(messageFor({ kind: "Unsupported", message: "[made-up-thing]" }).rule).toBe("");
+  });
+
+  it("never puts the engine's message on the page, for any kind (ADR 0009)", () => {
+    const CANARY = "SECRET-CANARY-9d1f";
+    for (const kind of KINDS) {
+      for (const message of [
+        `pdf redaction [image-in-region]: ${CANARY}`,
+        `pdf redaction [made-up-thing]: ${CANARY}`,
+        `${CANARY} [image-in-region]`,
+        CANARY,
+      ]) {
+        const shown = messageFor({ kind, message, limit: "max_pages" });
+        for (const [field, value] of Object.entries(shown)) {
+          expect(String(value), `${kind}.${field} for ${JSON.stringify(message)}`).not.toContain(
+            "CANARY",
+          );
+        }
+      }
+    }
+  });
+
+  it("names the limit that was hit, and says may, not will", () => {
+    expect(
+      messageFor({
+        kind: "LimitExceeded",
+        limit: "max_pages",
+        requested: "9000",
+        allowed: "2000",
+      }).title,
+    ).toBe("That document has 9,000 pages, and Not Only PDF stops at 2,000.");
+    expect(messageFor({ kind: "LimitExceeded", limit: "max_duration_ms" }).title).toContain(
+      "longer than Not Only PDF allows",
+    );
+    for (const text of everySentence()) expect(text, text).not.toMatch(/\bwill work\b/);
   });
 
   it("says the §7 result notes only when they happened, with the count in words that agree", () => {

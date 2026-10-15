@@ -78,3 +78,21 @@ export function isPinnedArtifact(url: string, bundles: "base" | "all" = "base"):
         /^\/engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/.test(url)))
   );
 }
+
+/**
+ * Requests the HELD redaction page legitimately makes (#136): its own bundle -- the redaction
+ * worker and module -- and the two base artifacts it shares, qpdf and the guard control. By exact
+ * path, as `isPinnedArtifact`. Not the base worker or the base module, which a redacting page never
+ * fetches, and nothing of the render bundle, which it does not use until S4.
+ *
+ * Redaction's worker recycles after every reply (#199), so every run re-fetches this set; that is
+ * a respawn, not an upload.
+ */
+export function isRedactionArtifact(url: string): boolean {
+  return (
+    /^\/engines\/qpdf\.[0-9a-f]{16}\.wasm$/.test(url) ||
+    /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url) ||
+    /^\/engines\/burrow-redact-worker\.[0-9a-f]{16}\.js$/.test(url) ||
+    /^\/engines\/burrow_wasm_redact_bg\.[0-9a-f]{16}\.wasm$/.test(url)
+  );
+}

@@ -36,6 +36,9 @@ export interface RedactFailure {
   message?: string;
   /** The ceiling that was hit, for `LimitExceeded`. */
   limit?: string;
+  /** What was asked for, and what was allowed, for `LimitExceeded`. Strings: these are `u64`. */
+  requested?: string;
+  allowed?: string;
 }
 
 export interface RedactMessage {
@@ -65,8 +68,8 @@ export type Category =
 export const CATEGORIES: Readonly<Record<Category, { title: string; next: string }>> = {
   pictures: {
     title:
-      "The area you chose has a picture or a drawn shape in it, and Not Only PDF removes only text.",
-    next: "Choose an area that holds only text, or leave out the picture.",
+      "The area you chose touches a picture or a drawn shape, and Not Only PDF removes only text: it cannot write an edited picture back into the file yet, so a scanned page cannot be redacted here yet either.",
+    next: "Choose an area that holds only text. If the page is a scan, the section on scanned documents below says what that means for now.",
   },
   annotations: {
     title:
@@ -79,9 +82,8 @@ export const CATEGORIES: Readonly<Record<Category, { title: string; next: string
     next: "Flatten the layers in the program that made the document, or print it to a new PDF, then try again.",
   },
   "page-shape": {
-    title:
-      "Not Only PDF could not work out the exact shape of this page, so it cannot place the area on it.",
-    next: "Try another page, or save the document again from the program that made it.",
+    title: "Not Only PDF could not place that area on this page as it is shown.",
+    next: "Check the page number and the area against the page's size, or save the document again from the program that made it.",
   },
   shared: {
     title:
@@ -102,7 +104,7 @@ export const CATEGORIES: Readonly<Record<Category, { title: string; next: string
     next: "Save the document again from the program that made it, then try again.",
   },
   "too-complex": {
-    title: "This page is more complicated than Not Only PDF will work through.",
+    title: "This page is more complicated than Not Only PDF goes through.",
     next: "Try a smaller area, or a simpler copy of the page.",
   },
 };
@@ -148,16 +150,16 @@ export const RULES: Readonly<Record<string, Category>> = {
   "rotate-not-whole": "page-shape",
   "user-unit": "page-shape",
   "user-unit-not-one": "page-shape",
-  "no-pages": "page-shape",
+  rotate: "page-shape",
 
   // Content another page draws too.
   "shared-contents": "shared",
   "shared-form-would-change-elsewhere": "shared",
-  "direct-font": "shared",
-  "font-selected-in-another-scope": "shared",
 
   // Fonts.
   "base-encoding-not-a-name": "fonts",
+  "direct-font": "fonts",
+  "font-selected-in-another-scope": "fonts",
   "descendant-fonts": "fonts",
   "differences-anchor": "fonts",
   "differences-item-unreadable": "fonts",
@@ -271,14 +273,81 @@ export const RULES: Readonly<Record<string, Category>> = {
   "too-many-glyphs": "too-complex",
 };
 
-/** The first bracketed rule id in `message` that this page knows, or "". */
+/**
+ * The rule id in `message`'s FIRST bracketed token, if this page knows it; otherwise "".
+ *
+ * The first token only, as Rust's `FrameRule::of` reads it (`redact/frames.rs`): the core writes
+ * the rule there, and a later bracket can be anything the message quotes.
+ */
 export function ruleOf(message: string | undefined): string {
   if (!message) return "";
-  for (const match of message.matchAll(/\[([a-z0-9][a-z0-9-]{0,63})\]/g)) {
-    const id = match[1] ?? "";
-    if (Object.hasOwn(RULES, id)) return id;
+  const id = /\[([^\]]{0,64})\]/.exec(message)?.[1] ?? "";
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) && Object.hasOwn(RULES, id) ? id : "";
+}
+
+/** Human numbers for a byte count, without a dependency. */
+function mb(bytes: string | undefined): string {
+  const n = Number(bytes ?? "0");
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const value = n / (1024 * 1024);
+  return value >= 10 ? `${Math.round(value)} MB` : `${value.toFixed(1)} MB`;
+}
+
+/** A plain count, or an empty string when the number is not usable. */
+function count(value: string | undefined): string {
+  const n = Number(value ?? "0");
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n.toLocaleString("en");
+}
+
+/** A ceiling, named, as `split-messages.ts` names it. "May", because it is not a promise. */
+function limitMessage(failure: RedactFailure): RedactMessage {
+  const base = { rule: "", retryable: true };
+  switch (failure.limit) {
+    case "max_input_bytes": {
+      const asked = mb(failure.requested);
+      const allowed = mb(failure.allowed);
+      return {
+        ...base,
+        title:
+          asked && allowed
+            ? `That file is ${asked}, and Not Only PDF stops at ${allowed}.`
+            : "That file is larger than Not Only PDF will open.",
+        next: "Nothing was read. A smaller file, or one split into parts first, may work.",
+      };
+    }
+    case "max_pages": {
+      const asked = count(failure.requested);
+      const allowed = count(failure.allowed);
+      return {
+        ...base,
+        title:
+          asked && allowed
+            ? `That document has ${asked} pages, and Not Only PDF stops at ${allowed}.`
+            : "That document has more pages than Not Only PDF will open.",
+        next: "It was opened but not changed. Splitting it into smaller documents first may work.",
+      };
+    }
+    case "max_duration_ms":
+      return {
+        ...base,
+        title: "That took longer than Not Only PDF allows and was stopped.",
+        next: "Nothing was changed. A smaller area, or a simpler copy of the page, may finish.",
+      };
+    case "max_memory_bytes":
+      return {
+        ...base,
+        // DETECTED, NOT PREVENTED (ADR 0007): the memory was already spent when it was noticed.
+        title: "That document used more memory than Not Only PDF allows, and was stopped.",
+        next: "It had already been read by then, so the tab may be slow for a moment. Nothing was changed.",
+      };
+    default:
+      return {
+        ...base,
+        title: "That document is past one of the limits Not Only PDF works within.",
+        next: "Nothing was changed. A smaller document may work.",
+      };
   }
-  return "";
 }
 
 /** The category's message for `rule`, which must be a key of `RULES`. */
@@ -299,21 +368,18 @@ export function messageFor(failure: RedactFailure): RedactMessage {
     case "PasswordRequired":
       return {
         title: "That PDF is password-protected.",
-        next: "Not Only PDF cannot open it yet. Remove the password in the program that made it, then choose it again.",
+        // FOR LAUNCH, A REFUSAL (owner, 2026-10-15): a password field would hold the password in a
+        // JavaScript string nothing can zero (#199); it is post-launch.
+        next: "Not Only PDF cannot open it yet. Remove the password in the program you read it with, then choose it again.",
         rule: "",
         retryable: true,
       };
     case "LimitExceeded":
-      return {
-        title: "That document is past one of the limits Not Only PDF works within.",
-        next: "Nothing was changed. A smaller document, or a single page split out of it, will work.",
-        rule: "",
-        retryable: true,
-      };
+      return limitMessage(failure);
     case "OutputRejected":
       return {
         title: "Not Only PDF checked the result and would not hand it over.",
-        next: "Your file has not been changed. Choosing a slightly larger area sometimes helps; if it keeps happening, that is worth reporting.",
+        next: "Your file has not been changed and no new file was made. If it keeps happening on this document, that is worth reporting.",
         rule: ruleOf(failure.message),
         retryable: true,
       };

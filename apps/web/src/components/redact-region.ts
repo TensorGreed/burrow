@@ -61,20 +61,40 @@ export function readRegion(
   if (region.width <= 0 || region.height <= 0) {
     return { ok: false, problem: "The area needs a width and a height greater than zero." };
   }
-  const right = region.left + region.width;
-  const bottom = region.top + region.height;
-  if (right > frame.width || bottom > frame.height) {
+  // WHAT THE HINT SHOWS IS ACCEPTED. The page shows the frame rounded down to whole points
+  // (`shownSize`); a person who types the size up to the next whole point has typed the edge, so
+  // anything under a point past it is clamped to the frame. A point or more past it is refused.
+  const width = clamp(region.left, region.width, frame.width);
+  const height = clamp(region.top, region.height, frame.height);
+  if (width === null || height === null) {
     return {
       ok: false,
-      problem: `The area runs past the edge of the page, which is ${round(frame.width)} by ${round(frame.height)} points.`,
+      problem: `The area runs past the edge of the page, which is ${shownSize(frame)} points.`,
     };
   }
-  return { ok: true, region };
+  return { ok: true, region: { ...region, width, height } };
 }
 
-/** A frame size for a sentence: whole points, or one decimal where that matters. */
-function round(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+/** How far past an edge a typed area may run and be clamped to it, in points. */
+export const EDGE_TOLERANCE = 1;
+
+/** `extent` from `start`, clamped to `edge` if it runs under a point past it; null otherwise. */
+function clamp(start: number, extent: number, edge: number): number | null {
+  const end = start + extent;
+  if (end <= edge) return extent;
+  if (end - edge >= EDGE_TOLERANCE) return null;
+  const clamped = edge - start;
+  return clamped > 0 ? clamped : null;
+}
+
+/**
+ * The page's size as the page shows it: whole points, rounded DOWN, "W by H".
+ *
+ * One rendering for the hint and the problem text alike, rounded down so the shown size is never
+ * past the frame.
+ */
+export function shownSize(frame: { width: number; height: number }): string {
+  return `${Math.floor(frame.width)} by ${Math.floor(frame.height)}`;
 }
 
 /**
@@ -82,7 +102,8 @@ function round(value: number): string {
  *
  * `frames` is flat `[width, height]` pairs, `0, 0` where a frame rule refused the page, and
  * `frameRefusals` holds that rule per page, or "". A reply whose two arrays disagree in length is
- * not trusted: `null`, so the page reports it as a fault rather than drawing a guess.
+ * not trusted: `null`, so the page reports it as a fault rather than drawing a guess. Two empty
+ * arrays are an empty list here; the island treats a document with no pages as unreadable.
  */
 export function framesOf(
   frames: readonly number[] | undefined,

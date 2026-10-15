@@ -77,7 +77,9 @@ const SHOWN = [
   },
   {
     file: "src/components/RedactTool.svelte",
-    pattern: /Starting the PDF engine — about ([\d,.]+) KB, downloaded once/,
+    // NOT "downloaded once": redaction's worker recycles after every reply (#199), and whether
+    // the browser serves the engine from cache the second time is not measured.
+    pattern: /Starting the PDF engine — about ([\d,.]+) KB\. Nothing has been sent anywhere\./,
     measured: redactBrotli,
   },
 ];

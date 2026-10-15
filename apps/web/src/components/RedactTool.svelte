@@ -22,7 +22,7 @@
     resultNotes,
     type RedactMessage,
   } from "./redact-messages.js";
-  import { framesOf, readRegion } from "./redact-region.js";
+  import { framesOf, readRegion, shownSize } from "./redact-region.js";
   import {
     LIMITS,
     ORIGIN_MISMATCH,
@@ -104,6 +104,13 @@
     file = chosen;
     frames = null;
     unreadable = false;
+    // A NEW FILE STARTS FROM PAGE 1 AND AN EMPTY AREA, as `SplitTool.svelte` resets its cuts: a
+    // page number or an area typed for the last document means nothing for this one.
+    pageText = "1";
+    left = "";
+    top = "";
+    width = "";
+    height = "";
     announce(`${chosen.name} chosen.`);
     await readFrames(chosen);
   }
@@ -121,7 +128,9 @@
         { op: "page_frames", blob: chosen, password: null, limits: LIMITS },
         { maxDurationMs: LIMITS.maxDurationMs },
       );
-      engineStarted = h.hasWorker();
+      // ON THE FIRST REPLY, not from `hasWorker()`: redaction's worker recycles after every reply
+      // (#199), so a live worker is never held between operations and the question means nothing.
+      engineStarted = true;
       if (!watching.live()) return;
       if (!raw.ok && raw.kind === CANCELLED) return;
       if (!raw.ok) {
@@ -246,6 +255,9 @@
   }
 
   onDestroy(() => {
+    // INVALIDATE FIRST, so a reply landing during teardown cannot hand out a URL after the
+    // release below (L4).
+    delivery.invalidate();
     clearResult();
     host?.dispose();
   });
@@ -307,7 +319,7 @@
 
   {#if preparing}
     <p class="preparing" role="status">
-      Starting the PDF engine — about 585 KB, downloaded once. Nothing has been sent anywhere.
+      Starting the PDF engine — about 585 KB. Nothing has been sent anywhere.
     </p>
   {/if}
 
@@ -334,8 +346,7 @@
           data-width={frame.width}
           data-height={frame.height}
         >
-          This page is {Math.round(frame.width)} by {Math.round(frame.height)} points, measured from its
-          top-left corner as it is shown.
+          This page is {shownSize(frame)} points, measured from its top-left corner as it is shown.
         </p>
       {/if}
     </fieldset>
@@ -351,33 +362,45 @@
         <legend>The area, in points</legend>
         <div class="area">
           <label
-            >From the left <input
+            >From the left
+            <input
               type="text"
               inputmode="decimal"
+              aria-describedby={regionProblem ? "region-problem" : undefined}
+              aria-invalid={regionProblem ? "true" : undefined}
               bind:value={left}
               data-testid="redact-left"
             /></label
           >
           <label
-            >From the top <input
+            >From the top
+            <input
               type="text"
               inputmode="decimal"
+              aria-describedby={regionProblem ? "region-problem" : undefined}
+              aria-invalid={regionProblem ? "true" : undefined}
               bind:value={top}
               data-testid="redact-top"
             /></label
           >
           <label
-            >Width <input
+            >Width
+            <input
               type="text"
               inputmode="decimal"
+              aria-describedby={regionProblem ? "region-problem" : undefined}
+              aria-invalid={regionProblem ? "true" : undefined}
               bind:value={width}
               data-testid="redact-width"
             /></label
           >
           <label
-            >Height <input
+            >Height
+            <input
               type="text"
               inputmode="decimal"
+              aria-describedby={regionProblem ? "region-problem" : undefined}
+              aria-invalid={regionProblem ? "true" : undefined}
               bind:value={height}
               data-testid="redact-height"
             /></label
