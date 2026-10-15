@@ -1991,8 +1991,8 @@ fn check_type_three<O: PdfObject>(
 /// over-estimate of what PDFium parses, never a model of it: no code is resolved to its own
 /// procedure, and a code is charged even if PDFium would find no procedure for it. A procedure no
 /// drawn code names is not charged, because PDFium does not parse it at the load: measured, and
-/// pinned by `type_three_procedures_no_code_draws_are_not_parsed_at_the_load` (see
-/// [`crate::redact_read_back::MAX_MARKED_WORK`] for the numbers).
+/// pinned by `tests/pdfium_type_three_parse.rs` (see [`crate::redact_read_back::MAX_MARKED_WORK`]
+/// for the numbers).
 ///
 /// What is memoised is the scan, never the charge: each procedure stream is scanned once and each
 /// `/CharProcs` dictionary's heaviest procedure found once, so the 4,000-names-to-one-stream cost
