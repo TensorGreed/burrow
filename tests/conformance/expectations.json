@@ -849,7 +849,7 @@
       "inputs": [
         {
           "file": "fixtures/chrome-printed.pdf",
-          "sha256": "dcc59f09b72194a9cc71a68f26fa8d11244fbdd7bc705a8feb068e83eb8ec58c"
+          "sha256": "54d4fd0000f6858656452f19523ad48e0e2598b1634731fad9ac7a01c75b2bb1"
         }
       ],
       "password": null,

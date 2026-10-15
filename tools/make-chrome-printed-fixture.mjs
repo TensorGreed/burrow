@@ -21,6 +21,16 @@
 // site's own Atkinson Hyperlegible Next (`apps/web/public/fonts/`, SIL OFL 1.1, notice beside it),
 // inlined as a data: URL, and this script refuses unless the browser reports that face loaded.
 //
+// THE CLAIMS ARE ENFORCED ON THE OUTPUT, not only intended: after printing, every `/FontName`
+// must be a subset of that face (`ABCDEF+AtkinsonHyperlegibleNext-...`), and neither the bytes nor
+// any stream they inflate to may carry a `/URI` or an `http`. Otherwise nothing is written.
+//
+// A TYPE 3 PATH, NOT CHROME'S USUAL ONE, stated: the only OFL face in the repository is a
+// VARIABLE font, and Chrome embeds a variable face as Type 3 glyphs. An ordinary Chrome PDF set in
+// a static font takes the Type0/CIDFontType2 path instead, which this fixture does not exercise.
+// A static instance would need fontTools, which is not a dependency of this repository; the
+// regression this fixture exists for (the empty-name destination) does not depend on the font.
+//
 // NOT BYTE-REPRODUCIBLE, stated rather than hidden: Chrome writes a creation date and its own
 // version into the file. The committed PDF is pinned by sha256 in `expectations.json`; re-running
 // this changes the hash, which is a regeneration to commit deliberately, never a drift to accept.
@@ -32,7 +42,7 @@ import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webApp = join(repo, "apps", "web");
@@ -116,6 +126,39 @@ const html = `<!doctype html>
   <p>The in-page link above lands here.</p>
 </body></html>`;
 
+/** Refuse the PDF unless it holds only the shipped face and names no URL, raw or inflated. */
+function enforce(pdf) {
+  const raw = pdf.toString("latin1");
+  const texts = [raw];
+  const streams = /stream\r?\n/g;
+  let match;
+  while ((match = streams.exec(raw)) !== null) {
+    const start = match.index + match[0].length;
+    const end = raw.indexOf("endstream", start);
+    if (end < 0) break;
+    try {
+      texts.push(inflateSync(pdf.subarray(start, end)).toString("latin1"));
+    } catch {
+      // Not a flate stream, or one that ends at a different byte: its raw bytes are in `raw`.
+    }
+  }
+  const names = [...raw.matchAll(/\/FontName\s*\/([^\s/<>[\]()]+)/g)].map((m) => m[1]);
+  const foreign = names.filter((name) => !/^[A-Z]{6}\+AtkinsonHyperlegibleNext-/.test(name));
+  if (names.length === 0 || foreign.length > 0) {
+    throw new Error(
+      `refusing: the PDF embeds ${names.length} font(s), not all the shipped face: ${foreign.join(", ")}`,
+    );
+  }
+  const urls = texts.filter((text) => text.includes("/URI") || /http/i.test(text)).length;
+  if (urls > 0) {
+    throw new Error(`refusing: ${urls} part(s) of the PDF carry a /URI or an http reference`);
+  }
+  console.log(
+    `make-chrome-printed-fixture: ${names.length} embedded font(s), all the shipped face; ` +
+      `${texts.length} part(s) scanned, raw and inflated, with no /URI and no http`,
+  );
+}
+
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage();
@@ -130,6 +173,7 @@ try {
     throw new Error(`the fixture font did not load (${loaded} face(s) loaded); refusing to print`);
   }
   const pdf = await page.pdf({ format: "A4", printBackground: true });
+  enforce(Buffer.from(pdf));
   writeFileSync(out, pdf);
   console.log(`make-chrome-printed-fixture: wrote ${out} (${pdf.length} bytes) with ${browser.version()}`);
 } finally {

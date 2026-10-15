@@ -692,8 +692,9 @@ fn the_schema_records_a_route_for_every_limit_failure() {
 ///
 /// **RAISED 2 -> 3 on 2026-10-15 for #358**, and what changed about the trade: the new gap is the
 /// first that comes from a real producer's ordinary output rather than a hostile file or a
-/// verification property. Split refuses every Chrome-printed PDF (an empty-name `/Dest /`), which
-/// shipped in v0.1.6 because no corpus held one. The owner's order is to record it as a known
+/// verification property. Split refuses a Chrome-printed PDF that carries an `href="#"` link,
+/// which Chrome writes as an empty-name `/Dest /`; that shipped in v0.1.6 because no corpus held
+/// one. The owner's order is to record it as a known
 /// refusal, pinned by its rule id, until lane 1's narrowing lands, rather than as a case asserting
 /// the refusal is correct behaviour. It is targeted at M2 like the others, and closing it lowers
 /// this back to 2.

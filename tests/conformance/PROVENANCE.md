@@ -161,6 +161,14 @@ Chrome-printed file (owner, 2026-10-15).
   face into a committed PDF (#154). Checked after generation: four subsets of
   `AtkinsonHyperlegibleNext-Regular`, no other `/FontName`.
 - **No third-party origin.** The links are `#` and `#second`; there is no external URL.
+- **Both are enforced, not only intended.** The generator refuses to write the file unless every
+  `/FontName` is a subset of that face and neither the bytes nor any stream they inflate to holds a
+  `/URI` or an `http`.
+- **A Type 3 path, not Chrome's usual one.** The only OFL face in this repository is a *variable*
+  font, and Chrome embeds a variable face as Type 3 glyphs. An ordinary Chrome PDF set in a static
+  font takes the Type0/CIDFontType2 path, which this fixture does not exercise. No static OFL
+  instance is in the repository, and making one needs fontTools, which is not a dependency here.
+  The regression the fixture exists for, the empty-name destination, does not depend on the font.
 - **Not byte-reproducible.** Chrome writes its version (`Skia/PDF m153`, Chromium 153.0.8010.12
   when committed) and a creation date into the file. The sha256 in `expectations.json` pins the
   committed bytes; regenerating changes it, and that is a deliberate commit, never accepted drift.
