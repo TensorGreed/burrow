@@ -526,13 +526,31 @@ impl<O: PdfObject> Resources for PageResources<O> {
     }
 }
 
+/// A simple font's `/LastChar` as PDFium reads it (#182): a number truncated to a whole one, and
+/// anything else -- absent, a string, a name, a number past what a reader agrees on -- 0, which
+/// ends nothing. Lenient on purpose: this read exists to find where `/Widths` ends, and a refusal
+/// here would be one with no fixture of its own (#182's code review).
+fn last_char_of<O: PdfObject>(font: &O) -> i64 {
+    use super::frame::{Reading, reading_of};
+    let handle = font.key(&LAST_CHAR);
+    match handle.type_code() {
+        object_type::INTEGER | object_type::REAL => match reading_of(&handle) {
+            Reading::Number(value) => whole(value.trunc()).unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
 /// Whether `code` is past a simple font's `/LastChar` while its `/Widths` still holds an entry for
 /// it (#182).
 ///
-/// PDFium stops reading `/Widths` at `/LastChar` and gives a code past it `/MissingWidth`, or 0;
-/// [`width_of`] indexes the array from `/FirstChar` and would use the entry. Glyphs past
-/// `/LastChar` then sat where PDFium does not draw them: `Ok`, with the secret in the region,
-/// measured. **Refused rather than modelled** (DECISIONS rule 1): the code is refused, never
+/// PDFium stops reading a Type1 font's `/Widths` at `/LastChar` and gives a code past it
+/// `/MissingWidth`, or 0 -- measured with the oracle in `strict_readers`; [`width_of`] indexes the
+/// array from `/FirstChar` and would use the entry. Glyphs past `/LastChar` then sat where PDFium
+/// does not draw them: `Ok`, with the secret in the region, measured. **TrueType and Type 3 fonts
+/// are refused on the same reading without having been measured**: if PDFium reads their
+/// `/Widths` past `/LastChar` after all, that is an over-refusal, the direction that does not leak. **Refused rather than modelled** (DECISIONS rule 1): the code is refused, never
 /// re-measured with `/MissingWidth`, so no placement moves inside an output that was `Ok`. A code
 /// with no entry is untouched, and goes to `/MissingWidth` or `[no-width]` as before.
 fn past_last_char(facts: &FontFacts, code: u32) -> bool {
@@ -810,17 +828,16 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
             *width /= 10.0;
         }
     }
-    // `/LastChar` ENDS `/Widths` FOR PDFIUM (#182): a code past it takes `/MissingWidth`, or 0, and
-    // never the array's entry for it. Above 0 only; at or below 0, or absent, PDFium reads the whole
-    // array, and so does this. Kept only where it ends the array early, which is the one place the
-    // two readings differ; `past_last_char` refuses a code there.
-    let last_char = integer_or(&font.key(&LAST_CHAR), 0)?;
-    let widths_end = facts
-        .first_char
-        .saturating_add(i64::try_from(facts.widths.len()).unwrap_or(i64::MAX))
-        .saturating_sub(1);
-    if last_char > 0 && last_char < widths_end {
-        facts.last_char = Some(last_char);
+    // `/LastChar` ENDS `/Widths` FOR PDFIUM (#182), measured for Type1: a code past it takes
+    // `/MissingWidth`, or 0, and never the array's entry for it. Above 0 only; at or below 0, or
+    // absent, PDFium reads the whole array, and so does this. A simple font only -- a Type 0 font's
+    // widths are `/W` -- and read as PDFium reads it, never refused for its own sake: see
+    // `last_char_of`. `past_last_char` refuses a code past it that `/Widths` still covers.
+    if subtype != Some(SUBTYPE_TYPE0) {
+        let last_char = last_char_of(font);
+        if last_char > 0 {
+            facts.last_char = Some(last_char);
+        }
     }
 
     let descriptor = font.key(&FONT_DESCRIPTOR);

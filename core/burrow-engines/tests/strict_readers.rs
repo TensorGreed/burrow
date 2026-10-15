@@ -1044,9 +1044,10 @@ fn a_font_part_written_as_a_stream_refuses_and_the_dictionary_redacts() {
 
 /// #182: PDFium stops reading `/Widths` at `/LastChar`, and gives a code past it `/MissingWidth`,
 /// or 0. MEASURED HERE, not assumed: the same four widths, 600 each, for `ABCD` at size 20 from
-/// x = 110, with `/LastChar` 66, 68, 0 and absent. PDFium advances `C` by 0 when `/LastChar` is 66,
-/// and by 12 in the other three. So a code past an early `/LastChar` that `/Widths` still gives a
-/// width refuses `[last-char]`, and the three twins, where both readings agree, redact.
+/// x = 110, with `/LastChar` 66, 66.7, 68, 0, -1, `(x)` and absent. PDFium advances `C` by 0 for 66
+/// and for 66.7, which it truncates, and by 12 for the other five. So a code past an early
+/// `/LastChar` that `/Widths` still gives a width refuses `[last-char]`, and the five twins, where
+/// both readings agree, redact. Measured for Type1 only; see `past_last_char`.
 #[test]
 fn a_code_past_last_char_that_widths_still_covers_refuses() {
     let document_for = |last_char: &str| -> Vec<u8> {
@@ -1076,7 +1077,22 @@ fn a_code_past_last_char_that_widths_still_covers_refuses() {
         gap(&early).abs() < 0.05,
         "/LastChar 66: PDFium advances C by 0, not by its /Widths entry"
     );
-    for last_char in ["/LastChar 68", "/LastChar 0", ""] {
+    // A REAL IS TRUNCATED, as PDFium reads it: 66.7 is 66, early, and refuses below.
+    let real = document_for("/LastChar 66.7");
+    assert!(
+        gap(&real).abs() < 0.05,
+        "/LastChar 66.7: PDFium truncates it to 66 and advances C by 0"
+    );
+    refuses_by("/LastChar 66.7, C and D past 66", &real, "last-char");
+    // THE TWINS, both readings agreeing: past the array, 0, NEGATIVE (the sign gate), absent, and
+    // not a number at all (PDFium reads a string as 0).
+    for last_char in [
+        "/LastChar 68",
+        "/LastChar 0",
+        "/LastChar -1",
+        "",
+        "/LastChar (x)",
+    ] {
         let twin = document_for(last_char);
         assert!(
             (gap(&twin) - 12.0).abs() < 0.05,
