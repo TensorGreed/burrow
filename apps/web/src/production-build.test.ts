@@ -204,9 +204,9 @@ describe("the production build", () => {
     //
     // So: plant a fake build, run THE SAME HELPERS the assertions run, and require offenders.
     // Since #136's S1 the page exists, held in `src/held/` and injected only into harness
-    // builds; the harness control below ("has the held /redact-pdf page in the harness build") runs the same route helper over the harness
-    // build and requires the page there, so this probe is no longer the only evidence that the
-    // predicate can see it.
+    // builds; the harness control below ("has the held /redact-pdf page in the harness build")
+    // runs the same route helper over the harness build and requires the page there, so this
+    // probe is no longer the only evidence that the predicate can see it.
     const planted = [
       "redact-pdf/index.html",
       "index.html",
