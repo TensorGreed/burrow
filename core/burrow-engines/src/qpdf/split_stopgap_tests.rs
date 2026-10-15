@@ -522,3 +522,45 @@ fn the_catalog_exemption_holds_only_for_one_catalog_written_once() {
         RULE,
     );
 }
+
+/// #252: A FORM WHOSE `/Length` IS WRONG, drawing text in a font from its own resources. Split's
+/// open runs qpdf with recovery off, so qpdf reads the form as null rather than repairing it, and the
+/// reference pass refuses the reference that names it; a part can no longer arrive without the
+/// form's font. The twin, the same form with a correct `/Length`, opens. The length is off by two,
+/// not one: one byte over lands on the end-of-line before `endstream` and opens on both engines
+/// (measured, 2026-10-14), while one byte short refuses as two does.
+#[test]
+fn a_form_with_a_wrong_length_refuses_at_split_s_open() {
+    let build = |delta: i64| {
+        let body = "BT /F2 12 Tf 10 10 Td (FORM) Tj ET";
+        let length = i64::try_from(body.len()).expect("small") + delta;
+        let objects = document(
+            PLAIN_CATALOG,
+            "/XObject << /Fm 6 0 R >>",
+            "q /Fm Do Q BT /F1 24 Tf 20 350 Td (KEEP) Tj ET",
+            &[
+                (
+                    6,
+                    0,
+                    format!(
+                        "<< /Type /XObject /Subtype /Form /BBox [0 0 300 400] /Resources << /Font << /F2 7 0 R >> >> /Length {length} >>\nstream\n{body}\nendstream"
+                    ),
+                ),
+                (
+                    7,
+                    0,
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>".to_owned(),
+                ),
+            ],
+        );
+        classic(&objects)
+    };
+    for delta in [-2, 2] {
+        refuses(
+            &format!("a form /Length off by {delta}"),
+            &build(delta),
+            "[split-reference-to-nothing]",
+        );
+    }
+    opens("a form with a correct /Length", &build(0));
+}
