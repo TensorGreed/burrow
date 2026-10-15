@@ -54,6 +54,9 @@ pub struct QpdfSource {
     /// held in full while the source stays in the engine heap, so a 500-page document cut 499
     /// ways holds 500 written documents at once.
     rss_before: Option<u64>,
+    /// Whether the open admitted an empty key of the catalog's `/Dests`, so every part is read back
+    /// for one (`prune::refuse_empty_keys_in_part`).
+    empty_key_admitted: bool,
     /// The ceilings the source was opened under, so `extract` can apply the measured check
     /// without the caller having to pass them twice.
     limits: Limits,
@@ -98,7 +101,7 @@ impl PageExtractor for Qpdf {
         // THE OPTIONAL-CONTENT STOPGAP (owner, 2026-10-13), before a page is read: no reference
         // qpdf resolves to nothing, and no `/OCProperties` on the catalog. See
         // `prune::refuse_optional_content_document`.
-        crate::prune::refuse_optional_content_document(
+        let empty_key_admitted = crate::prune::refuse_optional_content_document(
             &document,
             document.input(),
             &deadline,
@@ -121,6 +124,7 @@ impl PageExtractor for Qpdf {
             limits: options.limits,
             annots_shared,
             deadline,
+            empty_key_admitted,
         })
     }
 
@@ -299,6 +303,18 @@ impl PageExtractor for Qpdf {
 
         // PRESERVE. A split's parts are a subset of the input, not a recompression of it.
         let output = write_out(&dest, &source.document, ObjectStreams::Preserve)?;
+        // THE SECOND LINE (owner, 2026-10-15): when the open admitted an empty `/Dests` key, the
+        // part is read back and held to the reference pass with no empty key admitted. The open's
+        // sole-referrer condition means no part should carry that object; this refuses if one does.
+        if source.empty_key_admitted {
+            let (part, _, _, _) = super::open_document(output.clone().into_boxed_slice(), options)?;
+            crate::prune::refuse_empty_keys_in_part(
+                &part,
+                part.input(),
+                &source.deadline,
+                options.clock.as_ref(),
+            )?;
+        }
 
         // WHAT THE SPLIT HAS COST SO FAR. `max_memory_bytes` DETECTS rather than bounds
         // (ADR 0007's 2026-09-12 amendment), and this is the only place on the split path

@@ -997,9 +997,6 @@ fn a_name_inside_the_measured_allowlist_redacts() {
     );
 }
 
-/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse (#329; `name_reads_alike`): neither was
-/// measured, and until now only the unit test pinned them. In a page dictionary, benign. The twins
-/// redact: a one-byte name, and the same escape in one case.
 /// REDACTION KEEPS THE CATALOG, so the empty `/Dests` key split admits is refused here, on both
 /// engines (owner, 2026-10-15); the empty `/Dest` value is admitted on both.
 #[test]
@@ -1027,6 +1024,9 @@ fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_admits_the_dest_va
     redacts_on_both(&classic(&link), "/Dest / in a link");
 }
 
+/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse (#329; `name_reads_alike`): neither was
+/// measured, and until now only the unit test pinned them. In a page dictionary, benign. The twins
+/// redact: a one-byte name, and the same escape in one case.
 #[test]
 fn the_empty_name_and_a_mixed_case_escape_are_refused() {
     for (what, extra, twin) in [
