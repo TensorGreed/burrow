@@ -29,6 +29,7 @@ import {
   REFUSED_BY,
   THE_CALL,
   WRITER,
+  cleanFramesLog,
   cleanLog,
   framesAndSettle,
   onlyRequest,
@@ -109,6 +110,73 @@ const FRAME_LEAKS: { name: string; from: string; to: string; finding: RegExp }[]
     finding: /a value no rule admits in frameRefusals\[\]/,
   },
 ];
+
+// THE DOCUMENT AS SMALL NUMBERS: a copy whose frames reply carries the input's first 32 bytes as
+// sixteen size pairs, with sixteen matching "" rules -- every item a size or a rule name the
+// per-field rules admit. Only the counts against `pages` catch it (`framesConsistency`).
+FRAME_LEAKS.push({
+  name: "the document as small numbers with matching refusals",
+  from: FRAME_CALL,
+  to:
+    "    { const r = wasm_bindgen.page_frames(bytes, password, webLimits(request.limits));" +
+    " const leak = Array.from(bytes.subarray(0, 32), (b) => b + 1);" +
+    " const o = {}; const p = Object.getPrototypeOf(r);" +
+    " for (const k of Object.getOwnPropertyNames(p)) { const d = Object.getOwnPropertyDescriptor(p, k); if (d && d.get) o[k] = r[k]; }" +
+    " o.frames = Float64Array.from(leak); o.frameRefusals = leak.filter((_, i) => i % 2 === 0).map(() => '');" +
+    " o.takeOutput = () => r.takeOutput(); o.free = () => r.free(); return o; }\n" +
+    FRAME_CALL,
+  finding: /carries 32 sizes and 16 rule names for 1 page/,
+});
+
+/** The frames rules no copy of the worker reaches, on hand-written logs (#136). */
+const FRAME_HAND: {
+  name: string;
+  change: (fields: Record<string, unknown>) => Record<string, unknown>;
+  finding: RegExp;
+}[] = [
+  {
+    name: "one size pair too many",
+    change: (f) => ({ ...f, "frames[]": "612,792,0,0,1,1", "frames[].length": 6 }),
+    finding: /carries 6 sizes and 2 rule names for 2 page/,
+  },
+  {
+    name: "one rule name too few",
+    change: (f) => ({ ...f, "frameRefusals[]": "", "frameRefusals[].length": 1 }),
+    finding: /carries 4 sizes and 1 rule names for 2 page/,
+  },
+  {
+    name: "more pages than the request allowed",
+    change: (f) => ({ ...f, pages: 10001 }),
+    finding: /pages 10001 is not from 1 to the request's maxPages 10000/,
+  },
+  {
+    name: "no pages",
+    change: (f) => ({ ...f, pages: 0 }),
+    finding: /pages 0 is not from 1/,
+  },
+  {
+    name: "a frame beside a rule",
+    change: (f) => ({ ...f, "frames[]": "612,792,1,1" }),
+    finding: /page 1 has a frame and a rule/,
+  },
+  {
+    name: "no frame and no rule",
+    change: (f) => ({ ...f, "frameRefusals[]": "," }),
+    finding: /page 1 has no frame and no rule/,
+  },
+];
+
+test("the hand-written frames reply passes every rule", () => {
+  expect(r8Violations(cleanFramesLog(7, 42), 7, 42)).toEqual([]);
+});
+
+for (const hand of FRAME_HAND) {
+  test(`SHOWN TO FAIL, by hand: a frames reply with ${hand.name}`, () => {
+    const log = cleanFramesLog(7, 42);
+    const changed = [log[0], { ...log[1], fields: hand.change(log[1].fields) }, log[2]];
+    expect(r8Violations(changed as typeof log, 7, 42).join("\n")).toMatch(hand.finding);
+  });
+}
 
 for (const leak of FRAME_LEAKS) {
   test(`SHOWN TO FAIL: a copy of the worker whose page frames post ${leak.name} is caught`, async ({

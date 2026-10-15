@@ -288,6 +288,8 @@ const FRAME_RULES = [
   "rotate-not-whole",
   "page-tree-depth",
   "display-box",
+  "rotate",
+  "user-unit",
 ];
 /** `MAX_FRAME_SIDE` in the same file: 2^25 points, twice the largest box coordinate read. */
 const MAX_FRAME_SIDE = 2 ** 25;
@@ -327,8 +329,10 @@ function isFrames(v: unknown): boolean {
  * Not text, and not a name a person would recognise as the secret; stated, not closed. (The first
  * version of this said "about 4 bytes a font", counting one of the font's two numbers.)
  * - and `page_frames`' sizes (#136): two numbers a page, each a double from 0 to 2^25 -- up to
- *   about 16 bytes a page, for as many pages as `max_pages` admits -- and one of nine rule names a
- *   page, about 3 bits. The sizes ARE what the document says about its pages, which is the
+ *   about 16 bytes a page, for as many pages as `max_pages` admits -- and one of eleven rule names
+ *   a page, about 3.5 bits. `framesConsistency` holds the counts to `pages` and the zero pairs to
+ *   the rules, so the arrays cannot run longer than the document; a copy that forged `pages` too
+ *   would pass it, since nothing the page sees knows the true count -- stated, not closed. The sizes ARE what the document says about its pages, which is the
  *   operation's whole answer; what the rule holds is that nothing but such numbers rides there.
  */
 export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
@@ -359,6 +363,12 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   "frames[]": isFrames,
   "frameRefusals[]": joined((p) => FRAME_RULES.includes(p)),
   "__burrowSideChannelArmed[]": joined((p) => Object.hasOwn(EXITS, p)),
+  // And each array's length, which `framesConsistency` holds to the page count.
+  "rotations[].length": integer(0, 0),
+  "frames[].length": integer(0, U32),
+  "frameRefusals[].length": integer(0, U32),
+  // A lambda: `EXITS` is declared below, so it is read when a value is checked, not here.
+  "__burrowSideChannelArmed[].length": (v) => integer(0, Object.keys(EXITS).length)(v),
   "output.type": oneOf(["application/pdf"]),
   "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
@@ -373,6 +383,10 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
 const NUMERIC = new Set([
   "id",
   "pages",
+  "rotations[].length",
+  "frames[].length",
+  "frameRefusals[].length",
+  "__burrowSideChannelArmed[].length",
   "retainedFonts",
   "droppedCarriedText",
   "failedInput",
@@ -463,6 +477,61 @@ function harnessOwn(m: RedactionMessage, at: number, nonce: number, armed: strin
 }
 
 /**
+ * A terminal reply's frames, held to its own page count and to the request (#136): for a reply
+ * that carries frames at all, `frames` is two numbers a page and `frameRefusals` one name a page,
+ * for `1 <= pages <= maxPages` of the request, and a page's pair is `0,0` exactly when it names a
+ * rule. Without it the arrays could run as long as a copy of the worker liked, each item a number
+ * or rule name every per-field rule admits -- the document, a byte at a time (review of #136).
+ * Every other reply carries none, and its lengths must say so.
+ */
+export function framesConsistency(
+  m: RedactionMessage,
+  all: RedactionMessage[],
+  id: number,
+): string[] {
+  const length = (key: string) => m.fields[`${key}[].length`];
+  const framesLength = length("frames");
+  const refusalsLength = length("frameRefusals");
+  if (framesLength === undefined && refusalsLength === undefined) return [];
+  if (framesLength === 0 && refusalsLength === 0) return [];
+  const found: string[] = [];
+  const pages = m.fields.pages;
+  const request = all.find((r) => r.sent !== null && r.id === id);
+  const maxPages = request?.fields["limits.maxPages"];
+  if (typeof pages !== "number" || typeof maxPages !== "number" || pages < 1 || pages > maxPages) {
+    found.push(
+      `the frames reply's pages ${pages} is not from 1 to the request's maxPages ${maxPages}`,
+    );
+    return found;
+  }
+  if (framesLength !== 2 * pages || refusalsLength !== pages) {
+    found.push(
+      `the frames reply carries ${framesLength} sizes and ${refusalsLength} rule names for ${pages} page(s)`,
+    );
+    return found;
+  }
+  const sizes = String(m.fields["frames[]"]).split(",");
+  const rules =
+    pages === 1
+      ? [String(m.fields["frameRefusals[]"])]
+      : String(m.fields["frameRefusals[]"]).split(",");
+  if (rules.length !== pages) {
+    found.push(`the frames reply's rule names do not split into ${pages}`);
+    return found;
+  }
+  for (let page = 0; page < pages; page++) {
+    const zero = sizes[2 * page] === "0" && sizes[2 * page + 1] === "0";
+    if (zero !== (rules[page] !== "")) {
+      found.push(
+        `the frames reply's page ${page} has ${zero ? "no frame and no rule" : "a frame and a rule"}`,
+      );
+      break;
+    }
+  }
+  return found;
+}
+
+/**
  * R8: the output is ONE value, posted after the Rust call returned. Returns every way `all`
  * breaks it, or nothing. DENY BY DEFAULT, over EVERY message the worker posted whatever id it
  * names, because each version of this that listed what to look for was got past by something it
@@ -506,6 +575,7 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
       if (!REPLIES.has(m.shape)) {
         found.push(`the terminal reply has a shape nobody listed: ${m.shape.slice(0, 200)}`);
       }
+      found.push(...framesConsistency(m, all, id));
       return;
     }
     if (harnessOwn(m, at, nonce, armedList)) return;
@@ -696,8 +766,11 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
         droppedCarriedText: 0,
         failedInput: -1,
         "rotations[]": "",
+        "rotations[].length": 0,
         "frames[]": "",
+        "frames[].length": 0,
         "frameRefusals[]": "",
+        "frameRefusals[].length": 0,
         report:
           "Report { fonts: [FontOutcome { font: 1179648, cut: true, also_used_by: 0 }, FontOutcome { font: 851968, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
         "output.type": "application/pdf",
@@ -712,5 +785,46 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       shape: shape({ __burrowSettled: "number" }),
       fields: { __burrowSettled: nonce },
     },
+  ];
+}
+
+/**
+ * `cleanLog`'s twin for `page_frames` (#136): its request, carrying `maxPages`, a successful
+ * frames reply for a two-page document -- one frame, one refused page -- and the settle echo.
+ * Every rule passes it; each hand-written frames case changes one thing in it.
+ */
+export function cleanFramesLog(id: number, nonce: number): RedactionMessage[] {
+  const [, reply, settle] = cleanLog(id, nonce);
+  const success = [...REPLIES].find(
+    (s) => s.includes("frames:[number]") && s.includes("fatal:false") && s.includes("recycle:true"),
+  );
+  if (success === undefined) throw new Error("no frames reply shape is listed");
+  const { "output.type": _type, report: _report, ...fields } = reply.fields;
+  return [
+    {
+      ...reply,
+      sent: "page_frames",
+      ok: null,
+      keys: ["blob", "id", "limits", "op"],
+      shape: "request",
+      fields: { id, "limits.maxPages": 10000 },
+    },
+    {
+      ...reply,
+      keys: ["frameRefusals", "frames", "id", "ok", "output"],
+      bytes: 0,
+      shape: success,
+      fields: {
+        ...fields,
+        recycle: true,
+        pages: 2,
+        refusalReport: "",
+        "frames[]": "612,792,0,0",
+        "frames[].length": 4,
+        "frameRefusals[]": ",user-unit-not-one",
+        "frameRefusals[].length": 2,
+      },
+    },
+    settle,
   ];
 }

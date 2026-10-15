@@ -126,8 +126,8 @@ where
 /// # What this adds to the engine's answer
 ///
 /// No document comes out, so ADR 0022's `verify::output` has nothing to read back. What the
-/// operation does hold the engine to is the shape of its answer, which a page draws on: every
-/// frame positive, finite and at most [`MAX_FRAME_SIDE`] a side, and every refusal carrying the
+/// operation does hold the engine to is the shape of its answer, which a page draws on: exactly
+/// one reading per page of the count the engine opened the document with, every frame positive, finite and at most [`MAX_FRAME_SIDE`] a side, and every refusal carrying the
 /// rule its own error names. An engine that reports otherwise is a bug in burrow, refused as
 /// [`Error::Internal`] rather than handed to a page to draw a region against.
 ///
@@ -143,8 +143,19 @@ pub fn page_frames<E: PageFrameReader>(
 ) -> Result<Vec<PageFrameReading>> {
     let clock = Arc::clone(&options.clock);
     let deadline = Deadline::start(clock.as_ref(), &options.limits);
-    let readings = engine.page_frames(bytes, options)?;
+    let frames = engine.page_frames(bytes, options)?;
     deadline.checkpoint(clock.as_ref())?;
+    // ONE READING PER PAGE, against the count the engine opened the document with: a list one
+    // short leaves a page with no frame, and one long shifts nothing visible while saying more
+    // than the document does.
+    if u64::try_from(frames.readings.len()).ok() != Some(frames.pages) {
+        return Err(Error::Internal(
+            "redact page frames: the engine reported a different number of readings than the \
+             document has pages"
+                .to_owned(),
+        ));
+    }
+    let readings = frames.readings;
     for reading in &readings {
         let sound = match reading {
             PageFrameReading::Frame { width, height } => [*width, *height]

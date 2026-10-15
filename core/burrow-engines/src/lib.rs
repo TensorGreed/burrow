@@ -1098,7 +1098,8 @@ pub trait PageRedactor {
 /// yet, so such a page is `[media-box-unverified]` there (#206).
 pub trait PageFrameReader {
     /// Every page's display frame, or the page-level rule that refuses every region on it, in page
-    /// order. See [`redact::frames`] for what a frame does and does not promise.
+    /// order, beside the page count the document was opened with. See [`redact::frames`] for what
+    /// a frame does and does not promise.
     ///
     /// # Errors
     ///
@@ -1109,7 +1110,7 @@ pub trait PageFrameReader {
         &self,
         bytes: &[u8],
         options: &OpenOptions<'_>,
-    ) -> Result<Vec<redact::frames::PageFrameReading>>;
+    ) -> Result<redact::frames::PageFrames>;
 }
 
 /// One page, rasterised.

@@ -1231,6 +1231,38 @@ pub fn available_operations() -> &'static [&'static str] {
 mod tests {
     use super::*;
 
+    /// #136: `Reply::framed` lines the two arrays up page for page -- a frame's pair beside "",
+    /// and `0, 0` beside a refused page's rule -- and counts the pages. Its `_ => Internal` arm is
+    /// for a reading a later engine adds; `PageFrameReading` is `#[non_exhaustive]` and defined in
+    /// another crate, so no reading this crate can build reaches it, and it is held by review.
+    #[cfg(feature = "redact")]
+    #[test]
+    fn framed_aligns_each_page_s_frame_with_its_rule() {
+        use burrow_core::engines::redact::frames::{FrameRule, PageFrameReading};
+        let reply = Reply::framed(&[
+            PageFrameReading::Frame {
+                width: 612.0,
+                height: 792.0,
+            },
+            PageFrameReading::Refused {
+                rule: FrameRule::UserUnitNotOne,
+                error: Error::Unsupported("pdf redaction [user-unit-not-one]: why".to_owned()),
+            },
+            PageFrameReading::Frame {
+                width: 300.5,
+                height: 400.0,
+            },
+        ]);
+        assert!(reply.ok);
+        assert_eq!(reply.pages, 3);
+        assert_eq!(reply.frames(), vec![612.0, 792.0, 0.0, 0.0, 300.5, 400.0]);
+        assert_eq!(
+            reply.frame_refusals(),
+            vec![String::new(), "user-unit-not-one".to_owned(), String::new()]
+        );
+        assert!(reply.output.is_empty() && reply.report.is_empty());
+    }
+
     /// #199: the binding's copy of a password is zero once `Password` has taken its own.
     #[test]
     fn a_password_is_wiped_from_the_bytes_it_was_copied_from() {

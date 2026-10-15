@@ -672,17 +672,18 @@ impl crate::PageRedactor for Qpdf {
 /// most once, on the first page that asks, under `options` as that method opens it, and each
 /// later page reads its size from the same handle.
 ///
-/// An open that fails is remembered as failed: each page that asks then answers as a renderer that
-/// cannot answer, which `frame::check_inherited_media_box` refuses `[media-box-unverified]`, as it
-/// would refuse the same page in a redaction. A ceiling the open reaches is the whole operation's,
-/// and stays one.
+/// An open that fails is remembered as failed: for each page that asks after it, the closure
+/// returns `Error::Internal`, and `frame::check_inherited_media_box` maps any renderer error that
+/// is not a ceiling to `[media-box-unverified]` -- the refusal a redaction of that page gives when
+/// its own renderer open fails. A ceiling the open reaches is returned as that ceiling, and is the
+/// whole operation's.
 #[cfg(all(feature = "native-engines", burrow_native_engines))]
 impl crate::PageFrameReader for Qpdf {
     fn page_frames(
         &self,
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
-    ) -> Result<Vec<crate::redact::frames::PageFrameReading>> {
+    ) -> Result<crate::redact::frames::PageFrames> {
         use crate::{DocumentEngine, PageRenderer};
         let renderer = crate::pdfium::Pdfium;
         // `None` until a page asks; then the document, or `None` inside for an open that failed.

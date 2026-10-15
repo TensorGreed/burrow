@@ -16,8 +16,8 @@
 //!
 //! Each page's answer is the redaction's own calls, in its order: `frame::check_inherited_media_box`
 //! before the walk, then the walk's `/Resources` read (refused when the page tree supplies them),
-//! `frame::of`, and [`PageFrame::check_display_box`], the one [`Region::to_content_space`] makes.
-//! The document is opened through `OpensForRedaction::open_for_redaction`, the redaction's own
+//! `frame::of`, and the two checks [`Region::to_content_space`] makes of a frame (unit and
+//! rotation, then the box). The document is opened through `OpensForRedaction::open_for_redaction`, the redaction's own
 //! open, so a document the operation refuses at the open --
 //! a ceiling, a password, a repaired input -- is refused here with the same error. Nothing here
 //! reads a page's content: only the page dictionaries and the page tree above them.
@@ -35,10 +35,10 @@
 //! optional-content refusal is page-level too and is not run either: it reads into the page's
 //! resources rather than the page dictionary.
 //!
-//! **And one over-refusal, in the safe direction.** A page that draws nothing is redacted by the
-//! operation without reading its frame -- there is nothing to cut -- so such a page with a frame
-//! this refuses redacts `Ok` while this reports the refusal. Nothing on a blank page needs a
-//! region, so nothing is lost by saying so early.
+//! **A page that draws nothing is no exception.** The redaction refuses a blank page with a bad
+//! frame by the same error this reports for it -- measured for `/MediaBox [0 0 0 400]`,
+//! `/UserUnit 2`, `/Rotate 90.5`, `/Rotate [90]` and an inherited `/Rotate`, and held by
+//! `qpdf::page_frames_tests`' blank-page probe on both engines.
 //!
 //! [`Region`]: crate::pdfsyntax::region::Region
 //! [`Region::to_content_space`]: crate::pdfsyntax::region::Region::to_content_space
@@ -78,11 +78,18 @@ pub enum FrameRule {
     PageTreeDepth,
     /// A display box with no positive extent.
     DisplayBox,
+    /// A whole `/Rotate` that is not a right angle (`/Rotate 45`): the region conversion refuses
+    /// it, so every region on the page is refused.
+    Rotate,
+    /// A `/UserUnit` that is not positive and finite, refused by the region conversion. Not
+    /// reachable through `frame.rs`, which refuses any unit but 1 first; read for the same reason
+    /// the conversion checks it.
+    UserUnit,
 }
 
 impl FrameRule {
     /// Every rule, in declaration order. What [`Self::of`] matches against.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::PageFrameUnreadable,
         Self::UserUnitNotOne,
         Self::PageAttributeInherited,
@@ -91,6 +98,8 @@ impl FrameRule {
         Self::RotateNotWhole,
         Self::PageTreeDepth,
         Self::DisplayBox,
+        Self::Rotate,
+        Self::UserUnit,
     ];
 
     /// The rule's name, as its refusal's message brackets it.
@@ -105,6 +114,8 @@ impl FrameRule {
             Self::RotateNotWhole => "rotate-not-whole",
             Self::PageTreeDepth => "page-tree-depth",
             Self::DisplayBox => "display-box",
+            Self::Rotate => "rotate",
+            Self::UserUnit => "user-unit",
         }
     }
 
@@ -128,7 +139,20 @@ impl FrameRule {
 
 /// The longest side a frame can have: `frame.rs` refuses a box coordinate past 2^24 either way,
 /// and `/UserUnit` other than 1, so a side spans at most twice that.
-pub const MAX_FRAME_SIDE: f64 = 33_554_432.0;
+pub const MAX_FRAME_SIDE: f64 = 2.0 * super::frame::MAX_FRAME_MAGNITUDE;
+
+/// Every page's reading, beside the page count the document was opened with.
+///
+/// The count is carried so a caller can hold the readings to it: one reading per page, no more and
+/// no fewer, is what a page draws regions against, and a list one short would leave a page with
+/// no frame -- or shift every later frame onto the wrong page.
+#[derive(Debug)]
+pub struct PageFrames {
+    /// The page count the engine opened the document with.
+    pub pages: u64,
+    /// One reading per page, in page order.
+    pub readings: Vec<PageFrameReading>,
+}
 
 /// One page's answer: its display frame, or the rule that refuses every region on it.
 #[derive(Debug)]
@@ -174,10 +198,11 @@ pub(crate) fn page_frames<E: OpensForRedaction>(
     bytes: &[u8],
     options: &crate::OpenOptions<'_>,
     mut renderer_size: impl FnMut(usize) -> Result<Option<(f64, f64)>>,
-) -> Result<Vec<PageFrameReading>> {
+) -> Result<PageFrames> {
     let clock = Arc::clone(&options.clock);
     let (document, deadline) = engine.open_for_redaction(bytes, options)?;
-    let count = usize::try_from(document.page_count()?)
+    let pages = document.page_count()?;
+    let count = usize::try_from(pages)
         .map_err(|_| Error::Internal("a page count that does not fit in usize".to_owned()))?;
     let mut readings = Vec::new();
     readings
@@ -192,11 +217,16 @@ pub(crate) fn page_frames<E: OpensForRedaction>(
         let reading = super::frame::check_inherited_media_box(&page, || renderer_size(index))
             .and_then(|()| super::resources::PageResources::of(&page).map(|_| ()))
             .and_then(|()| super::frame::of(&page))
+            // AND THE CONVERSION'S OWN CHECKS, in its order (unit and rotation, then the box): a
+            // frame the conversion refuses is no frame to draw a region on.
+            .and_then(|frame| frame.check_unit_and_rotation().map(|()| frame))
             .and_then(|frame| frame.check_display_box().map(|()| frame));
         // WHAT THE ENGINE LATCHED WHILE THE PAGE WAS READ, before any of it is believed: a value
         // read past a latched error is not the document's, and that is the whole operation's
-        // failure, not the page's. DEFENCE IN DEPTH, unwitnessed: no fixture latches an error while
-        // a frame is read, and the mutation that deletes this drain survives the suite (measured).
+        // failure, not the page's. It matters only for a latch during the LAST page's reads: for
+        // every other page the next `document.page()` drains the same latch. DEFENCE IN DEPTH, and
+        // unwitnessed: no fixture latches an error while a frame is read, and the mutation that
+        // deletes this drain survives the suite (measured).
         page.drained()?;
         readings.push(match reading {
             Ok(frame) => {
@@ -214,7 +244,7 @@ pub(crate) fn page_frames<E: OpensForRedaction>(
     if document.repaired() {
         return Err(super::repaired_by_the_engine());
     }
-    Ok(readings)
+    Ok(PageFrames { pages, readings })
 }
 
 #[cfg(test)]
@@ -256,6 +286,39 @@ mod tests {
             allowed: 1,
         };
         assert_eq!(FrameRule::of(&limit), None);
+    }
+
+    /// The R8 spec's copy of the rule names (`apps/web/e2e/redaction-protocol.ts`, `FRAME_RULES`)
+    /// is this enum's, exactly: a rule added here and not there would make R8 refuse a real reply,
+    /// and one left there after it went here would admit a word nothing produces.
+    #[test]
+    fn the_r8_spec_lists_exactly_these_rules() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/web/e2e/redaction-protocol.ts"
+        );
+        let source = std::fs::read_to_string(path).unwrap();
+        let start = source
+            .find("const FRAME_RULES = [")
+            .expect("the spec's FRAME_RULES list");
+        let block = &source[start..];
+        let block = &block[..block.find("];").expect("the list's end")];
+        let listed: Vec<&str> = block
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|name| !name.is_empty())
+            .collect();
+        let ours: Vec<&str> = FrameRule::ALL.iter().map(|rule| rule.rule()).collect();
+        assert_eq!(
+            listed, ours,
+            "the R8 spec's FRAME_RULES, against FrameRule::ALL"
+        );
+        // AND THE EMPTY NAME, which the spec admits for a page with a frame.
+        assert!(
+            block.contains("\"\","),
+            "the spec must admit \"\" for a frame"
+        );
     }
 
     /// Every rule name is distinct, so `of` cannot answer one rule with another.

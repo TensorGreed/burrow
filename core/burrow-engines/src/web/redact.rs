@@ -541,7 +541,7 @@ impl crate::PageFrameReader for WebQpdf {
         &self,
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
-    ) -> Result<Vec<crate::redact::frames::PageFrameReading>> {
+    ) -> Result<crate::redact::frames::PageFrames> {
         let redactor = WebRedactor(self);
         crate::redact::frames::page_frames(&redactor, bytes, options, |page| {
             redactor.renderer_page_size(bytes, page, options)

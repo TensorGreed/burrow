@@ -9,9 +9,18 @@
 //! - **The redaction corpus, natively against the web**: every document `tests/redaction/
 //!   outcomes.tsv` records, its frames equal and its refusals by the same rule on both engines --
 //!   with one divergence the engines are meant to have, counted and named: a `/MediaBox` from the
-//!   page tree, which PDFium vouches for natively and nothing can on the web yet (#206). And each
-//!   reading is held to the redaction outcome the golden pinned for the same page, so a frame here
-//!   is the frame the operation used, not one read beside it.
+//!   page tree, which PDFium vouches for natively and nothing can on the web yet (#206). Each
+//!   reading is held to the redaction outcome `outcomes.tsv` pinned for the same page -- a frame
+//!   where the redaction ran or refused by a rule that is not a frame rule, the same error where it
+//!   refused by one -- and every reading is pinned in `tests/redaction/page-frames.tsv`.
+//! - **A property over generated pages**: boxes, crops, rotations (whole, negative, past a turn, not
+//!   a right angle, not a number), units and inherited keys. `page_frames` gives a frame exactly
+//!   when `redact_page` over the whole page does not refuse by a frame rule, the same error when it
+//!   does, and a frame's region `{0, 0, width, height}` converts onto the display box the redaction
+//!   reads. That is what "the frame the operation uses" is held to; the corpus check alone shows
+//!   only agreement on refusals.
+//! - **A blank-page probe**: a page that draws nothing is refused by the redaction with the same
+//!   error, for each bad frame.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,6 +32,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -38,6 +48,27 @@ fn options(limits: Limits) -> OpenOptions<'static> {
 
 fn repository() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+}
+
+/// Every corpus page's frame or rule, natively, as the corpus test below writes it.
+const PAGE_FRAMES_GOLDEN: &str = "tests/redaction/page-frames.tsv";
+
+const PAGE_FRAMES_HEADER: &str = "\
+# Every page's frame in the redaction corpus, natively (#136). Written by
+# core/burrow-engines/src/qpdf/page_frames_tests.rs under BURROW_BLESS_PAGE_FRAMES=1:
+#   cargo test -p burrow-engines --all-features --lib -- page_frames_tests::the_web_reads
+# and diffed on every run. INPUT is the document and its sha256; PAGE is one page, with its
+# frame in points (width, height) or the rule that refuses every region on it; DOC is a document
+# refused whole. Re-bless only when a change to what a page reads as is meant.
+";
+
+fn hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut out = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// A document of `objects`, numbered from 1, with a correct cross-reference table.
@@ -94,6 +125,21 @@ fn document(parent: &str, pages: &[&str]) -> Vec<u8> {
     pdf_of(&objects)
 }
 
+/// `engine`'s readings, held to the page count it reports beside them.
+fn read(
+    engine: &impl PageFrameReader,
+    bytes: &[u8],
+    options: &OpenOptions<'_>,
+) -> Result<Vec<PageFrameReading>> {
+    let frames = engine.page_frames(bytes, options)?;
+    assert_eq!(
+        u64::try_from(frames.readings.len()).unwrap(),
+        frames.pages,
+        "one reading per page"
+    );
+    Ok(frames.readings)
+}
+
 /// One reading, as a line two engines can be compared by.
 fn line(reading: &PageFrameReading) -> String {
     match reading {
@@ -118,9 +164,9 @@ fn answer(result: &Result<Vec<PageFrameReading>>) -> Vec<String> {
 /// Both engines' answers for `bytes`, natively first.
 fn on_both(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
     let options = options(Limits::default());
-    let natively = answer(&super::Qpdf.page_frames(bytes, &options));
+    let natively = answer(&read(&super::Qpdf, bytes, &options));
     let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
-    let on_the_web = answer(&web.page_frames(bytes, &options));
+    let on_the_web = answer(&read(&web, bytes, &options));
     (natively, on_the_web)
 }
 
@@ -254,6 +300,20 @@ fn a_rotate_that_is_not_whole_is_refused() {
     );
 }
 
+/// A whole `/Rotate` that is not a right angle: every region on the page is refused by the
+/// conversion, so the page has no frame. Found by the property test below, which read it as a
+/// frame until `check_unit_and_rotation` was shared.
+#[test]
+fn a_rotate_that_is_not_a_right_angle_is_refused() {
+    refused_beside_its_twin(
+        FrameRule::Rotate,
+        "",
+        "/MediaBox [0 0 300 400] /Rotate 45",
+        "/MediaBox [0 0 300 400] /Rotate 450",
+        "FRAME 400 x 300",
+    );
+}
+
 #[test]
 fn a_display_box_with_no_extent_is_refused() {
     refused_beside_its_twin(
@@ -331,8 +391,8 @@ fn the_open_s_refusals_and_every_ceiling_are_the_whole_document_s() {
     let both = |limits: Limits| {
         let options = options(limits);
         (
-            answer(&super::Qpdf.page_frames(&bytes, &options)),
-            answer(&web.page_frames(&bytes, &options)),
+            answer(&read(&super::Qpdf, &bytes, &options)),
+            answer(&read(&web, &bytes, &options)),
         )
     };
     // PAGES: at the ceiling, and one past it.
@@ -364,14 +424,14 @@ fn the_open_s_refusals_and_every_ceiling_are_the_whole_document_s() {
     let one = document("", &["/MediaBox [0 0 300 400]"]);
     let forty = document("", &["/MediaBox [0 0 300 400]"; 40]);
     for result in [
-        super::Qpdf.page_frames(&one, &fresh()),
-        web.page_frames(&one, &fresh()),
+        read(&super::Qpdf, &one, &fresh()),
+        read(&web, &one, &fresh()),
     ] {
         assert_eq!(answer(&result), vec!["FRAME 300 x 400".to_owned()]);
     }
     for result in [
-        super::Qpdf.page_frames(&forty, &fresh()),
-        web.page_frames(&forty, &fresh()),
+        read(&super::Qpdf, &forty, &fresh()),
+        read(&web, &forty, &fresh()),
     ] {
         match result {
             Err(Error::LimitExceeded { limit, stage, .. }) => assert_eq!(
@@ -440,10 +500,11 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
     let mut whole_exact = 0usize;
     let mut divergences = Vec::new();
     let mut against_the_golden = Vec::new();
+    let mut record = String::from(PAGE_FRAMES_HEADER);
     for name in &documents {
         let bytes = std::fs::read(repository().join(name)).unwrap();
-        let native = super::Qpdf.page_frames(&bytes, &options);
-        let on_the_web = web.page_frames(&bytes, &options);
+        let native = read(&super::Qpdf, &bytes, &options);
+        let on_the_web = read(&web, &bytes, &options);
         let (left, right) = (answer(&native), answer(&on_the_web));
         if left.len() != right.len() {
             divergences.push(format!("{name}: native {left:?}\n    web {right:?}"));
@@ -511,6 +572,29 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
                 )),
             }
         }
+        // THE GOLDEN LINES, natively: the input's digest, then each page's frame or rule, or the
+        // whole document's refusal.
+        let _ = writeln!(record, "INPUT\t{name}\t{}", hex(&bytes));
+        match &native {
+            Ok(readings) => {
+                for (at, reading) in readings.iter().enumerate() {
+                    let what = match reading {
+                        PageFrameReading::Frame { width, height } => {
+                            format!("FRAME {width} {height}")
+                        }
+                        PageFrameReading::Refused { rule, .. } => format!("RULE {}", rule.rule()),
+                    };
+                    let _ = writeln!(record, "PAGE\t{name}\t{at}\t{what}");
+                }
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    record,
+                    "DOC\t{name}\tERR {}",
+                    format!("{error:?}").replace(['\n', '\t'], " ")
+                );
+            }
+        }
         match &native {
             Ok(readings) => {
                 pages += readings.len();
@@ -548,10 +632,321 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
     let recorded_cases: usize = cases.values().map(Vec::len).sum();
     assert_eq!(documents.len(), 183, "the golden's documents");
     assert_eq!(held_to_the_golden, recorded_cases);
+
+    // THE PAGE-FRAMES GOLDEN, diffed on every run and re-blessed only on request.
+    let golden_path = repository().join(PAGE_FRAMES_GOLDEN);
+    if std::env::var("BURROW_BLESS_PAGE_FRAMES").is_ok_and(|value| value == "1") {
+        std::fs::write(&golden_path, &record).unwrap();
+    }
+    let pinned = std::fs::read_to_string(&golden_path).unwrap_or_default();
+    let page_lines = pinned.lines().filter(|l| l.starts_with("PAGE\t")).count();
+    let doc_lines = pinned.lines().filter(|l| l.starts_with("DOC\t")).count();
+    assert_eq!(
+        (page_lines, doc_lines),
+        (pages, whole),
+        "the golden's page and whole-document lines, against this walk"
+    );
+    let differing: Vec<String> = pinned
+        .lines()
+        .zip(record.lines())
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| format!("    pinned {a}\n    now    {b}"))
+        .take(20)
+        .collect();
+    assert!(
+        pinned == record,
+        "{PAGE_FRAMES_GOLDEN} differs from this build ({} vs {} lines); re-bless with \
+         BURROW_BLESS_PAGE_FRAMES=1 only if the change is meant:\n{}",
+        pinned.lines().count(),
+        record.lines().count(),
+        differing.join("\n")
+    );
     // NON-VACUITY: the corpus reaches frames, page refusals and whole-document refusals alike.
     assert!(
         frames > 0 && refusals > 0 && whole > 0,
         "{frames} {refusals} {whole}"
     );
     drop(web);
+}
+
+/// The whole page and more: what "redact everything on it" is, in display units.
+const WHOLE_PAGE: crate::pdfsyntax::region::Region = crate::pdfsyntax::region::Region {
+    left: 0.0,
+    top: 0.0,
+    width: 5000.0,
+    height: 5000.0,
+};
+
+/// The redaction of page 0 over the whole page, on `engine`, as its error or `Ok`.
+fn redaction_of(engine: &impl crate::PageRedactor, bytes: &[u8]) -> Result<()> {
+    let covered = std::collections::BTreeSet::from([0]);
+    engine
+        .redact_page(bytes, 0, &covered, WHOLE_PAGE, &options(Limits::default()))
+        .map(|_| ())
+}
+
+/// A one-page document whose page draws nothing: no `/Contents`, empty `/Resources`.
+fn blank(parent: &str, page: &str) -> Vec<u8> {
+    pdf_of(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {parent} >>"),
+        format!("<< /Type /Page /Parent 2 0 R /Resources << >> {page} >>"),
+    ])
+}
+
+/// A page that draws nothing, with a bad frame, is refused by the redaction with the error this
+/// reports for it, on both engines -- so a blank page is not an exception to "the same rule".
+/// Twin: the same blank page with a good frame reads as a frame and redacts.
+#[test]
+fn a_blank_page_with_a_bad_frame_is_refused_by_the_redaction_with_the_same_error() {
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let cases = [
+        ("", "/MediaBox [0 0 0 400]", FrameRule::DisplayBox),
+        (
+            "",
+            "/MediaBox [0 0 300 400] /UserUnit 2",
+            FrameRule::UserUnitNotOne,
+        ),
+        (
+            "",
+            "/MediaBox [0 0 300 400] /Rotate 90.5",
+            FrameRule::RotateNotWhole,
+        ),
+        (
+            "",
+            "/MediaBox [0 0 300 400] /Rotate [90]",
+            FrameRule::PageFrameUnreadable,
+        ),
+        (
+            "/Rotate 90",
+            "/MediaBox [0 0 300 400]",
+            FrameRule::PageAttributeInherited,
+        ),
+    ];
+    let mut examined = 0;
+    for (parent, page, rule) in cases {
+        let bytes = blank(parent, page);
+        for (engine, readings, redacted) in [
+            (
+                "native",
+                read(&super::Qpdf, &bytes, &options(Limits::default())),
+                redaction_of(&super::Qpdf, &bytes),
+            ),
+            (
+                "web",
+                read(&web, &bytes, &options(Limits::default())),
+                redaction_of(&web, &bytes),
+            ),
+        ] {
+            let readings = readings.unwrap();
+            let [PageFrameReading::Refused { rule: ours, error }] = &readings[..] else {
+                panic!("{engine} {page}: not one refusal");
+            };
+            assert_eq!(*ours, rule, "{engine} {page}");
+            let refusal = redacted.expect_err("a blank page with a bad frame is refused");
+            assert_eq!(
+                format!("{refusal:?}"),
+                format!("{error:?}"),
+                "{engine} {parent} {page}: the redaction refuses by another error"
+            );
+            examined += 1;
+        }
+    }
+    assert_eq!(examined, 10);
+    // THE TWIN: a good frame on the same blank page.
+    let good = blank("", "/MediaBox [0 0 300 400]");
+    assert_eq!(on_both(&good).0, vec!["FRAME 300 x 400".to_owned()]);
+    assert!(redaction_of(&super::Qpdf, &good).is_ok());
+}
+
+mod property {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// One generated page under one `/Pages` node: each key on the page, on the node, or nowhere.
+    #[derive(Debug, Clone)]
+    struct Shape {
+        media: Option<&'static str>,
+        parent_media: Option<&'static str>,
+        crop: Option<&'static str>,
+        parent_crop: Option<&'static str>,
+        rotate: Option<&'static str>,
+        parent_rotate: Option<&'static str>,
+        user_unit: Option<&'static str>,
+        resources_on_parent: bool,
+    }
+
+    const BOXES: [&str; 6] = [
+        "[0 0 300 400]",
+        "[10 20 310 420]",
+        "[0 0 612 792]",
+        "[300 400 0 0]",
+        "[0 0 0 400]",
+        "[-50 -50 250 350]",
+    ];
+    const CROPS: [&str; 4] = [
+        "[0 0 100 100]",
+        "[50 50 250 350]",
+        "[400 0 500 100]",
+        "[-10 -10 1000 1000]",
+    ];
+    const ROTATIONS: [&str; 11] = [
+        "0", "90", "180", "270", "-90", "450", "45", "90.5", "90.0", "[90]", "(90)",
+    ];
+    const UNITS: [&str; 4] = ["1", "2", "1.0", "0.5"];
+
+    fn shape() -> impl Strategy<Value = Shape> {
+        let pick = |p: f64, values: &'static [&'static str]| {
+            proptest::option::weighted(p, proptest::sample::select(values))
+        };
+        (
+            pick(0.8, &BOXES),
+            pick(0.4, &BOXES),
+            pick(0.4, &CROPS),
+            pick(0.15, &CROPS),
+            pick(0.5, &ROTATIONS),
+            pick(0.15, &ROTATIONS),
+            pick(0.25, &UNITS),
+            proptest::bool::weighted(0.15),
+        )
+            .prop_map(
+                |(
+                    media,
+                    parent_media,
+                    crop,
+                    parent_crop,
+                    rotate,
+                    parent_rotate,
+                    user_unit,
+                    resources_on_parent,
+                )| Shape {
+                    media,
+                    parent_media,
+                    crop,
+                    parent_crop,
+                    rotate,
+                    parent_rotate,
+                    user_unit,
+                    resources_on_parent,
+                },
+            )
+    }
+
+    fn document_of(shape: &Shape) -> Vec<u8> {
+        let key = |name: &str, value: Option<&str>| {
+            value.map_or_else(String::new, |v| format!("/{name} {v} "))
+        };
+        let resources = "/Resources << /Font << /F1 4 0 R >> >> ";
+        let parent = format!(
+            "{}{}{}{}",
+            key("MediaBox", shape.parent_media),
+            key("CropBox", shape.parent_crop),
+            key("Rotate", shape.parent_rotate),
+            if shape.resources_on_parent {
+                resources
+            } else {
+                ""
+            },
+        );
+        let page = format!(
+            "{}{}{}{}{}",
+            key("MediaBox", shape.media),
+            key("CropBox", shape.crop),
+            key("Rotate", shape.rotate),
+            key("UserUnit", shape.user_unit),
+            if shape.resources_on_parent {
+                ""
+            } else {
+                resources
+            },
+        );
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
+        pdf_of(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Count 1 /Kids [5 0 R] {parent}>>"),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 3 0 R {page}>>"),
+        ])
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+        /// `page_frames` agrees with the redaction about every generated page, natively, and the
+        /// web agrees with native except where only PDFium can vouch for an inherited box.
+        #[test]
+        fn page_frames_answer_as_the_redaction_does(shape in shape()) {
+            let bytes = document_of(&shape);
+            let options = options(Limits::default());
+            let native = read(&super::super::Qpdf, &bytes, &options);
+            let redacted = redaction_of(&super::super::Qpdf, &bytes);
+            match &native {
+                // A DOCUMENT REFUSED WHOLE is refused whole by the redaction, by the same error.
+                Err(error) => {
+                    let refusal = redacted.as_ref().expect_err("refused whole by both");
+                    prop_assert_eq!(format!("{refusal:?}"), format!("{error:?}"));
+                }
+                Ok(readings) => match &readings[..] {
+                    [PageFrameReading::Refused { error, .. }] => {
+                        let refusal = redacted.as_ref().expect_err("a frame rule refuses it");
+                        prop_assert_eq!(format!("{refusal:?}"), format!("{error:?}"));
+                    }
+                    [PageFrameReading::Frame { width, height }] => {
+                        // THE REDACTION RAN, or refused by something that is not a frame rule.
+                        if let Err(refusal) = &redacted {
+                            prop_assert!(
+                                FrameRule::of(refusal).is_none(),
+                                "a frame, and the redaction refused by a frame rule: {:?}",
+                                refusal
+                            );
+                        }
+                        // AND THE FRAME IS THE ONE THE REGION CONVERTS AGAINST: the whole frame,
+                        // as a region, lands on the display box the redaction reads.
+                        let frame = crate::page_frame(&bytes, 0, &options).unwrap();
+                        prop_assert_eq!(frame.displayed_size(), (*width, *height));
+                        let region = crate::pdfsyntax::region::Region {
+                            left: 0.0,
+                            top: 0.0,
+                            width: *width,
+                            height: *height,
+                        };
+                        let content = region.to_content_space(&frame).unwrap();
+                        let shown = frame.display_box;
+                        for (a, b) in [
+                            (content.left, shown.left),
+                            (content.bottom, shown.bottom),
+                            (content.right, shown.right),
+                            (content.top, shown.top),
+                        ] {
+                            prop_assert!((a - b).abs() < 1e-9, "{:?} against {:?}", content, shown);
+                        }
+                    }
+                    other => prop_assert!(false, "not one reading: {}", other.len()),
+                },
+            }
+            // THE WEB, against native.
+            let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+            let (left, right) = (answer(&native), answer(&read(&web, &bytes, &options)));
+            prop_assert_eq!(left.len(), right.len());
+            for (l, r) in left.iter().zip(&right) {
+                // THE ONE DIVERGENCE MEANT: the web refuses an inherited /MediaBox before any later
+                // check, where natively PDFium vouches for it and the page reads on -- to a frame,
+                // or to a later rule (an inherited /Resources, found here).
+                prop_assert!(
+                    l == r
+                        || (shape.media.is_none()
+                            && r.starts_with("REFUSED media-box-unverified ")),
+                    "native {}\n web {}",
+                    l,
+                    r
+                );
+            }
+        }
+    }
 }

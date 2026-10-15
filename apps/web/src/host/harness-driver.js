@@ -397,12 +397,14 @@ function fieldsOf(data) {
     }
     // AN ARRAY OF PLAIN VALUES IS RECORDED TOO, its items joined by commas under `key[]`, so a rule
     // can hold what is IN it -- `page_frames`' sizes and rule names (#136) -- and not only its
-    // shape. An item holding a comma splits into parts no rule admits, which fails closed.
+    // shape. An item holding a comma splits into parts no rule admits, which fails closed. The
+    // LENGTH is recorded beside it, because a join cannot tell `[]` from `[""]`.
     if (
       Array.isArray(value) &&
       value.every((item) => typeof item === "string" || typeof item === "number")
     ) {
       fields[`${key}[]`] = value.map(String).join(",");
+      fields[`${key}[].length`] = value.length;
       continue;
     }
     if (value instanceof Blob) fields[`${key}.type`] = value.type;
