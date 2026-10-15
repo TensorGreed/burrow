@@ -10,6 +10,7 @@
 // id, never with the engine's message.
 
 import { readFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -253,3 +254,170 @@ function isPageAsset(url: string): boolean {
     /^\/fonts\/[a-z0-9.-]+\.woff2$/.test(url)
   );
 }
+
+// ---- S6b: another area of the result --------------------------------------------------------
+
+/** A generated fixture with two lines of literal text: `BURROW-SECRET-01` above `KEEP-THIS-LINE`. */
+const TWO_LINES = "01-plain-tj.pdf";
+/** The first line, in the 400 x 200 page's display frame. */
+const FIRST_LINE = ["30", "70", "330", "40"] as const;
+/** The second line. */
+const SECOND_LINE = ["30", "150", "330", "30"] as const;
+
+/**
+ * Whether `token` is in a document's bytes, read WITHOUT burrow: the raw bytes, and every stream
+ * inflated where it inflates. A text-showing string is literal in this fixture, so a token still
+ * drawn is found; one removed is not.
+ */
+function holds(bytes: Buffer, token: string): boolean {
+  if (bytes.includes(token)) return true;
+  const text = bytes.toString("latin1");
+  for (const m of text.matchAll(/stream\r?\n/g)) {
+    const start = (m.index ?? 0) + m[0].length;
+    const end = text.indexOf("endstream", start);
+    if (end < 0) continue;
+    try {
+      if (inflateSync(bytes.subarray(start, end)).includes(token)) return true;
+    } catch {
+      // Not deflated, or not whole: the raw search above covered it.
+    }
+  }
+  return false;
+}
+
+async function downloaded(page: Page, testId: string): Promise<Buffer> {
+  const download = page.waitForEvent("download");
+  await page.getByTestId(testId).click();
+  const stream = await (await download).createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Whether the browser still serves an object URL, asked the way a person asks: by downloading it.
+ *
+ * NOT `fetch`: the page's CSP `connect-src` names only the engine URLs, so a fetch of a `blob:`
+ * URL fails whether or not it was revoked, and a probe built on it reports "released" for both.
+ * A download of a revoked URL fails, and Playwright says so; one that never starts is a failure.
+ */
+async function served(page: Page, url: string): Promise<boolean> {
+  const download = page.waitForEvent("download", { timeout: 10_000 }).catch(() => null);
+  await page.evaluate((href) => {
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = "probe.pdf";
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }, url);
+  const started = await download;
+  if (started === null) return false;
+  return (await started.failure()) === null;
+}
+
+test("another area is redacted from the result, and the first removal stays removed (S6b)", async ({
+  page,
+}) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  const first = await downloaded(page, "redact-download");
+  // THE EXTRACTOR'S CONTROL: it reads the line that was kept, so its silence below means something.
+  expect(holds(first, "KEEP-THIS-LINE"), "the extractor does not read this fixture").toBe(true);
+  expect(holds(first, "BURROW-SECRET-01"), "the first area was not removed").toBe(false);
+
+  await page.getByTestId("redact-another").click();
+  await expect(page.locator(".chosen__name")).toHaveText("01-plain-tj-redacted.pdf");
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("redact-left")).toHaveValue("");
+  await area(page, ...SECOND_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("redact-download")).toHaveText(/01-plain-tj-redacted\.pdf$/);
+  const second = await downloaded(page, "redact-download");
+  expect(holds(second, "KEEP-THIS-LINE"), "the second area was not removed").toBe(false);
+  // THE PROPERTY: the second run was on the first one's output, so its removal is still there.
+  expect(holds(second, "BURROW-SECRET-01"), "the second run undid the first removal").toBe(false);
+});
+
+test("the earlier result stays downloadable until the next run succeeds, then is released", async ({
+  page,
+}) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+
+  const earlier = page.getByTestId("redact-earlier").locator("a");
+  await expect(earlier).toBeVisible({ timeout: 45_000 });
+  const url = String(await earlier.getAttribute("href"));
+  expect(await served(page, url), "the earlier result is not downloadable").toBe(true);
+
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await area(page, ...SECOND_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("redact-earlier")).toHaveCount(0);
+  expect(await served(page, url), "the earlier result outlived the run that replaced it").toBe(
+    false,
+  );
+});
+
+test("choosing a different file releases the earlier result", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+  const url = String(await page.getByTestId("redact-earlier").locator("a").getAttribute("href"));
+  expect(await served(page, url)).toBe(true);
+
+  await page.getByTestId("redact-file").setInputFiles(join(fixtures, REDACTS));
+  await expect(page.getByTestId("redact-earlier")).toHaveCount(0);
+  expect(await served(page, url), "a different file left the earlier result alive").toBe(false);
+});
+
+test("leaving the page releases every result it holds", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+  const url = String(await page.getByTestId("redact-earlier").locator("a").getAttribute("href"));
+  expect(await served(page, url)).toBe(true);
+
+  // `pagehide` is what a navigation or a bfcache entry fires; the page releases on it.
+  await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
+  expect(await served(page, url), "leaving the page left a result alive").toBe(false);
+});
+
+test("a §7 note stays through the chain and goes with a genuinely new file (L2)", async ({
+  page,
+}) => {
+  // 09-actualtext drops one passage's carried text when its whole page is redacted; the second
+  // area, a corner with nothing in it, counts nothing -- and the note must stay, because the first
+  // removal, and what it cost, is in the second result too.
+  const frame = await open(page, "09-actualtext.pdf", generated);
+  await area(page, "0", "0", String(frame.width), String(frame.height));
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  const notes = page.getByTestId("redact-result-note");
+  await expect(notes).toHaveCount(1);
+
+  await page.getByTestId("redact-another").click();
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await area(page, "0", "0", "5", "5");
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await expect(notes).toHaveCount(1);
+  await expect(notes).toContainText("had alternative text");
+
+  const plain = await open(page, REDACTS);
+  await area(page, "0", "0", String(plain.width), String(plain.height));
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await expect(notes).toHaveCount(0);
+});

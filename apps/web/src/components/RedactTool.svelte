@@ -48,7 +48,20 @@
    * one region per run, so a second area is a second run on the first one's output.
    */
   let output: Blob | null = null;
-  /** What the run reported that §7 has a paragraph for. */
+  /**
+   * The result a re-fed run started from, kept downloadable until that run succeeds, the person
+   * chooses a different file, or the page goes away -- then released (#199).
+   */
+  let earlier = $state<Handout | null>(null);
+  /** Whether the chosen file is a re-fed result (S6b) rather than one the person chose. */
+  let reFed = $state(false);
+  /** The name of the file the person chose, which every result in its chain is named after. */
+  let baseName = "document";
+  /**
+   * What the runs on this chain reported that §7 has a paragraph for: the most any run in it
+   * counted, so a note stays while the chain lasts and goes with a genuinely new file (L2). A
+   * removal the first run made is in every later result, and so is what it disclosed.
+   */
   let retainedFonts = $state(0);
   let droppedCarriedText = $state(0);
   let announcement = $state("");
@@ -101,11 +114,24 @@
   );
   const preparing = $derived(!engineStarted && file !== null && frames === null && !unreadable);
 
-  async function choose(files: FileList | File[]) {
+  /**
+   * Take a file: one the person chose, or (`fromResult`) the last result re-fed by `another()`.
+   *
+   * A file the person chose starts a new chain: every earlier result is released, the §7 notes
+   * reset, and results are named after it. A re-fed result keeps the chain.
+   */
+  async function choose(files: FileList | File[], fromResult = false) {
     const [chosen] = Array.from(files);
     if (!chosen) return;
     delivery.invalidate();
     clearResult();
+    if (!fromResult) {
+      releaseEarlier();
+      retainedFonts = 0;
+      droppedCarriedText = 0;
+      baseName = chosen.name.replace(/\.pdf$/i, "") || "document";
+    }
+    reFed = fromResult;
     phase = "idle";
     notice = null;
     file = chosen;
@@ -215,8 +241,13 @@
         return;
       }
       output = reply.output;
-      retainedFonts = reply.retainedFonts ?? 0;
-      droppedCarriedText = reply.droppedCarriedText ?? 0;
+      const retained = reply.retainedFonts ?? 0;
+      const dropped = reply.droppedCarriedText ?? 0;
+      retainedFonts = reFed ? Math.max(retainedFonts, retained) : retained;
+      droppedCarriedText = reFed ? Math.max(droppedCarriedText, dropped) : dropped;
+      // THE NEW RESULT REPLACES THE ONE IT STARTED FROM, which is released only now that this
+      // one exists.
+      releaseEarlier();
       result = handout;
       phase = "done";
       announce("Done. The new file is ready to download.");
@@ -230,10 +261,9 @@
     }
   }
 
+  /** Named after the file the person chose, however many areas its chain has redacted. */
   function suggestedName(): string {
-    // ONE SUFFIX, however many areas: a re-fed result is already "-redacted".
-    const base = file?.name.replace(/\.pdf$/i, "").replace(/-redacted$/, "") ?? "document";
-    return `${base}-redacted.pdf`;
+    return `${baseName}-redacted.pdf`;
   }
 
   /** Stop the run in flight: only terminating the worker stops an engine call (ADR 0007). */
@@ -259,16 +289,29 @@
   function another() {
     if (!output || !result) return;
     const next = new File([output], result.name, { type: "application/pdf" });
-    left = top = width = height = "";
-    void choose([next]);
+    // THE RESULT STAYS DOWNLOADABLE while the next area is chosen and run.
+    earlier = result;
+    result = null;
+    output = null;
+    void choose([next], true);
   }
 
   function clearResult() {
     delivery.release(result);
     result = null;
     output = null;
-    retainedFonts = 0;
-    droppedCarriedText = 0;
+  }
+
+  function releaseEarlier() {
+    delivery.release(earlier);
+    earlier = null;
+  }
+
+  /** Release every result the page holds (#199): on page leave and on unmount. */
+  function releaseAll() {
+    delivery.invalidate();
+    clearResult();
+    releaseEarlier();
   }
 
   function announce(text: string) {
@@ -276,11 +319,19 @@
     queueMicrotask(() => (announcement = text));
   }
 
+  // LEAVING THE PAGE RELEASES EVERY RESULT (#199), as the render worker is terminated on
+  // `pagehide` (D1): a result left behind in a bfcached page is a copy of the document nobody
+  // asked to keep.
+  $effect(() => {
+    const onPageHide = () => releaseAll();
+    globalThis.addEventListener("pagehide", onPageHide);
+    return () => globalThis.removeEventListener("pagehide", onPageHide);
+  });
+
   onDestroy(() => {
-    // INVALIDATE FIRST, so a reply landing during teardown cannot hand out a URL after the
-    // release below (L4).
-    delivery.invalidate();
-    clearResult();
+    // INVALIDATE FIRST (inside `releaseAll`), so a reply landing during teardown cannot hand out
+    // a URL after the release (L4).
+    releaseAll();
     host?.dispose();
   });
 
@@ -459,6 +510,13 @@
       <p class="working" role="status">Working. This does not report progress.</p>
     {/if}
   </div>
+
+  {#if earlier && !(phase === "done" && result && !stale)}
+    <p class="result" data-testid="redact-earlier">
+      The result you are working from stays here until this run finishes:
+      <a class="download" href={earlier.url} download={earlier.name}>Download {earlier.name}</a>
+    </p>
+  {/if}
 
   {#if phase === "done" && result && !stale}
     <div class="result">
