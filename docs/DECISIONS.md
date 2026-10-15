@@ -209,8 +209,8 @@ one is decided in an issue, with the same three parts.
     whose cost is marked-content work: the `BDC`/`BMC` depth summed over every operation PDFium
     parses at the page load. It replaced a depth cap after review found three ways past it.
     *Does not cover:* the load's other costs (its total time, and memory that does not grow with
-    nesting), which this constant does not cap and ADR 0007's measured check still only detects;
-    and the same engine's loads elsewhere (render, previews), which it does not cap at all.
+    nesting), which this constant does not cap: time is cooperative and memory is detected (ADR
+    0007); and the same engine's loads elsewhere (render, previews), which it does not cap at all.
 
 ## Spec review first (the practice that uses rule 10)
 
