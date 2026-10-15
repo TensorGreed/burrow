@@ -60,8 +60,9 @@ one is decided in an issue, with the same three parts.
 
 10. **The spec-review question for every redaction or split change:** what does this ACCEPT that
     ADR 0029 §3 / ADR 0019 §2b says to refuse, and what does it REFUSE that is a legitimate
-    document? *Decided:* ADR 0029 §3, ADR 0019 §2b. *Does not cover:* changes that touch neither
-    redaction nor split geometry.
+    document? *Decided:* ADR 0029 §3, ADR 0019 §2b. Since rule 17 it is asked at round 0 only of a
+    change that makes redaction or split accept more; a new refusal answers its second half with
+    its census. *Does not cover:* changes that touch neither redaction nor split geometry.
 
 11. **A run-level CI conclusion other than `success` is a stop — even when every job, step and
     check-run is green.** The merge gate is GitHub CI green on the head, and "green" means the
@@ -120,31 +121,58 @@ one is decided in an issue, with the same three parts.
     the slice's scope; a finding outside the diff, including a leak already on `main`, is filed (a
     ROADMAP *Ship blockers* row if it leaks; a private advisory per `SECURITY.md` once redaction has
     shipped), never folded in -- unless the diff makes it newly reachable or it makes the diff's own
-    rule unsound, which counts as introduced by the diff. Round 1 reviews the diff; round 2 checks
-    round 1's findings against the fix and reads the fix diff for new Critical or High findings,
-    without hunting beyond it. After round 2 only a Critical, High or Blocking finding introduced
-    by the diff, or a non-negotiable violation, blocks the push; a blocker still open then goes to
-    the owner. Wording corrections (docs, comments, rustdoc, commit claims) go in a follow-up commit
-    on the same PR, checked by the `code-reviewer` alone. *Decided:* owner, 2026-10-09, after the
-    Type 3 slice (#296) took eight rounds of both reviewers. *Does not cover:* which reviewers a
-    change gets; and the final pre-launch spec-review round in ROADMAP's exit rule, which hunts the
-    whole class by design.
+    rule unsound, which counts as introduced by the diff. Since rule 17, a round-0 finding outside
+    the slice is filed for the final spec review instead, unless it is live in a shipped tool. Round
+    1 reviews the diff; round 2 checks round 1's findings against the fix and reads the fix diff for
+    new Critical or High findings, without hunting beyond it. After round 2 only a Critical, High or
+    Blocking finding introduced by the diff, or a non-negotiable violation, blocks the push; a
+    blocker still open then goes to the owner, and a third round of any kind is a stop for the
+    owner, with the reason (rule 17). Wording corrections (docs, comments, rustdoc, commit claims)
+    go in a follow-up commit on the same PR, checked by the `code-reviewer` alone. *Decided:* owner,
+    2026-10-09, after the Type 3 slice (#296) took eight rounds of both reviewers. *Does not cover:*
+    which reviewers a change gets; and the final pre-launch spec-review round in ROADMAP's exit
+    rule, which hunts the whole class by design.
 
 16. **Every nightly failure is read per job, and each failing job is matched to a known entry or
     filed before the next report.** Matched means `tools/check-known-crashes.py` classifies it to a
     ledger entry whose issue is open, which the nightly's `ledger` job checks. Filed means a new
     issue, or a dated comment on the issue that owns it. A report that says "the nightly failed"
-    without that per-job account is incomplete. *Decided:* owner, 2026-10-14. Two red nightlies (2026-10-13
-    and 2026-10-14) had gone unread for a batch, with three UNMATCHED findings, filed only
-    afterwards: #193's comment, #327 and #328, each naming the run, the job and the verdict.
+    without that per-job account is incomplete. *Decided:* owner, 2026-10-14. Two red nightlies
+    (2026-10-13 and 2026-10-14) had gone unread for a batch, with three UNMATCHED findings, filed
+    only afterwards: #193's comment, #327 and #328, each naming the run, the job and the verdict.
     *Does not cover:* reproducing or fixing the finding, which is sequenced like any other issue;
     where an upstream engine's crash input may be described, which the owner's standing privacy
     instruction governs; and CI on a PR, which rule 11 governs.
 
+17. **Review effort scales with what the change can make redaction or split accept.**
+    - **Mechanical** -- budgets, test wiring, docs, ledgers, `outcomes.tsv` regeneration, and the
+      2026-09-24 tooling class (tooling, gates, checkers, their self-tests, CI wiring, fixture
+      generators): one `code-reviewer` pass; no spec review, no round 0.
+    - **A new refusal:** a fixture, a near-miss twin, an asserted mutation, and one review; no
+      round 0 and no leak hunt, because refusing fails closed. It counts as a refusal only if the
+      census and `outcomes.tsv` show no measured input moving from refused to `Ok`; any such move
+      makes it an acceptance change.
+    - **A new acceptance** -- redaction or split returning `Ok` on more input: the full process,
+      round 0 spec review, then both reviewers.
+    - **At most two review rounds** for any change; a third is a stop for the owner, with the
+      reason.
+    - **A round-0 finding outside the slice** is filed for the final spec review, unless it is live
+      in a shipped tool, when it is a private advisory (rule 15, `SECURITY.md`).
+    - **The private final-review list is triaged weekly:** each item is queued as A or B (it closes
+      a leak) or marked post-launch, so that nothing waits for the final review to be discovered.
+
+    *Decided:* owner, 2026-10-14, adopting the launch-plan proposal (class A to D) to cut pre-launch
+    work and scale review to risk. Changes rule 10 (now asked of acceptance changes only), rule 15
+    (round-0 findings outside the slice; a third round), and CLAUDE.md's reviewer rule and *Spec
+    review first*. *Does not cover:* rule 2's census, which still runs for refusals, since the
+    refusal rate is the launch metric; and the final spec-review round itself, which hunts the
+    whole class by design.
+
 ## Spec review first (the practice that uses rule 10)
 
-For every new rule from here: **before writing code**, give the `security-reviewer` the proposed
-rule, the ADR 0029 §3 / ADR 0019 §2b table, and the census plan, and ask for (a) the inputs the
-rule would accept that the table says to refuse, and (b) the fixture list it would demand. Build
-from that list. The post-code reviews still run; the aim is that round 2 finds nothing a round 0
-could have. (Recorded as a working agreement in [`CLAUDE.md`](../CLAUDE.md#spec-review-first).)
+For every new acceptance rule from here (rule 17): **before writing code**, give the
+`security-reviewer` the proposed rule, the ADR 0029 §3 / ADR 0019 §2b table, and the census plan,
+and ask for (a) the inputs the rule would accept that the table says to refuse, and (b) the fixture
+list it would demand. Build from that list. The post-code reviews still run; the aim is that round 2
+finds nothing a round 0 could have. (Recorded as a working agreement in
+[`CLAUDE.md`](../CLAUDE.md#spec-review-first).)
