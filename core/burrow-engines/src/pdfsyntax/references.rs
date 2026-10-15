@@ -167,8 +167,10 @@ pub struct Found {
     /// Recorded where the bytes are judged as written ([`in_file`], [`in_object_stream`]).
     pub null_values: Vec<Holder>,
     /// Every reference written as a value inside a dictionary, with the object holding it, one entry
-    /// per occurrence (at most [`MAX_DISTINCT_REFERENCES`]): the caller asks which resolve to a
-    /// declared `null`, which qpdf drops the same way.
+    /// per occurrence: the caller asks which resolve to a declared `null`, which qpdf drops the same
+    /// way. Not capped of its own: each entry costs at least a reference's worth of lexed bytes, so
+    /// its length is bounded by the scan's work budget ([`WORK_FACTOR`] times the input plus
+    /// [`WORK_SLACK`]), as [`Found::null_values`]' is.
     pub dictionary_references: Vec<((i32, i32), Holder)>,
 }
 
@@ -645,10 +647,6 @@ impl<'c> Scan<'c> {
                             && let (Some(number), Some(generation)) =
                                 (plain(number), plain(generation))
                         {
-                            if self.found.dictionary_references.len() >= MAX_DISTINCT_REFERENCES {
-                                self.found.irregular = Some(Irregular::BeyondCaps);
-                                return Ok(end(false, 0, false));
-                            }
                             self.found.dictionary_references.push((
                                 (number, generation),
                                 Holder {
@@ -767,7 +765,10 @@ impl<'c> Scan<'c> {
                 starts.push((start, i32::try_from(number).ok()));
             }
         }
-        // IN OFFSET ORDER, each offset once, as the set this replaced read them.
+        // IN OFFSET ORDER, each offset once, and the FIRST number listed for an offset holds it --
+        // as qpdf reads them: `resolveObjectsInStream` warns on an offset that does not increase and
+        // skips the later entry (`QPDF_objects.cc`), and that warning refuses the document. The
+        // stable sort keeps listing order among equal offsets; `dedup_by_key` keeps the first.
         starts.sort_by_key(|(start, _)| *start);
         starts.dedup_by_key(|(start, _)| *start);
         Ok(Some(starts))
@@ -1286,6 +1287,30 @@ mod tests {
                 .unwrap()
                 .irregular,
             None
+        );
+    }
+
+    /// TWO MEMBERS AT ONE OFFSET: the first number listed holds the value read there, as qpdf reads
+    /// the stream (it skips the later entry, with a warning). Pinned, because the holder decides
+    /// the catalog exemption.
+    #[test]
+    fn the_first_member_listed_at_an_offset_holds_its_value() {
+        let found = object_stream(b"1 0 2 0 << /K null >>", 2, 8);
+        assert_eq!(found.irregular, None);
+        assert_eq!(
+            found.null_values,
+            vec![super::Holder {
+                object: Some(1),
+                direct: true
+            }]
+        );
+        let found = object_stream(b"2 0 1 0 << /K null >>", 2, 8);
+        assert_eq!(
+            found.null_values,
+            vec![super::Holder {
+                object: Some(2),
+                direct: true
+            }]
         );
     }
 
