@@ -56,6 +56,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -2080,18 +2081,38 @@ def qpdf_cli() -> tuple[str | None, str]:
 # file for every checkout of every branch, and waits for it, bounded, saying whose run it waits
 # behind. The wait is bounded because an `until` that cannot end is the failure CLAUDE.md names.
 #
-# What it does not cover, stated: a `pnpm e2e` started by hand takes no lock, and neither does
-# anything outside this runner.
+# AND THE PORTS THEMSELVES, after the lock: a runner from before this lock (a branch not yet
+# rebased) or a `pnpm e2e` started by hand takes no lock, so the holder of it also waits, bounded,
+# until the suite's ports (4321 site, 4322 foreign logger, 4323 origin-guard's mismatch) can be
+# bound. That leaves a race of the moment between this check and Playwright's own `listen`, which
+# is stated rather than closed: the failure it allows is the loud `EADDRINUSE` this exists to avoid,
+# never a run against another tree's server.
+PLAYWRIGHT_PORTS = (4321, 4322, 4323)
 PLAYWRIGHT_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / (
     f"burrow-playwright-{os.getuid()}.lock"
 )
 PLAYWRIGHT_LOCK_WAIT_S = 3600.0
 
 
-def playwright_lock(wait_s: float = PLAYWRIGHT_LOCK_WAIT_S, path: Path | None = None):
+def port_in_use(port: int) -> bool:
+    """Whether something already listens on 127.0.0.1:`port` (a bind that fails)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
+def playwright_lock(
+    wait_s: float = PLAYWRIGHT_LOCK_WAIT_S,
+    path: Path | None = None,
+    ports: tuple[int, ...] = PLAYWRIGHT_PORTS,
+):
     """The machine-wide Playwright lock, held until the returned file is closed; None on timeout.
 
-    The holder writes its checkout and pid into the file, so a waiter can say what it waits for.
+    Taken only once `ports` are free too. The holder writes its checkout and pid into the file,
+    so a waiter can say what it waits for.
     """
     lock_path = path or PLAYWRIGHT_LOCK
     handle = open(lock_path, "a+")  # noqa: SIM115 -- held open for the job's duration
@@ -2111,8 +2132,17 @@ def playwright_lock(wait_s: float = PLAYWRIGHT_LOCK_WAIT_S, path: Path | None = 
                 handle.close()
                 return None
             time.sleep(2.0)
+    busy_said = False
+    while busy := [port for port in ports if port_in_use(port)]:
+        if not busy_said:
+            print(f"    holding the Playwright lock, waiting for port(s) {busy} to be released")
+            busy_said = True
+        if time.monotonic() - started >= wait_s:
+            handle.close()
+            return None
+        time.sleep(2.0)
     waited = time.monotonic() - started
-    if said:
+    if said or busy_said:
         print(f"    took the Playwright lock after {waited:.0f}s")
     handle.seek(0)
     handle.truncate()
@@ -2132,8 +2162,8 @@ def run(job: dict, env: dict[str, str] | None = None) -> bool:
         if lock is None:
             print(
                 f"    FAIL  {job['name']}: the Playwright lock was not free within "
-                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, so this run would share ports 4321/4322 with "
-                f"another -- not run"
+                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, or its ports {list(PLAYWRIGHT_PORTS)} stayed bound, "
+                f"so this run would share them with another -- not run"
             )
             return False
     try:

@@ -1601,19 +1601,28 @@ holder = subprocess.Popen([sys.executable, "-c", (
     stdout=subprocess.PIPE, text=True)
 assert holder.stdout.readline().strip() == "held"
 started = time.monotonic()
-got = ci.playwright_lock(wait_s=1.0, path=path)
+got = ci.playwright_lock(wait_s=1.0, path=path, ports=())
 waited = time.monotonic() - started
 assert got is None, "a held lock was taken"
 assert waited >= 1.0, f"gave up after {waited:.2f}s, before its bound"
 holder.kill(); holder.wait()
-got = ci.playwright_lock(wait_s=1.0, path=path)
+import socket
+free = socket.socket(); free.bind(("127.0.0.1", 0)); spare = free.getsockname()[1]; free.close()
+got = ci.playwright_lock(wait_s=1.0, path=path, ports=(spare,))
 assert got is not None, "a free lock was not taken"
 got.close()
+# A FREE LOCK OVER A BOUND PORT still waits and gives up: the port is what collides.
+taken = socket.socket(); taken.bind(("127.0.0.1", 0)); taken.listen(1); busy = taken.getsockname()[1]
+started = time.monotonic()
+got = ci.playwright_lock(wait_s=1.0, path=path, ports=(busy,))
+assert got is None, "a bound port did not stop the lock being taken"
+assert time.monotonic() - started >= 1.0, "gave up on a bound port before its bound"
+taken.close()
 print("lock-ok")
 PYLOCK
 )" || true
 if grep -q "lock-ok" <<<"$lock_out" && grep -q "held by the planted holder" <<<"$lock_out"; then
-  echo "  ok   a held Playwright lock makes the next run wait, name its holder, and give up at its bound"
+  echo "  ok   a held Playwright lock, or a bound port, makes the next run wait and give up at its bound"
   pass=$((pass + 1))
 else
   echo "  FAIL the Playwright lock did not wait, name the holder, and time out as required"
