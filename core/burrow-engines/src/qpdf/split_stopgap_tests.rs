@@ -340,6 +340,91 @@ fn a_name_inside_the_measured_allowlist_opens_for_split() {
 
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
 /// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
+/// THE CHROME SHAPE (owner, 2026-10-15): an empty key at the top level of the catalog's `/Dests`
+/// dictionary, which Chrome's print-to-PDF writes for a link to an unnamed anchor, opens for split
+/// -- no part receives the source catalog -- and nowhere else.
+#[test]
+fn an_empty_key_opens_split_only_at_the_top_level_of_the_catalog_s_dests() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let dests = |body: &str| vec![(6, 0, body.to_owned())];
+    opens(
+        "an empty key of /Dests",
+        &classic(&document(
+            DESTS_CATALOG,
+            "",
+            SHOWN,
+            &dests("<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>"),
+        )),
+    );
+    // THE TWINS. One level down in /Dests; the same dictionary when the catalog does not name it;
+    // the same key in another dictionary of a document that has a /Dests; and a /Dests written
+    // directly in the catalog.
+    for (what, catalog, page_extra, more) in [
+        (
+            "one level down in /Dests",
+            DESTS_CATALOG,
+            "",
+            dests("<< /A << / [3 0 R /XYZ 0 400 0] >> >>"),
+        ),
+        (
+            "/Dests not named by the catalog",
+            PLAIN_CATALOG,
+            "/Extra 6 0 R",
+            dests("<< / [3 0 R /XYZ 0 400 0] >>"),
+        ),
+        (
+            "another dictionary, beside a /Dests",
+            DESTS_CATALOG,
+            "/Extra 7 0 R",
+            vec![
+                (6, 0, "<< /Named [3 0 R /Fit] >>".to_owned()),
+                (7, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned()),
+            ],
+        ),
+        (
+            "a /Dests written in the catalog",
+            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
+            "",
+            Vec::new(),
+        ),
+    ] {
+        refuses(
+            what,
+            &classic(&document(catalog, page_extra, SHOWN, &more)),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
+/// THE EMPTY NAME AS A VALUE, as Chrome writes it in a link annotation: `/Dest /` and a line break,
+/// admitted; under a key whose value means something, refused (owner, 2026-10-15).
+#[test]
+fn an_empty_dest_in_a_link_opens_split_and_a_meaningful_key_refuses() {
+    let link = |inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside} >>"),
+        )]
+    };
+    opens(
+        "/Dest / in a link",
+        &classic(&document(
+            PLAIN_CATALOG,
+            "",
+            SHOWN,
+            &link("/Dest /\n/Border [0 0 0]"),
+        )),
+    );
+    for (what, inside) in [("/S /", "/S / /Dest /A"), ("/Subtype /", "/Subtype / ")] {
+        refuses(
+            what,
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
 #[test]
 fn the_empty_name_and_a_mixed_case_escape_refuse_split_s_open() {
     for (what, extra, twin) in [
