@@ -977,6 +977,24 @@ fn a_name_inside_the_measured_allowlist_redacts() {
     );
 }
 
+/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse (#329; `name_reads_alike`): neither was
+/// measured, and until now only the unit test pinned them. In a page dictionary, benign. The twins
+/// redact: a one-byte name, and the same escape in one case.
+#[test]
+fn the_empty_name_and_a_mixed_case_escape_are_refused() {
+    for (what, extra, twin) in [
+        ("the empty name", "/ 1", "/A 1"),
+        ("a mixed-case escape", "/Ma#aFrk 1", "/Ma#afrk 1"),
+    ] {
+        refused_on_both(
+            &classic(&page_objects(extra)),
+            "name-read-differently",
+            what,
+        );
+        redacts_on_both(&classic(&page_objects(twin)), &format!("{what}: the twin"));
+    }
+}
+
 /// `pdf`, a [`classic`] file, with its `trailer` keyword glued to an empty cross-reference
 /// subsection's count -- `N 0trailer` -- which qpdf reads without a warning (#239).
 pub(super) fn glued_trailer(pdf: Vec<u8>) -> Vec<u8> {

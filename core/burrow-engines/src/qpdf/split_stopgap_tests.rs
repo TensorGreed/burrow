@@ -338,6 +338,26 @@ fn a_name_inside_the_measured_allowlist_opens_for_split() {
     }
 }
 
+/// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
+/// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
+#[test]
+fn the_empty_name_and_a_mixed_case_escape_refuse_split_s_open() {
+    for (what, extra, twin) in [
+        ("the empty name", "/ 1", "/A 1"),
+        ("a mixed-case escape", "/Ma#aFrk 1", "/Ma#afrk 1"),
+    ] {
+        refuses(
+            what,
+            &classic(&document(PLAIN_CATALOG, extra, SHOWN, &[])),
+            "[split-name-read-differently]",
+        );
+        opens(
+            &format!("{what}: the twin"),
+            &classic(&document(PLAIN_CATALOG, twin, SHOWN, &[])),
+        );
+    }
+}
+
 /// THE TWINS of the object-stream, string and glued-trailer cases: the same member written with an
 /// escape opens; a refused byte inside a string that holds no `obj` opens; and a glued trailer
 /// with a refused byte in a key refuses, its escaped twin opening.
