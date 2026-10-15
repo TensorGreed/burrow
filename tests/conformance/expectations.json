@@ -845,6 +845,67 @@
       }
     },
     {
+      "name": "a-chrome-printed-document",
+      "inputs": [
+        {
+          "file": "fixtures/chrome-printed.pdf",
+          "sha256": "dcc59f09b72194a9cc71a68f26fa8d11244fbdd7bc705a8feb068e83eb8ec58c"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              90,
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ]
+          }
+        },
+        "split": {
+          "err": {
+            "kind": "Unsupported"
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ],
+            "compressed": true
+          }
+        }
+      },
+      "known_gap": {
+        "issue": "https://github.com/TensorGreed/burrow/issues/358",
+        "reason": "split refuses Chrome's empty-name destination (`/Dest /`, written for `href=\"#\"`) as [split-name-read-differently], so it refuses ordinary Chrome-printed PDFs",
+        "milestone": "M2"
+      }
+    },
+    {
       "name": "reorder-a-flat-document",
       "inputs": [
         {
