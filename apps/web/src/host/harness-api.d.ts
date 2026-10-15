@@ -52,6 +52,10 @@ export interface Reply {
   droppedCarriedText?: number;
   /** The produced document's sha256, hex, or null when there was none. `redactDocument` only. */
   outputSha256?: string | null;
+  /** Every page's frame as `[width, height]` pairs, `0, 0` where refused. `redactFrames` only. */
+  frames?: number[];
+  /** Per page, the frame rule refusing every region on it, or "". `redactFrames` only. */
+  frameRefusals?: string[];
 }
 
 /**
@@ -281,6 +285,15 @@ export interface BurrowHarness {
     page: number,
     covered: number[],
     region: { left: number; top: number; width: number; height: number },
+    options?: { limits?: Partial<HarnessLimits> },
+  ): Promise<Reply>;
+  /**
+   * Read every page's frame through REDACTION's own worker (#136): `page_frames`, read-only.
+   * Returns the reply's fields; there is no output.
+   */
+  redactFrames(
+    name: string,
+    bytes: Uint8Array,
     options?: { limits?: Partial<HarnessLimits> },
   ): Promise<Reply>;
   /**

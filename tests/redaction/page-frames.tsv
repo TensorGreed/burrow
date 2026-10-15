@@ -1,0 +1,530 @@
+# Every page's frame in the redaction corpus, natively (#136). Written by
+# core/burrow-engines/src/qpdf/page_frames_tests.rs under BURROW_BLESS_PAGE_FRAMES=1:
+#   cargo test -p burrow-engines --all-features --lib -- page_frames_tests::the_web_reads
+# and diffed on every run. INPUT is the document and its sha256; PAGE is one page, with its
+# frame in points (width, height) or the rule that refuses every region on it; DOC is a document
+# refused whole. Re-bless only when a change to what a page reads as is meant.
+INPUT	tests/redaction/fixtures/producer-latex.pdf	b08bdf191f96edc35e796a6ac477fd7fba220dd9d4013b7a86e9384cd5fd7ffa
+PAGE	tests/redaction/fixtures/producer-latex.pdf	0	FRAME 595.276 841.89
+INPUT	tests/redaction/fixtures/producer-ocr-scan.pdf	27d43eb68ecfbcd929f0c5f0ca3dfd10ba252dcdaebd22ca7823956d6feef31b
+PAGE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	FRAME 1748.57 2262.86
+INPUT	tests/redaction/fixtures/producer-vertical-writing.pdf	b6738e36df1e2d04074a55abd3c32244b5dea2131a7f01d46cbe8fc94071c504
+PAGE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	FRAME 595.303937007874 841.889763779528
+INPUT	tests/redaction/fixtures/producer-writer.pdf	2993655cf9eb9eff9dd55152c7be1b382bbbf9f2905e8fc414447701b64bb7f6
+PAGE	tests/redaction/fixtures/producer-writer.pdf	0	FRAME 595.303937007874 841.889763779528
+INPUT	tests/redaction/generated/00-control-no-canary.pdf	e07721f03b1d506a5fac6914190e1a4a938a4243f7f47cd64bd6200d8adeddf6
+PAGE	tests/redaction/generated/00-control-no-canary.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/01-plain-tj.pdf	aeac122cabd8056dc14bc4f967b067cc7242b2dc8b08cd2864152c08b922b24c
+PAGE	tests/redaction/generated/01-plain-tj.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/02-kerned-tj.pdf	dc9b457805ad92567c6d47c2002bb622772551c74a6564afac8c780a5cdc79cb
+PAGE	tests/redaction/generated/02-kerned-tj.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/03-positioned-runs.pdf	f7b95fced501787d20cea78c27f8eae546cb47b4d4fb9b66954e99695f17d9c5
+PAGE	tests/redaction/generated/03-positioned-runs.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/04-differences-encoding.pdf	b8c6eb236fa64fbbb274333a79aed0185a72a27cf4493fef55e422d7edac4d33
+PAGE	tests/redaction/generated/04-differences-encoding.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/05-cid-with-tounicode.pdf	695a0528a072bea5e5ab06647335ca6ae7913682b68a005090b359eaa7cf0a3b
+PAGE	tests/redaction/generated/05-cid-with-tounicode.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/06-cid-without-tounicode.pdf	c5c6944e2bf6a2f49e804c18800b1a4a1034ac2aa394eae6eea461f02ed31146
+PAGE	tests/redaction/generated/06-cid-without-tounicode.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/07-form-xobject.pdf	602852aa389cc860eff1a31e1dd6d997f04a49bba553af700fd444d6d8f69add
+PAGE	tests/redaction/generated/07-form-xobject.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/08-type3-glyph.pdf	21c0620889b8ed17a400b7de1b71c4add61e464d4774315f363d1d9312ebc6ab
+PAGE	tests/redaction/generated/08-type3-glyph.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/09-actualtext.pdf	d30a129d789a25cf92f328e9d1433a001d8241e4022ae6269f29a5fb73037ea0
+PAGE	tests/redaction/generated/09-actualtext.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/10-structure-tree.pdf	ee91f817721480c4e5b6cc75687c27a2bf575eea39798dfb1a712961b2199af8
+PAGE	tests/redaction/generated/10-structure-tree.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/11-annotation.pdf	d895232164243655e52d8b54856f1556930a82fbf95b1829e3db57f43afcff86
+PAGE	tests/redaction/generated/11-annotation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/12-acroform-field.pdf	448813bf6428592fc0f5c7a57df9cf668440b45e21f0070d7e17bc41b428a922
+PAGE	tests/redaction/generated/12-acroform-field.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/13-optional-content.pdf	eb433c9cbf40ca1cdae761a5d999b1d6aa33bfb52d1885ff89ae644366103a2e
+PAGE	tests/redaction/generated/13-optional-content.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/14-thumbnail.pdf	f0c8666a0098059d2bf62db862a501ee03f6c63ad73b0ad52443442bbf23c7b6
+PAGE	tests/redaction/generated/14-thumbnail.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/15-metadata.pdf	c9e8a49602820ea232d00ee7dd9a09ca92363958e85e37593323b78ea15339bc
+PAGE	tests/redaction/generated/15-metadata.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/16-attachment.pdf	2882ba7f7f50f412c2beeff205f15fedc51ba9988e79c1c52a332ec7e5fb0e30
+PAGE	tests/redaction/generated/16-attachment.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/17-incremental-update.pdf	56262e5f5cd49c3d5e8bb2ab65816f95e35a124c744d63997920e1a3fcc5f619
+PAGE	tests/redaction/generated/17-incremental-update.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/18-vector-outlines.pdf	d674b764c72344d648f8a7b391eb9c3c8420ee5ea84a153647905f1ec67856aa
+PAGE	tests/redaction/generated/18-vector-outlines.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/19-covered-by-a-rectangle.pdf	ad97f2c7fb8c4e66c9bbf338985d11fdd234766ad7ce5e2aac6adf02b85ab9c0
+PAGE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/20-image-pixels.pdf	e8dd92a61d28fc5ab25f55513501cd6f8cae97d2d7f290d8fa2a2da4b8a9cfee
+PAGE	tests/redaction/generated/20-image-pixels.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/21-cid-lying-tounicode.pdf	c5b407e4fffa5883abe7f2bb34ff24d81b777900631a885c007d1508457c4b50
+PAGE	tests/redaction/generated/21-cid-lying-tounicode.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/22-split-content-streams.pdf	b3022b4766686975322b02d01392825004a179c05308916db242c81ae332ed6b
+PAGE	tests/redaction/generated/22-split-content-streams.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/24-page-level-metadata.pdf	cf16f7acf12c88be163a3a1dd3c6127a29bae5fd3a0dc20aec1c58474a5d9883
+PAGE	tests/redaction/generated/24-page-level-metadata.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-acroform-inline-field.pdf	aa96cc3f5e9ca447cc7762ae8e24b46f1348cf67fcf356dfd4cfa7c4a3bb585b
+PAGE	tests/redaction/generated/evade-acroform-inline-field.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-around-a-form.pdf	21cb003fa3a5e8187cb916d56136dee31cbddf026f35dd4c007f3352aa26fe93
+PAGE	tests/redaction/generated/evade-actualtext-around-a-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	407530969363f911c1cf82d15d5f6279051c9947bf424d5d07678fe1147edecc
+PAGE	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	a3a99453bdb131fbbf4979d24f6ad2a1fcbd1583bbbbb4b57f028a0815acefc4
+PAGE	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	c0f002ec7b1a1c25d8820d30c3649572329f4af607bc0de344afe44790f3f217
+PAGE	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	b54e211a2d0f58347adae7bdbf631d5cbdf73f2213628611ba48ae176c86519a
+PAGE	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	ba944104f73dbd28d86f8ae23a5b0a1e428b7de38ef3dbfc927744e80abf177c
+PAGE	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	b63d4db307bd2aa25622e306b695e8be3c1ce0e1afba3624bfb93a5b763ae4bd
+PAGE	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	ac0d7412d485bf7ffa5cfe6aba74f95f7c0b64de2f5cc0621a5039834ef1f27e
+PAGE	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	32a0bcbcd6926d9bef06ab2740703afc67421e15c2e36c35aa5ca8d1ea0aaf78
+PAGE	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	4da9b09c5a64a6155fcbe2edc23f513080b7f39c6d9178859592bf20c50a23e9
+PAGE	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	120b020e718b3744be08bf88f6768b0abb5a22d0121e227188e45c0da7ab79db
+PAGE	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	c72284384ad4de01fd1367da4500f75aadaf4d3014da43c0bbd6a7f45554aee5
+PAGE	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-allcaps-flag.pdf	420683bd1e9ac71aa69ebc0f935d3a4af069c1b65963597012a18307b883383a
+PAGE	tests/redaction/generated/evade-allcaps-flag.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-allcaps-program-loads.pdf	d1cc8acc7c7d901b79c6d22ed99aa760819464313b843e0608ced0cca22b6e80
+PAGE	tests/redaction/generated/evade-allcaps-program-loads.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	49052467b0a5454e7945a05b3cb2daa6e491cfeca3feaa2ce02650c9ad2bfbee
+PAGE	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	dca0aeb96a98161efee0004e7863442431b29d04e8f904aa4bf63e01ce034417
+PAGE	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-down-state-without-bbox.pdf	52443b17418c1f09d1e42aba9843032872e9f0fd7a8b1da51704430cc147346d
+PAGE	tests/redaction/generated/evade-annotation-down-state-without-bbox.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-named-from-the-catalogue.pdf	edc294431f1d1e6a30be3beb68cada5acb13b8e92f4a167dff3760909f4415f6
+PAGE	tests/redaction/generated/evade-annotation-named-from-the-catalogue.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-no-rotate-on-a-turned-page.pdf	1382e1f19609c0065054cfd12a7862a7448e7cc380f12770623653b1ef5d9d95
+PAGE	tests/redaction/generated/evade-annotation-no-rotate-on-a-turned-page.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	81cc34eb94715d709dbc8186b4a05f7d0bc2adbd3ebf323b22c514b47dac3729
+PAGE	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	1c4b6eb36089b2ce3802bd49209ff98f0025c238a3a66ebf9c5c8129bfe695f4
+PAGE	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-quads-outside-rect.pdf	fa53e90c337659822bd18a3297cc3f85d7968cf9cdf2cccf8b3a91f974579138
+PAGE	tests/redaction/generated/evade-annotation-quads-outside-rect.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-reply-on-another-page.pdf	a5a02b1f5518403aaa4e20c0243ee2cc74913aecce6c709ff7a6e67b09b723e5
+PAGE	tests/redaction/generated/evade-annotation-reply-on-another-page.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/evade-annotation-reply-on-another-page.pdf	1	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-reply-to-a-removed-annotation.pdf	3b6075fcf987d5edac0690fbe03afba652da9cdc542d5a4914bfdbcfeef42238
+PAGE	tests/redaction/generated/evade-annotation-reply-to-a-removed-annotation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-subtype-as-a-string.pdf	395f38d53a9b0168bb44caab844024937702fcbd1f013b37f7f256261d02e640
+PAGE	tests/redaction/generated/evade-annotation-subtype-as-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	756dc1fea71bda0620d3447964a9478a6d5b5dd26b492449e71b345ac14bc813
+PAGE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	ce98848d3ff694dc1d62c01752830bb85026e7fd47b1317d1581de3cb374cc7d
+PAGE	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	0	RULE media-box-unverified
+INPUT	tests/redaction/generated/evade-cropbox-as-dictionary.pdf	07541f7b2bcb0865efc9b406dc92873afa54f505ef5e4ec3d98369d72ea21ad8
+PAGE	tests/redaction/generated/evade-cropbox-as-dictionary.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-cropbox-as-nested-array.pdf	cb67d22669cf2aeabee7a8b7ea3409cc2f0ac4d65923009a420e35771e269e82
+PAGE	tests/redaction/generated/evade-cropbox-as-nested-array.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-cropbox-larger-than-mediabox.pdf	aaa4b74636e50cc0be440a1d0909816a09cabd7f472ed836ad5d787c10ac0b6c
+PAGE	tests/redaction/generated/evade-cropbox-larger-than-mediabox.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-cropbox-null-over-the-tree.pdf	1c6a92163edfaece0ae47591cf6f097b1fa56d9d93ab94aceb5d43ce4536bfb9
+PAGE	tests/redaction/generated/evade-cropbox-null-over-the-tree.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-cropbox-past-32-bits.pdf	fa8fcb9f92883d941afb0cd74bebdb732bd37b0aeaf6775ea3aef7f1da5dc0b3
+PAGE	tests/redaction/generated/evade-cropbox-past-32-bits.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-cropbox-with-five-items.pdf	0a6881f0386534e74e5c115de95d86dd7652ad1c49c574effd77480772c12359
+PAGE	tests/redaction/generated/evade-cropbox-with-five-items.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-differences-item-neither-code-nor-name.pdf	5fec05f0eae66495623836e815a3b833acf8449ccc69d0994964a443a08c97e4
+PAGE	tests/redaction/generated/evade-differences-item-neither-code-nor-name.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-extgstate-sets-the-font.pdf	5da98b72d569b03d8a87170df8f456eba76ca5528b2b9b5deae1e2902d09ca85
+PAGE	tests/redaction/generated/evade-extgstate-sets-the-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-field-with-no-widget.pdf	05c3d2567d1550127233054c443470f8a9c631536ecc0fc7acdf7527fa6c04e5
+PAGE	tests/redaction/generated/evade-field-with-no-widget.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-field-without-acroform.pdf	eaa5cdab064a0866f8ae65de7b42fefeafa25a7caa0db85c5abce7e8bbd064d9
+PAGE	tests/redaction/generated/evade-field-without-acroform.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	d0d6b66dc03e953d9bd1a74ab7c3f71022c8fa2461d6019920bf45a10c916bb7
+PAGE	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-font-repaired-during-the-walk.pdf	ae562804fdf25525c1a6985f62efb764b304c36f03afae0df02677f8c230d3d6
+PAGE	tests/redaction/generated/evade-font-repaired-during-the-walk.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-form-subtype-as-a-string.pdf	24451fdb0cef5bf9050d02c3a9116417e2121da22df6bc04cbecb31ab232c367
+PAGE	tests/redaction/generated/evade-form-subtype-as-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-generation-with-a-sign.pdf	79ce35f37479b76325bc3b2cedc05c7b1404d1ece0a109abb22160879e7823e4
+PAGE	tests/redaction/generated/evade-generation-with-a-sign.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/evade-image-as-pattern.pdf	38be1ca84c3e237683b84686afa00949b4f3fba65a985c82f411301cd6aec305
+PAGE	tests/redaction/generated/evade-image-as-pattern.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
+PAGE	tests/redaction/generated/evade-image-in-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-image-in-type3-glyph.pdf	30ef3383f0cde7b3998f06330b7728ae511c84635aefc9b1aa33e41f5bbfbc20
+PAGE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-inline-image-outside-type3-box.pdf	634cf40afd1a839307b0cedfa793c222da52087a72e41bf75bd4ef63ae69e89f
+PAGE	tests/redaction/generated/evade-inline-image-outside-type3-box.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-inline-image.pdf	a775e4cd1dc81b7b48f8c30cc71177927e970c86e73736e10770cea59e9ce142
+PAGE	tests/redaction/generated/evade-inline-image.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-junk-kid-over-a-null-cropbox.pdf	00cbde277920b2c977793ff543231110ae200d962acbf793bb8f33d3ecdd9887
+DOC	tests/redaction/generated/evade-junk-kid-over-a-null-cropbox.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/redaction/generated/evade-junk-kid-over-a-null-mediabox.pdf	136bed92406124a4de4d28896b79a79f9cf8d8e909150a8554f488b1430392e0
+DOC	tests/redaction/generated/evade-junk-kid-over-a-null-mediabox.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/redaction/generated/evade-junk-kid-over-a-null-rotate.pdf	f26fbb2c6de9e8fcef831c69f71e9c612b3e863d9968c097b60f1e0b83bae0cd
+DOC	tests/redaction/generated/evade-junk-kid-over-a-null-rotate.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/redaction/generated/evade-junk-kid-over-null-resources.pdf	2853ced6c1a79ca4242227b151591d532d443532ce1a8194c8d5328f37d982dd
+DOC	tests/redaction/generated/evade-junk-kid-over-null-resources.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/redaction/generated/evade-mediabox-negative-past-32-bits.pdf	8cc41ca2eeb298ba6ef489577d00f41bc686f109507bd4a90b65619d6b795550
+PAGE	tests/redaction/generated/evade-mediabox-negative-past-32-bits.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-mediabox-null-over-the-tree.pdf	f28a1a1a8efb3e98547b4342c1900fa0117fd0a558ef0788504ed1d787572592
+PAGE	tests/redaction/generated/evade-mediabox-null-over-the-tree.pdf	0	RULE media-box-unverified
+INPUT	tests/redaction/generated/evade-mediabox-past-32-bits.pdf	e412a2985833657318d77a97aa7a400f13e3a42ce50e00fac43f035882f1879b
+PAGE	tests/redaction/generated/evade-mediabox-past-32-bits.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-mediabox-past-float-precision.pdf	48ac8a9f04d6bb5241c717c0df5fab4aea07cc030c4f3cf66a612c13c9793fb8
+PAGE	tests/redaction/generated/evade-mediabox-past-float-precision.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-missing-pair-named-in-a-prev-trailer.pdf	081211da944b4e2249ae2ecc59e55fe858ac67f243b327b6abdc8b0b973a5901
+PAGE	tests/redaction/generated/evade-missing-pair-named-in-a-prev-trailer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-missing-pair-named-in-an-xref-stream.pdf	e9481db75a4112158253df6269dbdf93c8c0e5894982108390971152328913d8
+PAGE	tests/redaction/generated/evade-missing-pair-named-in-an-xref-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-missing-pair-named-in-the-trailer.pdf	088000f05458904ed0b70877c473132118f04f98e98bdef0e16414f26e8cb051
+PAGE	tests/redaction/generated/evade-missing-pair-named-in-the-trailer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-object-stream-qpdf-cannot-load.pdf	7bfe516dbc40d6001b7eacac7dd3dd056d1522246008db4e503ec727d7585c41
+DOC	tests/redaction/generated/evade-object-stream-qpdf-cannot-load.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	2d5d048401928973cbc6e7b69926dc20029e816d873cbec8411dd366eac2ceaf
+PAGE	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	560418f51254ce6d7160d23030a260011e90e0fc60758f730a4b0940358bdad9
+PAGE	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-on-an-annotation.pdf	c9b1466a9ad0d27371bfc93ca1b1d0a5dbbdbfa2fd48906454e243bd332ca8ba
+PAGE	tests/redaction/generated/evade-oc-on-an-annotation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	c3d88b09d6d096c85fb8ed254927ff40e17863c15f5c473dc54b6cf4862fe692
+PAGE	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	6ac3f73f66ec7b23f06b19102adbb0e7d3d24193eae7a1086cbe65322c7869c1
+PAGE	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-on-an-image.pdf	732d9cdb0e853f624120759a0c232df22c0d85cb14a4816c22ac5e79f3ec63bc
+PAGE	tests/redaction/generated/evade-oc-on-an-image.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-outside-the-region.pdf	e0570e2d1f88ce8fc69dcd89fbb549709f494474b70d1f552fd59d10b4e6a630
+PAGE	tests/redaction/generated/evade-oc-outside-the-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-two-levels-down.pdf	ed13cd05216aae5c6daa8f38e6820325f07853f709c3c2cd333b09483c099722
+PAGE	tests/redaction/generated/evade-oc-two-levels-down.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-untyped-group.pdf	f5e85aef475df6885cf68c9c65fda20f0c580af67ca1b80216c3d6f7520790af
+PAGE	tests/redaction/generated/evade-oc-untyped-group.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1f89a2618761d78c71bd81d7f4f660e23057e0734fb6dda10b68f336792361a3
+PAGE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
+PAGE	tests/redaction/generated/evade-paths-in-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
+PAGE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	5d3a4f136a22a06597063377d80882413f56ad0f70efa69dd837c7eba7a23292
+PAGE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-property-list-as-a-stream.pdf	369566fb3b3e168b628a9f8517e898cc3e6a035204bb0a82c041dbd500e96e07
+PAGE	tests/redaction/generated/evade-property-list-as-a-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-reference-with-a-comment-inside.pdf	d58909869d9d787415ec43506dcc3f99352b910e0b3059d06e3b5904a603ecae
+PAGE	tests/redaction/generated/evade-reference-with-a-comment-inside.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/evade-reference-with-a-sign.pdf	a7f9023360d4e8ebd79c2122a1828eeadeb70c5c70b9f986b584b9c471def002
+PAGE	tests/redaction/generated/evade-reference-with-a-sign.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/evade-reference-with-leading-zeros.pdf	44c07b28796c38ed653c82247b7055dcec23dcf90180178ce4e400cd9784b1c2
+PAGE	tests/redaction/generated/evade-reference-with-leading-zeros.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/evade-resources-inherited-from-pages.pdf	aad1fcd6578dba83c5ceb7d0e802e2bf3d460cf419a3d8417b318f03f636497a
+PAGE	tests/redaction/generated/evade-resources-inherited-from-pages.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-resources-null-over-the-tree.pdf	d18721556b529fa85c01b2c6431c15c8a9eff9b5cfbcad09a2a4d41468cfda9b
+PAGE	tests/redaction/generated/evade-resources-null-over-the-tree.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	92b8cc460c929a3321c2c05afea752812449f2c32279e4785e68d15b7388311b
+PAGE	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	cad7591dba82c8b8f433428a0be11ff95e2493a2a1b47cc3bae1e5ebf7d99d91
+PAGE	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-rotate-at-generation-zero-over-one.pdf	94a9d77f097cb293b1e1c9ded53741b81af955977d0336b138b975049d23207a
+PAGE	tests/redaction/generated/evade-rotate-at-generation-zero-over-one.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-rotate-at-the-wrong-generation.pdf	9a1856a164ef1725eba8731ba157e5328b1808026f328e5263de147d01854681
+PAGE	tests/redaction/generated/evade-rotate-at-the-wrong-generation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-rotate-null-over-the-tree.pdf	f43406a2916135386116401b13ebe75741feff742e9faa568d4344c268e030e2
+PAGE	tests/redaction/generated/evade-rotate-null-over-the-tree.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-rotate-past-the-integer-range.pdf	6da495de62501515b949577ba01391165142722cd8e03106d6b38316af423b10
+PAGE	tests/redaction/generated/evade-rotate-past-the-integer-range.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-std14-symbolic-flags.pdf	c3b9744994b46a8f8e0a2ab632ff78b684a4a32060ab43548f61a363005c77b7
+PAGE	tests/redaction/generated/evade-std14-symbolic-flags.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-struct-without-structparents.pdf	17ab032fdb04e43be37af9126856852ce022f41a4ba7acd5b0b8bc12a7000051
+PAGE	tests/redaction/generated/evade-struct-without-structparents.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-text-in-type3-via-form.pdf	e73273c6c58a9e1c800a904a73244e331235f3d11284446d2e6c26368bef2702
+PAGE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	5087b9b5c24c2ee0711fdcbfcc084f09a02e20326538e3863c39a69ae7ad6f9f
+PAGE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	c4410e5e539c5b2db83e0696dc4a87c1827cbd64a1ec729a8599881174b9cf0c
+PAGE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-type3-subtype-as-a-string.pdf	f7fa5bede371d6e761530b6c500290113d4cbfb12ab4734f91914869c0c3cd14
+PAGE	tests/redaction/generated/evade-type3-subtype-as-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-user-unit-two.pdf	da712d646ccc66cccdb750fdeb4f7f34984a310315dbeda454db87e0b88602bf
+PAGE	tests/redaction/generated/evade-user-unit-two.pdf	0	RULE user-unit-not-one
+INPUT	tests/redaction/generated/evade-widget-on-another-page.pdf	5d5aa0aebc4367be97236b7ec49143b2b9080235c6b03e6ad223028c255b26bb
+PAGE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/evade-widget-on-another-page.pdf	1	FRAME 400 200
+INPUT	tests/redaction/generated/evade-widths-holding-a-string.pdf	7d74cd4a492319adf267fc756cd04bad3f1b0601abbabc16d076dce18090ebc7
+PAGE	tests/redaction/generated/evade-widths-holding-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-wrong-generation-in-an-object-stream.pdf	2aa4f9b7d72b53a6aec37d24721b1d747db36e91403134c2ec8300aec66f1c9e
+PAGE	tests/redaction/generated/evade-wrong-generation-in-an-object-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	74bad012537e6e65df84f1b55a3ac097f8a995f88dd1325edd2c30857b6a61c8
+PAGE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/handle-std14-differences-remap.pdf	1882b29fe2c88f69f909ab249077cc2e22874e0e97a12c4226ce02120e3b7a5e
+PAGE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/handle-std14-macroman.pdf	90e0d2c5a301ba188a811d820846a1979686a5a07c2b6085bb833eebfc46ccdd
+PAGE	tests/redaction/generated/handle-std14-macroman.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	46cc269657fe4ee7c3f5fcc1ddfc6709c10423cedead22939d8056d93c937bdd
+PAGE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	e58dc0cda12677671efa00da7760718b183642d446cc586071d0837bdf5966b2
+PAGE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	16ebf128f834e3a72021be1dfa3812a96c52995cbe805da07afc39f14668720e
+PAGE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	9475226f2e483773d93942e1a466240c2f7f87159ff1693c4cb13b60845c1f1a
+PAGE	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	239cd36ad6051d83700e69c6294efa7a26233696211f115fccec5e0249ef1a25
+PAGE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	c55fb6d7a5a0da1da82c2f7cdb0e5aca0ef70cd4f3c75ffc818aaac581459ac8
+PAGE	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	1c50d2aa72c090e0cf3acc05b544bb3b12c863a903cabfc821ccd7438dea2b7c
+PAGE	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	cd3e6f85b6006a0b06cf60dc5f7aa60d3f12c40227b6e0754f66a3c8ed2f6124
+PAGE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
+PAGE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	2844a59246b64171bf1fb06c6179012181c4e8fcc83215cee6d0648ea23814fd
+PAGE	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	2047ef1f8df7d4c7c002631c4f857dce5057ded1d28164850c31cf75322faead
+PAGE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	2a804754bbea01e26bda5c1b4994e2cf11eeb1802aeaa1b4ccaded8032e4e734
+PAGE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
+PAGE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-kids-all-pages.pdf	dcfa34be68d22d33acf77dc27c991f6d37b2d87dd1f37b5909966cdb3b39b5a7
+PAGE	tests/redaction/generated/nearmiss-kids-all-pages.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-literal-null-threads.pdf	d50e7aa6e6ae1ac3b5e586e64e1bb2e7dd83d311cf0be682d1623fafe8140c32
+PAGE	tests/redaction/generated/nearmiss-literal-null-threads.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-mediabox-declared-over-the-tree.pdf	d0f30c328c517fbf97fb6a5b442ad2ad14c16dafdd29b2621078b3dd373d6f50
+PAGE	tests/redaction/generated/nearmiss-mediabox-declared-over-the-tree.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	d2d3a4895521dbc45715445b959f18ef99a5cfe54436a1ac6ba263df5f935235
+PAGE	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	54df725770df378e6b208ed5d0c5d2019317395fb78c68ebc41543e49a3af4ae
+PAGE	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	a9859c89dd1aa13df969c83cd11a62ed19e059cf6329f747d1f4d7e4f7ff00e9
+PAGE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	552e12c4fb86fc2392fec71e457d355c7e15b5e949731738b0255c2e0f05534f
+PAGE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	9f5d897daf7dea9666cc5ba597e1c9375639e2e0bbf0f7ad4c8a85f350f4359b
+PAGE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	1	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	873cbdfa183b84a41ca26433cc3def5f71eabb5692a37827d3a35e9350a93159
+PAGE	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-page-attributes-declared-over-the-tree.pdf	4a7a59762b856e7e7574e77d2d6228c9623d71521a514977b55000c9d14d95ef
+PAGE	tests/redaction/generated/nearmiss-page-attributes-declared-over-the-tree.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-page-frame-plainly-declared.pdf	6b341228fa401e39a97e01f7d9b0b8326a7f6707cea621f78d5e83c5e007a912
+PAGE	tests/redaction/generated/nearmiss-page-frame-plainly-declared.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-paths-outside-region.pdf	b2134e96b63c8dc7af4b76dcc76bd99e4e1920a22fbb986edbd5ea6c58b8fbc7
+PAGE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	8bc06a062102ccd520a6cfa35df901a0a4f6a0b74f8adfad1f3705a9e176aaa3
+PAGE	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-resources-on-the-page.pdf	c06df7d6838df4c351656691bf5dc90d821644e27e56f4791a5c1127cc2977d4
+PAGE	tests/redaction/generated/nearmiss-resources-on-the-page.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-right-generation-in-an-object-stream.pdf	2464c2d5ea9198d0ca9172623f907b7a8ec0d2c23dea377c0708541adf49b316
+PAGE	tests/redaction/generated/nearmiss-right-generation-in-an-object-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	c5e5711521fd4525c06c176cd3d30abd6dc264392005c4692def2a3fa3e628b2
+PAGE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	ade3a89fd4049ec784e46f6ccb7058d5e4c2919522124d26872059c733e17357
+PAGE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
+PAGE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	e165355c611be327e06b6e3d2dd59f81e696dfb290974c583d33cc69065e3b8a
+PAGE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4
+PAGE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	ee1178a4afaf795c778d94533721277b02181a5a0735751952c60cbcfb3f62d1
+PAGE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	FRAME 400 200
+INPUT	tests/conformance/fixtures/blank-1page.pdf	bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0
+PAGE	tests/conformance/fixtures/blank-1page.pdf	0	FRAME 612 792
+INPUT	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	db9cb3d636c34fa287d5451f2f4717294148d5ad246d4dfaeb6b14dce88ae139
+DOC	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	be9ae2de6767d19a5d51e6f2f58f4fe650aa25778762327b2a22dc18d7ef249f
+DOC	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	595f25bf02c6b882d9b9e29b3fb2397c39f17c28fab96b7143f812dd4ce82a86
+DOC	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/canary.pdf	0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d
+DOC	tests/conformance/fixtures/canary.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/encrypted.pdf	12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74
+DOC	tests/conformance/fixtures/encrypted.pdf	ERR PasswordRequired
+INPUT	tests/conformance/fixtures/five-pages-or-six.pdf	c0ada3521ae2d33c91239eb6f15f6c466836de31ca09d63cfe4d4deef66ca753
+DOC	tests/conformance/fixtures/five-pages-or-six.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/conformance/fixtures/font-program-with-a-paren.pdf	7b990effc3efa904b55e07499556fe70c0f969109154cf0a4b0cd399cd927706
+PAGE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/font-program-with-a-paren.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/inherited-rotation-6page.pdf	334df43b50f88a6eb45f458f9ffd3c5947a62f2d7f9b228879e24f7e7067695f
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	1	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	2	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	3	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	4	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	5	RULE page-attribute-inherited
+INPUT	tests/conformance/fixtures/layered.pdf	1ec9d4fe1f05bf396c37a76af1ac6912b3b6b405ff040739964b79d85a6a227d
+DOC	tests/conformance/fixtures/layered.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/conformance/fixtures/mixed-rotation-4page.pdf	a590a94a11cc07cc589acbe11a458007956c6b5c1243500428feff806b00d5d5
+PAGE	tests/conformance/fixtures/mixed-rotation-4page.pdf	0	FRAME 792 101
+PAGE	tests/conformance/fixtures/mixed-rotation-4page.pdf	1	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/mixed-rotation-4page.pdf	2	RULE page-attribute-inherited
+PAGE	tests/conformance/fixtures/mixed-rotation-4page.pdf	3	RULE page-attribute-inherited
+INPUT	tests/conformance/fixtures/no-pages.pdf	375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4
+DOC	tests/conformance/fixtures/no-pages.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/not-a-pdf.bin	66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d
+DOC	tests/conformance/fixtures/not-a-pdf.bin	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/object-number-above-int-max.pdf	1457829ea5d5092a0f03e0cf82e5f6a570855a551b7d03ec476d0dd910472f4d
+DOC	tests/conformance/fixtures/object-number-above-int-max.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/objstm-bomb.pdf	54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b
+DOC	tests/conformance/fixtures/objstm-bomb.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
+INPUT	tests/conformance/fixtures/pages-10.pdf	567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe
+PAGE	tests/conformance/fixtures/pages-10.pdf	0	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	1	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	2	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	3	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	4	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	5	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	6	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	7	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	8	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-10.pdf	9	FRAME 612 792
+INPUT	tests/conformance/fixtures/pages-137.pdf	257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da
+PAGE	tests/conformance/fixtures/pages-137.pdf	0	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	1	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	2	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	3	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	4	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	5	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	6	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	7	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	8	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	9	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	10	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	11	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	12	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	13	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	14	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	15	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	16	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	17	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	18	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	19	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	20	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	21	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	22	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	23	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	24	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	25	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	26	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	27	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	28	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	29	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	30	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	31	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	32	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	33	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	34	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	35	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	36	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	37	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	38	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	39	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	40	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	41	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	42	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	43	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	44	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	45	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	46	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	47	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	48	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	49	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	50	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	51	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	52	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	53	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	54	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	55	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	56	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	57	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	58	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	59	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	60	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	61	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	62	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	63	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	64	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	65	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	66	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	67	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	68	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	69	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	70	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	71	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	72	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	73	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	74	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	75	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	76	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	77	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	78	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	79	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	80	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	81	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	82	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	83	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	84	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	85	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	86	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	87	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	88	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	89	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	90	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	91	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	92	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	93	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	94	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	95	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	96	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	97	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	98	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	99	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	100	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	101	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	102	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	103	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	104	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	105	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	106	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	107	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	108	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	109	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	110	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	111	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	112	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	113	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	114	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	115	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	116	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	117	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	118	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	119	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	120	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	121	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	122	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	123	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	124	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	125	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	126	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	127	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	128	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	129	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	130	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	131	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	132	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	133	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	134	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	135	FRAME 612 792
+PAGE	tests/conformance/fixtures/pages-137.pdf	136	FRAME 612 792
+INPUT	tests/conformance/fixtures/render-one-quadrant.pdf	d04cb542b0a973eb658350c0f5200e03bf8c7675bae637218881213a46e2c059
+PAGE	tests/conformance/fixtures/render-one-quadrant.pdf	0	FRAME 200 400
+INPUT	tests/conformance/fixtures/trailer-removed.pdf	338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5
+DOC	tests/conformance/fixtures/trailer-removed.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/truncated-mid-object.pdf	f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75
+DOC	tests/conformance/fixtures/truncated-mid-object.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/truncated.pdf	46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4
+DOC	tests/conformance/fixtures/truncated.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	58c798fc57c1f8f498cd7897df5d15b72ccf225f12b3808d5021cc53e153c85f
+PAGE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/xref-bomb.pdf	ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b
+DOC	tests/conformance/fixtures/xref-bomb.pdf	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/damaged/xref-entry-past-end.pdf	ff611219adfe7e78b095e5ecad3bde2d75b99cded9f288cde047b8b7c4d6d85d
+DOC	tests/damaged/xref-entry-past-end.pdf	ERR Malformed("a cross-reference entry places an object past the end of the file")

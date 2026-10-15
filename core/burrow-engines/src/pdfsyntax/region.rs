@@ -65,6 +65,59 @@ pub struct PageFrame {
 }
 
 impl PageFrame {
+    /// Refuse a `/UserUnit` that is not positive and finite, or a `/Rotate` that is not a right
+    /// angle: no region measured in displayed points converts against either.
+    ///
+    /// The first two checks [`Region::to_content_space`] makes, in its order, stated once so that
+    /// `page_frames` -- which reports a page's frame before any region exists -- refuses the same
+    /// pages. It did not at first: a page at `/Rotate 45` read as a frame there while every region
+    /// on it was refused `[rotate]` here (measured by the S2 property test).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] naming `user-unit` or `rotate`.
+    pub fn check_unit_and_rotation(&self) -> Result<()> {
+        if !self.user_unit.is_finite() || self.user_unit <= 0.0 {
+            return Err(Error::Malformed(
+                "pdf region [user-unit]: a /UserUnit that is not a positive finite number, so \
+                 no region measured in displayed points converts"
+                    .to_owned(),
+            ));
+        }
+        if !matches!(self.rotate, 0 | 90 | 180 | 270) {
+            return Err(Error::Malformed(
+                "pdf region [rotate]: a /Rotate that is not a right angle, so which way the \
+                 page was displayed is not derivable"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse a display box with no positive, finite extent: no region measured against it
+    /// converts anywhere meaningful.
+    ///
+    /// **The one statement of the rule**, so [`Region::to_content_space`] and a caller asking
+    /// before any region exists -- `page_frames`, which reports a page's frame so a region can be
+    /// drawn on it -- cannot disagree about which pages have nothing to draw on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] naming `display-box`.
+    pub fn check_display_box(&self) -> Result<()> {
+        let box_width = self.display_box.right - self.display_box.left;
+        let box_height = self.display_box.top - self.display_box.bottom;
+        if !(box_width > 0.0 && box_height > 0.0)
+            || !box_width.is_finite()
+            || !box_height.is_finite()
+        {
+            return Err(Error::Malformed(
+                "pdf region [display-box]: a display box with no positive extent".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The displayed page's size in display units, after rotation and `/UserUnit`.
     #[must_use]
     pub fn displayed_size(&self) -> (f64, f64) {
@@ -114,20 +167,7 @@ impl Region {
     /// not positive and finite, or a box with no extent — each of which would otherwise produce
     /// a region somewhere arbitrary rather than a refusal.
     pub fn to_content_space(&self, frame: &PageFrame) -> Result<Rect> {
-        if !frame.user_unit.is_finite() || frame.user_unit <= 0.0 {
-            return Err(Error::Malformed(
-                "pdf region [user-unit]: a /UserUnit that is not a positive finite number, so \
-                 no region measured in displayed points converts"
-                    .to_owned(),
-            ));
-        }
-        if !matches!(frame.rotate, 0 | 90 | 180 | 270) {
-            return Err(Error::Malformed(
-                "pdf region [rotate]: a /Rotate that is not a right angle, so which way the \
-                 page was displayed is not derivable"
-                    .to_owned(),
-            ));
-        }
+        frame.check_unit_and_rotation()?;
         // THE REGION, not only the frame. A NaN or negative extent converts to a rectangle
         // that intersects nothing, so the redaction removes nothing and reports success --
         // which is the failure this module opens by describing.
@@ -145,16 +185,7 @@ impl Region {
                     .to_owned(),
             ));
         }
-        let box_width = frame.display_box.right - frame.display_box.left;
-        let box_height = frame.display_box.top - frame.display_box.bottom;
-        if !(box_width > 0.0 && box_height > 0.0)
-            || !box_width.is_finite()
-            || !box_height.is_finite()
-        {
-            return Err(Error::Malformed(
-                "pdf region [display-box]: a display box with no positive extent".to_owned(),
-            ));
-        }
+        frame.check_display_box()?;
 
         // (1) out of displayed points.
         let (left, top) = (self.left / frame.user_unit, self.top / frame.user_unit);

@@ -170,3 +170,130 @@ fn a_page_the_operation_does_not_cover_is_refused() {
         "got: {error:?}"
     );
 }
+
+/// An engine whose frames every `page_frames` test dials in: the function builds the answer afresh
+/// on each call, because a reading carries an `Error`, which does not clone. The page count is the
+/// readings' own unless the second field lies about it.
+struct Framer(
+    fn() -> Vec<burrow_engines::redact::frames::PageFrameReading>,
+    Option<u64>,
+);
+
+impl burrow_engines::PageFrameReader for Framer {
+    fn page_frames(
+        &self,
+        _bytes: &[u8],
+        _options: &OpenOptions<'_>,
+    ) -> Result<burrow_engines::redact::frames::PageFrames> {
+        let readings = (self.0)();
+        let pages = self
+            .1
+            .unwrap_or_else(|| u64::try_from(readings.len()).unwrap());
+        Ok(burrow_engines::redact::frames::PageFrames { pages, readings })
+    }
+}
+
+mod frames {
+    use burrow_engines::redact::frames::{FrameRule, MAX_FRAME_SIDE, PageFrameReading};
+    use burrow_types::{Error, Result};
+
+    use super::{Framer, options};
+
+    fn frame(width: f64, height: f64) -> PageFrameReading {
+        PageFrameReading::Frame { width, height }
+    }
+
+    fn refused(rule: FrameRule, token: &str) -> PageFrameReading {
+        PageFrameReading::Refused {
+            rule,
+            error: Error::Unsupported(format!("pdf redaction [{token}]: why")),
+        }
+    }
+
+    fn run(engine: &Framer) -> Result<Vec<PageFrameReading>> {
+        super::super::page_frames(engine, b"%PDF", &options())
+    }
+
+    #[test]
+    fn an_honest_engine_s_frames_and_refusals_come_through_in_order() {
+        // NON-VACUITY: without it every lie below passes for an operation that refuses everything.
+        let honest = Framer(
+            || {
+                vec![
+                    frame(612.0, 792.0),
+                    refused(FrameRule::UserUnitNotOne, "user-unit-not-one"),
+                    frame(MAX_FRAME_SIDE, 1.0),
+                ]
+            },
+            Some(3),
+        );
+        let readings = run(&honest).expect("an honest engine is not refused");
+        assert_eq!(readings.len(), 3);
+        assert!(matches!(
+            readings[0],
+            PageFrameReading::Frame { width, height } if width == 612.0 && height == 792.0
+        ));
+        assert!(matches!(
+            readings[1],
+            PageFrameReading::Refused {
+                rule: FrameRule::UserUnitNotOne,
+                ..
+            }
+        ));
+    }
+
+    /// KILLS: deleting the shape check. Each lie, beside an honest page, is refused as a bug.
+    #[test]
+    fn an_engine_that_lies_about_a_frame_or_a_rule_is_refused() {
+        type Answer = fn() -> Vec<PageFrameReading>;
+        let lies: [(&str, Answer); 7] = [
+            ("NaN", || vec![frame(612.0, 792.0), frame(f64::NAN, 1.0)]),
+            ("infinite", || {
+                vec![frame(612.0, 792.0), frame(1.0, f64::INFINITY)]
+            }),
+            ("zero", || vec![frame(612.0, 792.0), frame(0.0, 1.0)]),
+            ("negative", || vec![frame(612.0, 792.0), frame(1.0, -1.0)]),
+            ("past the largest side", || {
+                vec![frame(612.0, 792.0), frame(MAX_FRAME_SIDE * 2.0, 1.0)]
+            }),
+            ("a rule its error does not name", || {
+                vec![
+                    frame(612.0, 792.0),
+                    refused(FrameRule::UserUnitNotOne, "page-frame-unreadable"),
+                ]
+            }),
+            ("a refusal that names no rule", || {
+                vec![
+                    frame(612.0, 792.0),
+                    PageFrameReading::Refused {
+                        rule: FrameRule::DisplayBox,
+                        error: Error::Internal("no rule".to_owned()),
+                    },
+                ]
+            }),
+        ];
+        for (what, lie) in lies {
+            let error = run(&Framer(lie, None)).expect_err(what);
+            assert!(
+                matches!(error, Error::Internal(ref why) if why.contains("page frames")),
+                "{what}: {error:?}"
+            );
+        }
+    }
+
+    /// KILLS: deleting the count check. Two honest frames for a document of three pages, and of
+    /// one, are each refused by name.
+    #[test]
+    fn an_engine_that_reports_one_reading_short_or_one_too_many_is_refused() {
+        let two: fn() -> Vec<PageFrameReading> = || vec![frame(612.0, 792.0), frame(612.0, 792.0)];
+        for (what, pages) in [("one short", 3), ("one too many", 1)] {
+            let error = run(&Framer(two, Some(pages))).expect_err(what);
+            assert!(
+                matches!(error, Error::Internal(ref why) if why.contains("number of readings")),
+                "{what}: {error:?}"
+            );
+        }
+        // THE NEAR-MISS: the same readings, counted right.
+        assert_eq!(run(&Framer(two, Some(2))).expect("counted right").len(), 2);
+    }
+}

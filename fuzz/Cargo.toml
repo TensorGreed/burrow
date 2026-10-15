@@ -177,3 +177,12 @@ path = "fuzz_targets/redact_references.rs"
 test = false
 doc = false
 bench = false
+
+# #136's read-only entry point: every page's frame from a whole document, through the operation.
+# Links qpdf and, for an inherited /MediaBox, PDFium; whole fixtures seed it.
+[[bin]]
+name = "redact_page_frames"
+path = "fuzz_targets/redact_page_frames.rs"
+test = false
+doc = false
+bench = false

@@ -26,8 +26,13 @@ interface WebRegion {
   free(): void;
 }
 
-/** The one operation the redaction artifact exports. */
+/** The two operations the redaction artifact exports. */
 interface BurrowWasm {
+  /**
+   * Every page's display frame, or the page-level rule refusing every region on it (#136).
+   * Read-only. The reply carries `frames` and `frameRefusals`, page for page, and no output.
+   */
+  page_frames(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
   /**
    * Clear `region` on `page`, and return the document only if it reads back as promised.
    *

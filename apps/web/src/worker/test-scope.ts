@@ -82,6 +82,9 @@ export function replyShape(): Record<string, unknown> {
     // getter spelling rather than the Rust field's.
     originalBytes: 0n,
     producedBytes: 0n,
+    // AND ONCE MORE for `page_frames` (#136): two arrays `drainReply` hands to `Array.from`.
+    frames: new Float64Array(0),
+    frameRefusals: [],
     take_output: () => null,
     free: () => {},
   };
@@ -188,6 +191,8 @@ export function load(
     // Redaction's bundle (#137): its one operation and the region it constructs.
     WebRegion: class {},
     redact: reply,
+    // And the read-only frames the page draws a region on (#136).
+    page_frames: reply,
     page_count: reply,
     structure_check: reply,
     merge: reply,

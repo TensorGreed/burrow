@@ -533,6 +533,22 @@ impl crate::PageRedactor for WebQpdf {
     }
 }
 
+/// Every page's frame on the web: the policy in `crate::redact::frames`, over this file's half of
+/// the seam. No renderer answers here (ADR 0026), so a page whose `/MediaBox` the page tree
+/// supplies is `[media-box-unverified]`, as it is in a redaction, until #206.
+impl crate::PageFrameReader for WebQpdf {
+    fn page_frames(
+        &self,
+        bytes: &[u8],
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<crate::redact::frames::PageFrames> {
+        let redactor = WebRedactor(self);
+        crate::redact::frames::page_frames(&redactor, bytes, options, |page| {
+            redactor.renderer_page_size(bytes, page, options)
+        })
+    }
+}
+
 /// Crate-internal access for the native-backed tests in `qpdf::web_differential_tests`, which
 /// drive this module over real qpdf. Nothing here is compiled outside a native test build.
 #[cfg(all(

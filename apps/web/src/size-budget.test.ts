@@ -74,6 +74,7 @@ const budget: {
   redact: {
     $comment: string;
     artifacts: Record<string, Line>;
+    total: Line;
     not_byte_reproducible: Record<string, string>;
   };
   not_byte_reproducible: Record<string, string>;
@@ -518,6 +519,17 @@ describe("the first-load size budget", () => {
     ).toBe(budget.render.total.measured_brotli);
   });
 
+  it("has redaction measurements that add up to the recorded redaction total", () => {
+    // THE RENDER TOTAL'S RULE, ONE PAYLOAD UP: the redaction total is the render total plus the
+    // redaction lines, so a re-record of either that forgets this one turns it red.
+    const lines = Object.values(budget.redact.artifacts).reduce((n, a) => n + a.measured_brotli, 0);
+    expect(
+      budget.render.total.measured_brotli + lines,
+      "size-budget.json's redaction total is not the render total plus its redaction lines; " +
+        "one was re-recorded and the other was not",
+    ).toBe(budget.redact.total.measured_brotli);
+  });
+
   it("records the measurement each budget was set from", () => {
     // `measured_brotli` is what makes a budget auditable: a reviewer can see how much slack a
     // line has without rebuilding. A budget below its own measurement is a typo that would
@@ -571,6 +583,10 @@ function policyLines(file: typeof budget): HeadroomLine[] {
     ...Object.entries(file.redact.artifacts).map(([key, l]) =>
       line(`redact ${key}`, l, perArtifact),
     ),
+    // 25%, not `total`'s 10%: the owner's #136 D5 set it there while the page is held and its
+    // payload moves with every slice. It reads `per_artifact` because that is the 25% this file
+    // already records; S9 sets the line again from production.
+    line("redact total", file.redact.total, perArtifact),
   ];
 }
 
@@ -759,7 +775,22 @@ describe("redaction's payload, off the base (#137)", () => {
     );
   });
 
-  it("stays within every redaction budget", () => {
+  it("stays within every redaction budget, and the total a redacting page pays (#136 D5)", () => {
+    // WHAT A REDACTING PAGE PAYS ALTOGETHER: the rendering page's first load, since the selection
+    // picture is drawn by the render worker, plus the redaction bundle. The render half is
+    // measured from the production build and the redaction half from the harness build, because
+    // each is only staged where it is measured; the sum is the page's cost once S9 un-holds it.
+    // NOT THE BINDING GATE while D5's 25% stands: the parts' own budgets sum to less than this
+    // one, so this cannot fail while they pass. It records the cost; the part gates bind.
+    const redactTotal =
+      renderMeasurement.total.brotli +
+      Object.values(redactGroups).reduce((n, group) => n + group.brotli, 0);
+    expect(
+      redactTotal,
+      `a redacting page's first load is ${kb(redactTotal)} brotli, over ` +
+        `the ${kb(budget.redact.total.budget_brotli)} budget`,
+    ).toBeLessThanOrEqual(budget.redact.total.budget_brotli);
+
     for (const [key, line] of Object.entries(budget.redact.artifacts)) {
       const actual = redactGroups[key];
       if (!actual) continue; // covered by the coverage assertion below

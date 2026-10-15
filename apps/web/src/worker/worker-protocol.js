@@ -223,6 +223,9 @@ function drainReply(id, reply) {
       report: reply.report,
       retainedFonts: reply.retainedFonts,
       droppedCarriedText: reply.droppedCarriedText,
+      // #136. Redaction module only (`Reply::frames`); absent reads as empty.
+      frames: reply.frames === undefined ? [] : Array.from(reply.frames),
+      frameRefusals: reply.frameRefusals === undefined ? [] : Array.from(reply.frameRefusals),
       // WHICH input failed, as a number rather than something to parse out of `message`.
       // -1 when the failure is not about a particular input.
       failedInput: reply.failedInput,

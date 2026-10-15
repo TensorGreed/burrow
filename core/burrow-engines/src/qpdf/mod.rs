@@ -64,6 +64,9 @@ mod sharing_tests;
 // The web engine over real qpdf, held to this one case for case (#191).
 #[cfg(test)]
 mod web_differential_tests;
+// Every page's frame, per refusal and over the redaction corpus, on both engines (#136).
+#[cfg(test)]
+mod page_frames_tests;
 // qpdf's error text, read in fuzz builds only, against the pinned qpdf (#285).
 #[cfg(all(test, feature = "fuzzing"))]
 mod error_text_tests;
@@ -655,6 +658,57 @@ impl crate::PageRedactor for Qpdf {
     ) -> Result<Vec<i64>> {
         let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
         rotations_of(&document, pages, options, deadline)
+    }
+}
+
+/// Every page's frame natively: the policy in `redact::frames`, with PDFium as the second reading
+/// an inherited `/MediaBox` needs.
+///
+/// # The renderer is opened once, and only if a page needs it
+///
+/// `OpensForRedaction::renderer_page_size` opens PDFium for the one page a redaction covers. Asked
+/// per page here, that would open the document once per page whose `/MediaBox` the tree supplies
+/// -- every page, in a document that states it once on its root. So the document is opened at
+/// most once, on the first page that asks, under `options` as that method opens it, and each
+/// later page reads its size from the same handle.
+///
+/// An open that fails is remembered as failed: for each page that asks after it, the closure
+/// returns `Error::Internal`, and `frame::check_inherited_media_box` maps any renderer error that
+/// is not a ceiling to `[media-box-unverified]` -- the refusal a redaction of that page gives when
+/// its own renderer open fails. A ceiling the open reaches is returned as that ceiling, and is the
+/// whole operation's.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+impl crate::PageFrameReader for Qpdf {
+    fn page_frames(
+        &self,
+        bytes: &[u8],
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<crate::redact::frames::PageFrames> {
+        use crate::{DocumentEngine, PageRenderer};
+        let renderer = crate::pdfium::Pdfium;
+        // `None` until a page asks; then the document, or `None` inside for an open that failed.
+        let mut opened: Option<Option<crate::pdfium::PdfiumDocument>> = None;
+        let size = |page: usize| -> Result<Option<(f64, f64)>> {
+            if opened.is_none() {
+                opened = Some(
+                    match renderer.open(bytes.to_vec().into_boxed_slice(), options) {
+                        Ok(document) => Some(document),
+                        Err(limit @ Error::LimitExceeded { .. }) => return Err(limit),
+                        Err(_) => None,
+                    },
+                );
+            }
+            let Some(Some(document)) = &opened else {
+                return Err(Error::Internal(
+                    "pdf redaction: the renderer did not open the document".to_owned(),
+                ));
+            };
+            let index = u64::try_from(page)
+                .map_err(|_| Error::Internal("a page index that does not fit in u64".to_owned()))?;
+            let (width, height) = renderer.page_size(document, index)?;
+            Ok(Some((f64::from(width), f64::from(height))))
+        };
+        crate::redact::frames::page_frames(self, bytes, options, size)
     }
 }
 

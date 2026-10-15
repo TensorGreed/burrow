@@ -389,8 +389,22 @@ function fieldsOf(data) {
     if (key === "message" && data.ok !== true) continue;
     // A REFUSAL'S `report` is empty, and is recorded under its own name so a rule can say so: the
     // report's grammar admitted six hundred bytes of numbers on a refusal (review of #137).
-    if (key === "report" && data.ok === false) {
+    // AND SO IS THE REPORT OF A REPLY THAT CARRIES NO DOCUMENT: `page_frames` succeeds with no
+    // output (#136), so there is nothing a report could describe, and it is held empty the same way.
+    if (key === "report" && (data.ok === false || data.output === null)) {
       fields.refusalReport = /** @type {string} */ (value);
+      continue;
+    }
+    // AN ARRAY OF PLAIN VALUES IS RECORDED TOO, its items joined by commas under `key[]`, so a rule
+    // can hold what is IN it -- `page_frames`' sizes and rule names (#136) -- and not only its
+    // shape. An item holding a comma splits into parts no rule admits, which fails closed. The
+    // LENGTH is recorded beside it, because a join cannot tell `[]` from `[""]`.
+    if (
+      Array.isArray(value) &&
+      value.every((item) => typeof item === "string" || typeof item === "number")
+    ) {
+      fields[`${key}[]`] = value.map(String).join(",");
+      fields[`${key}[].length`] = value.length;
       continue;
     }
     if (value instanceof Blob) fields[`${key}.type`] = value.type;
@@ -1391,6 +1405,30 @@ const harness = {
       ).join("");
     }
     return { ...fields, outputSha256 };
+  },
+
+  /**
+   * Read every page's frame through redaction's own worker (#136): `page_frames`, which reads the
+   * page dictionaries and writes nothing. The reply's fields; there is no output to digest.
+   *
+   * @param {string} name
+   * @param {Uint8Array} bytes
+   * @param {{ limits?: Record<string, number> }} options
+   */
+  async redactFrames(name, bytes, options = {}) {
+    const worker = await bundleHost("redactWorker");
+    const reply = await worker.run(
+      {
+        op: "page_frames",
+        blob: new File([/** @type {Uint8Array<ArrayBuffer>} */ (bytes)], name, {
+          type: "application/pdf",
+        }),
+        limits: { ...DEFAULT_LIMITS, ...(options.limits ?? {}) },
+      },
+      { maxDurationMs: DEFAULT_LIMITS.maxDurationMs },
+    );
+    const { output, ...fields } = reply;
+    return { ...fields, outputSha256: output instanceof Blob ? "unexpected" : null };
   },
 
   // --- the render bundle ----------------------------------------------------------------
