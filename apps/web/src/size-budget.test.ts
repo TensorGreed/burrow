@@ -780,6 +780,8 @@ describe("redaction's payload, off the base (#137)", () => {
     // picture is drawn by the render worker, plus the redaction bundle. The render half is
     // measured from the production build and the redaction half from the harness build, because
     // each is only staged where it is measured; the sum is the page's cost once S9 un-holds it.
+    // NOT THE BINDING GATE while D5's 25% stands: the parts' own budgets sum to less than this
+    // one, so this cannot fail while they pass. It records the cost; the part gates bind.
     const redactTotal =
       renderMeasurement.total.brotli +
       Object.values(redactGroups).reduce((n, group) => n + group.brotli, 0);
