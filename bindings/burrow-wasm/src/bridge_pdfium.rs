@@ -106,6 +106,24 @@ extern "C" {
     /// Copy `len` bytes out of the PDFium heap. The first PDFium import carrying bytes OUT.
     #[wasm_bindgen(js_name = __burrow_pdfium_copy_out)]
     fn pdfium_copy_out(ptr: u32, len: u32) -> Vec<u8>;
+
+    // ---- redaction's second reading (#206) ---------------------------------------------
+    //
+    // Five imports, one per `fpdf_text.h` function the native path declares, and no other text
+    // function: WHERE characters are, never WHAT they say. See `PdfiumBridge`'s block of the
+    // same name.
+
+    #[wasm_bindgen(js_name = __burrow_pdfium_text_load_page)]
+    fn pdfium_text_load_page(page: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_pdfium_text_count_chars)]
+    fn pdfium_text_count_chars(text: u32) -> i32;
+    /// `FPDFText_GetCharOrigin`'s two out-parameters as one pair; `undefined` on failure.
+    #[wasm_bindgen(js_name = __burrow_pdfium_text_char_origin)]
+    fn pdfium_text_char_origin(text: u32, index: i32) -> Option<Vec<f64>>;
+    #[wasm_bindgen(js_name = __burrow_pdfium_text_is_generated)]
+    fn pdfium_text_is_generated(text: u32, index: i32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_pdfium_text_close_page)]
+    fn pdfium_text_close_page(text: u32);
 }
 
 /// The PDFium Emscripten module.
@@ -232,5 +250,29 @@ impl PdfiumBridge for JsPdfium {
 
     fn copy_out(&self, ptr: PdfiumPtr, len: u32) -> Vec<u8> {
         pdfium_copy_out(ptr.0, len)
+    }
+
+    // ---- redaction's second reading (#206): forwards, one line each ----------------------
+
+    fn text_load_page(&self, page: PdfiumPtr) -> PdfiumPtr {
+        PdfiumPtr(pdfium_text_load_page(page.0))
+    }
+
+    fn text_count_chars(&self, text: PdfiumPtr) -> i32 {
+        pdfium_text_count_chars(text.0)
+    }
+
+    fn text_char_origin(&self, text: PdfiumPtr, index: i32) -> Option<(f64, f64)> {
+        // A PAIR, as `page_size_by_index` is: `None` is PDFium reporting failure.
+        let origin = pdfium_text_char_origin(text.0, index)?;
+        Some((*origin.first()?, *origin.get(1)?))
+    }
+
+    fn text_is_generated(&self, text: PdfiumPtr, index: i32) -> i32 {
+        pdfium_text_is_generated(text.0, index)
+    }
+
+    fn text_close_page(&self, text: PdfiumPtr) {
+        pdfium_text_close_page(text.0);
     }
 }

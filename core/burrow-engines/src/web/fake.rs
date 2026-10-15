@@ -154,6 +154,20 @@ pub(super) enum Call {
     },
     RenderPageContinue(u32),
     RenderPageClose(u32),
+
+    // ---- the second reading (#206) ---------------------------------------------------
+    TextLoadPage(u32),
+    TextCountChars(u32),
+    TextCharOrigin(i32),
+    TextIsGenerated(i32),
+    TextClosePage(u32),
+}
+
+/// One character the fake's text layer reports: its origin, and whether PDFium generated it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct FakeChar {
+    pub(super) origin: Option<(f64, f64)>,
+    pub(super) generated: i32,
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -432,7 +446,13 @@ pub(super) struct FakePdfium {
     /// at those call sites, which is exactly why the stride has to be asked for rather than
     /// computed.
     bitmaps: Mutex<Vec<Bitmap>>,
+    /// The text layer `FPDFText_LoadPage` builds, or `None` for PDFium failing to build one.
+    /// Empty by default: a page PDFium reads no character on.
+    text: Option<Vec<FakeChar>>,
 }
+
+/// The handle the fake hands out for a text layer.
+const TEXT_HANDLE: u32 = 0x7E47_0001;
 
 /// One bitmap the fake has handed out.
 ///
@@ -460,7 +480,14 @@ impl FakePdfium {
             slice_clock: None,
             render_remaining: Mutex::new(None),
             bitmaps: Mutex::new(Vec::new()),
+            text: Some(Vec::new()),
         }
+    }
+
+    /// The same fake, with `text` as the text layer every page reports (`None`: no layer).
+    pub(super) fn with_text(mut self, text: Option<Vec<FakeChar>>) -> Self {
+        self.text = text;
+        self
     }
 
     /// The same fake, advancing `clock` by `ms` on every progressive slice.
@@ -795,6 +822,40 @@ impl PdfiumBridge for FakePdfium {
     fn render_page_close(&self, page: PdfiumPtr) {
         self.state.record(Call::RenderPageClose(page.0));
         *self.render_remaining.lock().expect("not poisoned") = None;
+    }
+
+    fn text_load_page(&self, page: PdfiumPtr) -> PdfiumPtr {
+        self.state.record(Call::TextLoadPage(page.0));
+        if self.text.is_some() {
+            PdfiumPtr(TEXT_HANDLE)
+        } else {
+            PdfiumPtr::NULL
+        }
+    }
+
+    fn text_count_chars(&self, text: PdfiumPtr) -> i32 {
+        self.state.record(Call::TextCountChars(text.0));
+        self.text.as_ref().map_or(-1, |chars| {
+            i32::try_from(chars.len()).expect("a fake page fits in i32")
+        })
+    }
+
+    fn text_char_origin(&self, _text: PdfiumPtr, index: i32) -> Option<(f64, f64)> {
+        self.state.record(Call::TextCharOrigin(index));
+        let at = usize::try_from(index).ok()?;
+        self.text.as_ref()?.get(at)?.origin
+    }
+
+    fn text_is_generated(&self, _text: PdfiumPtr, index: i32) -> i32 {
+        self.state.record(Call::TextIsGenerated(index));
+        usize::try_from(index)
+            .ok()
+            .and_then(|at| self.text.as_ref()?.get(at).map(|c| c.generated))
+            .unwrap_or(-1)
+    }
+
+    fn text_close_page(&self, text: PdfiumPtr) {
+        self.state.record(Call::TextClosePage(text.0));
     }
 }
 

@@ -186,3 +186,11 @@ path = "fuzz_targets/redact_page_frames.rs"
 test = false
 doc = false
 bench = false
+
+# #206's web half: the recording the render worker hands the redaction worker. Pure Rust.
+[[bin]]
+name = "redact_second_reading"
+path = "fuzz_targets/redact_second_reading.rs"
+test = false
+doc = false
+bench = false

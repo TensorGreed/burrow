@@ -71,6 +71,25 @@ interface EmscriptenModule {
   /** Bytes per row, which PDFium MAY pad. Never assume `width * 4`. */
   _FPDFBitmap_GetStride(bitmap: number): number;
   _FPDFBitmap_Destroy(bitmap: number): void;
+
+  // --- redaction's second reading (#206) ----------------------------------------------
+  //
+  // `HEAPF64` HERE, NOT IN `globals.d.ts`: the vendored `pdfium.js` exports it, checked; the
+  // qpdf glue is not asserted to, and a member declared on the shared type for both modules is
+  // the hazard the `HEAPF32` note in `bridge-pdfium.js` records.
+  /** The module's memory as 64-bit floats, for reading `FPDFText_GetCharOrigin`'s doubles. */
+  HEAPF64: Float64Array;
+  //
+  // The five `fpdf_text.h` declarations `core/burrow-engines/src/pdfium/ffi.rs` mirrors, and no
+  // other: where characters are, never what they say. All five are exported by the prebuilt
+  // `pdfium.wasm`, checked in the vendored glue.
+  _FPDFText_LoadPage(page: number): number;
+  _FPDFText_CountChars(text: number): number;
+  /** `fpdf_text.h`. Writes two doubles at `x` and `y`. Non-zero for success. */
+  _FPDFText_GetCharOrigin(text: number, index: number, x: number, y: number): number;
+  /** 1, 0, or -1 for an error. */
+  _FPDFText_IsGenerated(text: number, index: number): number;
+  _FPDFText_ClosePage(text: number): void;
 }
 
 // `render-prelude.js` DEFINES `pdfiumReady` and `resolvePdfium`, so they are not declared
@@ -138,6 +157,14 @@ interface WorkerGlobalScope {
   __burrow_pdfium_bitmap_destroy(bitmap: number): void;
   /** A COPY, not a view: wasm memory growth detaches every view of the engine heap. */
   __burrow_pdfium_copy_out(ptr: number, len: number): Uint8Array;
+
+  // --- redaction's second reading (#206): five forwards, no other text function ---------
+  __burrow_pdfium_text_load_page(page: number): number;
+  __burrow_pdfium_text_count_chars(text: number): number;
+  /** `[x, y]`, or `undefined` when PDFium reports failure. */
+  __burrow_pdfium_text_char_origin(text: number, index: number): number[] | undefined;
+  __burrow_pdfium_text_is_generated(text: number, index: number): number;
+  __burrow_pdfium_text_close_page(text: number): void;
 }
 
 /** The operations the render artifact exports. */

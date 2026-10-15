@@ -486,6 +486,7 @@ JOBS: list[dict] = [
             "pdfsyntax_operations pdfsyntax_contents "
             "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
             "redact_shared_contents redact_verified_output redact_references redact_page_frames "
+            "redact_second_reading "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -523,6 +524,8 @@ JOBS: list[dict] = [
             "fuzz:redact_references",
             # #136's: every page's frame from a whole document, through the operation.
             "fuzz:redact_page_frames",
+            # #206's web half: the recording the render worker hands the redaction worker.
+            "fuzz:redact_second_reading",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

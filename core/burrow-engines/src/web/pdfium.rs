@@ -39,6 +39,9 @@ use std::sync::Arc;
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
 use super::bridge::{PdfiumBridge, PdfiumPtr};
+
+mod read_back;
+pub use self::read_back::WebPdfiumReading;
 use crate::{DocumentEngine, OpenOptions, PageRenderer, Raster};
 
 /// The web PDFium engine.

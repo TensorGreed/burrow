@@ -281,13 +281,7 @@ pub fn agrees<R: SecondReading>(
     // THE NESTING CEILING, BEFORE PDFIUM LOADS THE PAGE. PDFium's page load grows with
     // marked-content nesting, and nothing interrupts it once it starts; so a page whose work is
     // past [`MAX_MARKED_WORK`] is refused here, before `read_page` asks for the load.
-    if expected.walked.marked_work > MAX_MARKED_WORK {
-        return Err(rejected(format!(
-            "[second-reading-nesting] page {} carries more marked-content nesting than the second \
-             reading loads",
-            expected.page
-        )));
-    }
+    may_load(expected)?;
 
     let page = reading
         .read_page(output, expected.page)
@@ -387,6 +381,27 @@ pub fn agrees<R: SecondReading>(
     Ok(())
 }
 
+/// Whether the second reading may load the output page at all: `[second-reading-nesting]` past
+/// [`MAX_MARKED_WORK`].
+///
+/// [`agrees`] asks this before it reads the page. On the web the page is read in another worker
+/// before the rules run, so the redaction module asks it first, before it requests the reading --
+/// a page past the ceiling is never sent to PDFium on either platform.
+///
+/// # Errors
+///
+/// `[second-reading-nesting]`, as [`Error::OutputRejected`].
+pub fn may_load(expected: &Agreement) -> Result<()> {
+    if expected.walked.marked_work > MAX_MARKED_WORK {
+        return Err(rejected(format!(
+            "[second-reading-nesting] page {} carries more marked-content nesting than the second \
+             reading loads",
+            expected.page
+        )));
+    }
+    Ok(())
+}
+
 /// [`crate::redact_verify::region_is_cleared`], then [`agrees`]: burrow's verdict first, so its
 /// refusals stand whatever the second reading says, and the second reading's added after.
 ///
@@ -463,6 +478,8 @@ fn wrapped(what: &str, error: Error) -> Error {
     }
     rejected(format!("{what}: {error}"))
 }
+
+pub mod recorded;
 
 #[cfg(test)]
 mod tests;

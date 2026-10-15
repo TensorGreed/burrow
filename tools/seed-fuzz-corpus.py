@@ -160,7 +160,26 @@ CARVED_TARGETS = (
 # this script's own `CARVED_TARGETS` comment says what that is worth. So its seeds are written
 # here, one per case the derivation has to get right, and each is a program a real font could
 # carry. The first byte is the target's dictionary-`WMode` parameter.
+def _recording(chars: list[tuple[float, float, int]], version: int = 1) -> bytes:
+    """A second-reading recording (#206) in `redact_read_back::recorded`'s version-1 layout."""
+    import struct
+
+    head = bytes([version]) + bytes(range(32)) + bytes(range(32, 64))
+    head += struct.pack("<QQQdd", 2, 2, 0, 612.0, 792.0) + struct.pack("<I", len(chars))
+    return head + b"".join(struct.pack("<ddB", x, y, g) for x, y, g in chars)
+
+
 SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
+    # #206's web half: whole recordings, as the render worker writes them -- an empty page, an
+    # ordinary one, a generated character, a non-finite origin (the rules' question, not the
+    # codec's) -- and one of another version, which must not decode.
+    "redact_second_reading": (
+        _recording([]),
+        _recording([(72.0, 700.0, 0), (85.0, 700.0, 0)]),
+        _recording([(72.0, 700.0, 0), (0.0, 0.0, 1)]),
+        _recording([(float("nan"), 700.0, 0)]),
+        _recording([(1.0, 1.0, 0)], version=2),
+    ),
     # `redact_references` reads its input twice: as a whole file, which the fixtures seed, and as a
     # DECODED OBJECT STREAM, whose `/N` and `/First` the target derives from the leading integer
     # pairs. A PDF file rarely begins with those, so these are object-stream bodies, one per shape

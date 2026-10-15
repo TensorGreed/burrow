@@ -245,3 +245,30 @@ function __burrow_wipe_handed_out() {
 // the engine heap, and wasm memory growth detaches every view of it. The copy is what makes
 // these bytes the caller's. The same rule `__burrow_qpdf_copy_out` follows, and the same wipe.
 self.__burrow_pdfium_copy_out = (ptr, len) => handOut(pdfium().HEAPU8.slice(ptr, ptr + len));
+
+// --- redaction's second reading (#206) -------------------------------------------------
+//
+// Five forwards, one per `fpdf_text.h` function the native path declares, and NO OTHER text
+// function: where characters are, never what they say. A forward for `FPDFText_GetUnicode` or
+// `FPDFText_GetText` is the capability this list exists not to have (spike 0006, channel 21).
+
+self.__burrow_pdfium_text_load_page = (page) => pdfium()._FPDFText_LoadPage(page);
+self.__burrow_pdfium_text_count_chars = (text) => pdfium()._FPDFText_CountChars(text);
+// A PAIR, as `__burrow_pdfium_page_size_by_index` is: two `double*` out-parameters of one C
+// call. `_malloc`, not the C stack, for the reason given there. Undefined on failure.
+self.__burrow_pdfium_text_char_origin = (text, index) => {
+  const module = pdfium();
+  const out = module._malloc(16);
+  if (!out) return undefined;
+  try {
+    if (!module._FPDFText_GetCharOrigin(text, index, out, out + 8)) return undefined;
+    // HEAPF64 is re-read after the allocation, which can grow memory and detach every view.
+    const doubles = module.HEAPF64;
+    return [doubles[out / 8], doubles[out / 8 + 1]];
+  } finally {
+    module._free(out);
+  }
+};
+self.__burrow_pdfium_text_is_generated = (text, index) =>
+  pdfium()._FPDFText_IsGenerated(text, index);
+self.__burrow_pdfium_text_close_page = (text) => pdfium()._FPDFText_ClosePage(text);

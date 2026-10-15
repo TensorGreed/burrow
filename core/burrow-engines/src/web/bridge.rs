@@ -318,6 +318,34 @@ pub trait PdfiumBridge: Send + Sync {
     /// on the page until this runs, so a path that skipped it on a deadline would leak for as
     /// long as the document is open.
     fn render_page_close(&self, page: PdfiumPtr);
+
+    // ---- redaction's second reading (#206) -------------------------------------------------
+    //
+    // WHERE characters are, never WHAT they say: the five `fpdf_text.h` functions the native
+    // `pdfium::ffi` declares, one method each, and no other. No function that returns a
+    // character's Unicode or a page's text is on this list, on either platform, because a reading
+    // that decodes through the font verifies the document's own claim about itself (spike 0006,
+    // channel 21). `redact_read_back::tests::the_pdfium_text_functions_named_are_the_five_permitted`
+    // holds the native list; `bridge-pdfium.js` names these five and no other `FPDFText_*`.
+
+    /// `FPDFText_LoadPage`. [`PdfiumPtr::NULL`] if PDFium could not build the text layer.
+    fn text_load_page(&self, page: PdfiumPtr) -> PdfiumPtr;
+
+    /// `FPDFText_CountChars`. Negative is PDFium reporting failure.
+    fn text_count_chars(&self, text: PdfiumPtr) -> i32;
+
+    /// `FPDFText_GetCharOrigin`, as one pair: `None` when PDFium reports failure.
+    ///
+    /// **A pair across the boundary**, as `page_size_by_index` is: the origin is two
+    /// out-parameters of one C call, and splitting them would ask the engine twice for one
+    /// answer.
+    fn text_char_origin(&self, text: PdfiumPtr, index: i32) -> Option<(f64, f64)>;
+
+    /// `FPDFText_IsGenerated`: 1, 0, or -1 when PDFium reports failure.
+    fn text_is_generated(&self, text: PdfiumPtr, index: i32) -> i32;
+
+    /// `FPDFText_ClosePage`. **Before the page is closed**, on every exit.
+    fn text_close_page(&self, text: PdfiumPtr);
 }
 
 /// The qpdf Emscripten module, as seen from Rust.

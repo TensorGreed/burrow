@@ -33,6 +33,12 @@ burrow-types.workspace = true
 # Wipes the NUL-terminated copy of a password that PDFium's C API requires, as soon as the
 # load returns. Already a dependency of burrow-types for the same reason.
 zeroize.workspace = true
+# #206's web half: the second reading is recorded in the render worker and judged in the
+# redaction worker, and each side takes the SHA-256 of the bytes it holds, so a reading answers
+# only for the exact document it was taken of (`redact_read_back::recorded`). Already in this
+# crate's build and dev graph for the vendored-library checksums; this makes it a runtime
+# dependency. Owner-approved 2026-10-15, pinned as the workspace pins it.
+sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 # THE OPERATION, FOR THE TESTS THAT DRIVE IT. `burrow-ops` depends on this crate, so this is a

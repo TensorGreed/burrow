@@ -610,3 +610,123 @@ fn a_page_nested_to_the_ceiling_is_read() {
     assert_eq!(rule_of(verdict(&fake, &expected)), "Ok");
     assert_eq!(fake.asked.get(), 2);
 }
+
+// ---- the recording (#206's web half) -------------------------------------------------------
+
+mod recording {
+    use super::*;
+    use crate::redact_read_back::recorded::{
+        Recorded, RecordedReading, agrees_recorded, decode, digest, encode, record,
+    };
+
+    const INPUT: &[u8] = b"the input";
+    const OUTPUT: &[u8] = b"the output";
+
+    fn honest_recording() -> Recorded {
+        record(&Fake::honest(), INPUT, OUTPUT, 0).expect("the honest fake answers")
+    }
+
+    #[test]
+    fn a_recording_round_trips_exactly() {
+        let recorded = honest_recording();
+        assert_eq!(recorded.input_digest, digest(INPUT));
+        assert_eq!(recorded.output_digest, digest(OUTPUT));
+        let bytes = encode(&recorded).expect("encodes");
+        assert_eq!(decode(&bytes).expect("decodes"), recorded);
+    }
+
+    #[test]
+    fn an_honest_recording_agrees_as_the_live_reading_does() {
+        assert_eq!(
+            rule_of(agrees_recorded(
+                honest_recording(),
+                INPUT,
+                OUTPUT,
+                &agreement(2)
+            )),
+            "Ok"
+        );
+        // AND THE REPLAY JUDGES BY THE SAME RULES: a recording of a page PDFium reads no
+        // character on is refused as R2 refuses it live.
+        let empty = record(&Fake::with_chars(vec![]), INPUT, OUTPUT, 0).expect("recorded");
+        assert_eq!(
+            rule_of(agrees_recorded(empty, INPUT, OUTPUT, &agreement(2))),
+            "second-reading-no-text"
+        );
+    }
+
+    #[test]
+    fn a_recording_of_other_bytes_is_refused_by_name() {
+        // The near-miss is the honest case above. Each of these swaps one document.
+        for (what, input, output) in [
+            ("another output", INPUT, &b"another output"[..]),
+            ("another input", &b"another input"[..], OUTPUT),
+            ("input and output swapped", OUTPUT, INPUT),
+        ] {
+            assert_eq!(
+                rule_of(agrees_recorded(
+                    honest_recording(),
+                    input,
+                    output,
+                    &agreement(2)
+                )),
+                "second-reading-other-document",
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_replay_answers_only_for_the_bytes_it_was_taken_of() {
+        // The second line of the same check, under `agrees_recorded`'s digest test.
+        let replay = RecordedReading::new(honest_recording());
+        assert_eq!(replay.page_count(INPUT).expect("ok"), Some(2));
+        assert_eq!(replay.page_count(OUTPUT).expect("ok"), None);
+        assert!(replay.read_page(OUTPUT, 0).expect("ok").is_some());
+        assert!(replay.read_page(INPUT, 0).expect("ok").is_none());
+        // Through `agrees` itself, a replay of the wrong bytes is no answer.
+        assert_eq!(
+            rule_of(agrees(&replay, OUTPUT, OUTPUT, &agreement(2))),
+            "second-reading-unavailable"
+        );
+    }
+
+    #[test]
+    fn the_nesting_ceiling_is_asked_before_any_reading_is_requested() {
+        let mut deep = agreement(2);
+        deep.walked.marked_work = MAX_MARKED_WORK + 1;
+        assert_eq!(rule_of(may_load(&deep)), "second-reading-nesting");
+        let mut at = agreement(2);
+        at.walked.marked_work = MAX_MARKED_WORK;
+        assert_eq!(rule_of(may_load(&at)), "Ok");
+    }
+
+    #[test]
+    fn a_malformed_recording_does_not_decode() {
+        let good = encode(&honest_recording()).expect("encodes");
+        let mut cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", Vec::new()),
+            ("one byte short", good[..good.len() - 1].to_vec()),
+            ("one byte long", [good.as_slice(), &[0]].concat()),
+        ];
+        let mut version = good.clone();
+        version[0] = 2;
+        cases.push(("another version", version));
+        let mut flag = good.clone();
+        let last = flag.len() - 1;
+        flag[last] = 2;
+        cases.push(("a generated flag of 2", flag));
+        let mut count = good.clone();
+        // The count field sits just before the characters.
+        let at = 1 + 32 + 32 + 8 * 5;
+        count[at..at + 4]
+            .copy_from_slice(&u32::try_from(MAX_CHARS + 1).expect("fits").to_le_bytes());
+        cases.push(("a count past the ceiling", count));
+        for (what, bytes) in cases {
+            assert!(
+                matches!(decode(&bytes), Err(Error::Malformed(_))),
+                "{what} decoded"
+            );
+        }
+    }
+}
