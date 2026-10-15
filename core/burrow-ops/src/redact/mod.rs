@@ -127,8 +127,9 @@ where
 ///
 /// No document comes out, so ADR 0022's `verify::output` has nothing to read back. What the
 /// operation does hold the engine to is the shape of its answer, which a page draws on: exactly
-/// one reading per page of the count the engine opened the document with, every frame positive, finite and at most [`MAX_FRAME_SIDE`] a side, and every refusal carrying the
-/// rule its own error names. An engine that reports otherwise is a bug in burrow, refused as
+/// one reading per page of the count the engine opened the document with, every frame positive,
+/// finite and at most [`MAX_FRAME_SIDE`] a side, and every refusal carrying the rule its own error
+/// names. An engine that reports otherwise is a bug in burrow, refused as
 /// [`Error::Internal`] rather than handed to a page to draw a region against.
 ///
 /// # Errors

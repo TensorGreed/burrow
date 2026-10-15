@@ -29,6 +29,7 @@ import {
   REFUSED_BY,
   THE_CALL,
   WRITER,
+  WRITER_FRAMES,
   cleanFramesLog,
   cleanLog,
   framesAndSettle,
@@ -76,6 +77,15 @@ test("page frames post no bytes, and their reply is a listed shape", async ({ pa
   const terminal = log.filter((m) => m.sent === null && m.ok === true);
   expect(terminal, "the recorder never saw the reply").toHaveLength(1);
   expect(terminal[0].fields["frames[]"], "no frames were recorded").toMatch(/^\d/);
+  // EXACTLY THE PINNED READING: the general rule cannot know the true page count, the fixture can.
+  expect(WRITER_FRAMES.frames.length, "the golden file has no page for WRITER").toBeGreaterThan(0);
+  expect(terminal[0].fields.pages).toBe(WRITER_FRAMES.frameRefusals.length);
+  expect(String(terminal[0].fields["frames[]"]).split(",").map(Number)).toEqual(
+    WRITER_FRAMES.frames,
+  );
+  expect(String(terminal[0].fields["frameRefusals[]"]).split(",")).toEqual(
+    WRITER_FRAMES.frameRefusals,
+  );
   expect(log.some((m) => m.sent === null && m.bytes > 0)).toBe(false);
   expect(r8Violations(log, onlyRequest(log, "page_frames"), nonce)).toEqual([]);
 });
@@ -126,6 +136,20 @@ FRAME_LEAKS.push({
     " o.takeOutput = () => r.takeOutput(); o.free = () => r.free(); return o; }\n" +
     FRAME_CALL,
   finding: /carries 32 sizes and 16 rule names for 1 page/,
+});
+
+// ONE PAGE, MANY NAMES: a copy whose one-page reply joins several rule names into its single
+// refusal. Every part is a rule name and the counts hold, so only splitting a one-page reply
+// as any other catches it (round 2 of S2's security review).
+FRAME_LEAKS.push({
+  name: "rule names joined into a one-page refusal",
+  from:
+    "      frames: reply.frames === undefined ? [] : Array.from(reply.frames),\n" +
+    "      frameRefusals: reply.frameRefusals === undefined ? [] : Array.from(reply.frameRefusals),\n",
+  to:
+    "      frames: reply.ok ? [0, 0] : [],\n" +
+    '      frameRefusals: reply.ok ? ["rotate,user-unit,display-box"] : [],\n',
+  finding: /rule names do not split into 1/,
 });
 
 /** The frames rules no copy of the worker reaches, on hand-written logs (#136). */

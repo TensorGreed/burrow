@@ -22,6 +22,33 @@ const repo = resolve(here, "../../..");
 /** A committed fixture a whole-page redaction succeeds on, pinned in `outcomes.tsv`. */
 export const WRITER = readFileSync(join(repo, "tests/redaction/fixtures/producer-writer.pdf"));
 
+/**
+ * `WRITER`'s pinned page frames, read from the committed golden file `page_frames_tests.rs`
+ * writes and diffs (`tests/redaction/page-frames.tsv`): one `[width, height]` or rule per page.
+ *
+ * R8's general rule cannot know a document's true page count, so a copy that forged `pages`
+ * could still carry up to two numbers a page; against the fixture R8 runs on, the reply must
+ * be exactly these.
+ */
+export const WRITER_FRAMES: { frames: number[]; frameRefusals: string[] } = (() => {
+  const frames: number[] = [];
+  const frameRefusals: string[] = [];
+  const golden = readFileSync(join(repo, "tests/redaction/page-frames.tsv"), "utf8");
+  for (const line of golden.split("\n")) {
+    const [kind, path, , what, ...rest] = line.split("\t");
+    if (kind !== "PAGE" || path !== "tests/redaction/fixtures/producer-writer.pdf") continue;
+    const [tag, ...values] = [what, ...rest].join(" ").split(" ");
+    if (tag === "FRAME") {
+      frames.push(Number(values[0]), Number(values[1]));
+      frameRefusals.push("");
+    } else {
+      frames.push(0, 0);
+      frameRefusals.push(values[0] ?? tag);
+    }
+  }
+  return { frames, frameRefusals };
+})();
+
 export const WHOLE = { left: 0, top: 0, width: 5000, height: 5000 };
 
 /** THE LINE A PLANTED VIOLATION GOES BEFORE: `redact-main.js`'s one call into Rust. */
@@ -332,7 +359,9 @@ function isFrames(v: unknown): boolean {
  *   about 16 bytes a page, for as many pages as `max_pages` admits -- and one of eleven rule names
  *   a page, about 3.5 bits. `framesConsistency` holds the counts to `pages` and the zero pairs to
  *   the rules, so the arrays cannot run longer than the document; a copy that forged `pages` too
- *   would pass it, since nothing the page sees knows the true count -- stated, not closed. The sizes ARE what the document says about its pages, which is the
+ *   would pass it, since nothing the page sees knows the true count -- the general rule states
+ *   that rather than closing it, and the spec closes it for its own fixture by holding the reply
+ *   to `WRITER_FRAMES`. The sizes ARE what the document says about its pages, which is the
  *   operation's whole answer; what the rule holds is that nothing but such numbers rides there.
  */
 export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
@@ -511,10 +540,9 @@ export function framesConsistency(
     return found;
   }
   const sizes = String(m.fields["frames[]"]).split(",");
-  const rules =
-    pages === 1
-      ? [String(m.fields["frameRefusals[]"])]
-      : String(m.fields["frameRefusals[]"]).split(",");
+  // ALWAYS SPLIT, one page included: `"".split(",")` is `[""]`, and an unsplit single item
+  // could join any number of rule names into one page's refusal (#136 S2, round 2).
+  const rules = String(m.fields["frameRefusals[]"]).split(",");
   if (rules.length !== pages) {
     found.push(`the frames reply's rule names do not split into ${pages}`);
     return found;

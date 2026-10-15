@@ -17,8 +17,8 @@
 //! Each page's answer is the redaction's own calls, in its order: `frame::check_inherited_media_box`
 //! before the walk, then the walk's `/Resources` read (refused when the page tree supplies them),
 //! `frame::of`, and the two checks [`Region::to_content_space`] makes of a frame (unit and
-//! rotation, then the box). The document is opened through `OpensForRedaction::open_for_redaction`, the redaction's own
-//! open, so a document the operation refuses at the open --
+//! rotation, then the box). The document is opened through
+//! `OpensForRedaction::open_for_redaction`, the redaction's own open, so a document the operation refuses at the open --
 //! a ceiling, a password, a repaired input -- is refused here with the same error. Nothing here
 //! reads a page's content: only the page dictionaries and the page tree above them.
 //!
