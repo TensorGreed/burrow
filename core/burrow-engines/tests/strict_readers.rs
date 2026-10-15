@@ -1015,4 +1015,29 @@ fn a_font_part_written_as_a_stream_refuses_and_the_dictionary_redacts() {
         b"<< /Type /Encoding /BaseEncoding /WinAnsiEncoding >>",
     ))
     .expect("a dictionary /Encoding redacts");
+
+    // 4. THE SAME WITH `/Widths` DECLARED (#180's code review): the first check sat on the path a
+    // font with no `/Widths` takes, so this went past it, `/Differences` and all.
+    let with_widths = |encoding: &[u8]| -> Vec<u8> {
+        document(
+            "/Font << /F1 5 0 R >>",
+            b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET",
+            &[
+                format!(
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 \
+                     /LastChar 126 /Widths [{}] /Encoding 6 0 R >>",
+                    vec!["600"; 95].join(" ")
+                )
+                .as_bytes(),
+                encoding,
+            ],
+        )
+    };
+    refuses_by(
+        "a stream /Encoding with /Differences, on a font with /Widths",
+        &with_widths(b"<< /Type /Encoding /Differences [83 /Z] /Length 0 >>\nstream\n\nendstream"),
+        "encoding-not-a-dictionary",
+    );
+    redact(&with_widths(b"<< /Type /Encoding /Differences [83 /S] >>"))
+        .expect("a dictionary /Encoding on a font with /Widths redacts");
 }
