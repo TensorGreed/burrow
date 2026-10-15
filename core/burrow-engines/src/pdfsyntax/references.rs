@@ -154,9 +154,9 @@ pub struct Found {
     /// The object numbers an object stream's header lists. Empty from [`in_file`]. A member has
     /// no header in the file, so its declaration cannot be read here.
     pub members: BTreeSet<i32>,
-    /// How many times an object stream's header lists each member number: more than once is more
-    /// than one copy of the object in one stream.
-    pub member_entries: BTreeMap<i32, usize>,
+    /// Every member number an object stream's header lists, in order and repeats included: a number
+    /// listed more than once is more than one copy of the object in one stream.
+    pub member_list: Vec<i32>,
     /// Set when something could not be read as qpdf reads it, and the scan stopped there. The
     /// other fields are then incomplete and must not be used as an answer.
     pub irregular: Option<Irregular>,
@@ -165,26 +165,23 @@ pub struct Found {
     /// the holder's number did not read. qpdf drops such a key when it writes, so a reader that
     /// treats the key's presence as meaningful reads the source and the output differently.
     /// Recorded where the bytes are judged as written ([`in_file`], [`in_object_stream`]).
-    pub null_values: BTreeSet<Holder>,
-    /// Every reference written as a value inside a dictionary, with the objects holding it (at most
-    /// [`MAX_HOLDERS`] each): the caller asks which resolve to a declared `null`, which qpdf drops
-    /// the same way.
-    pub dictionary_references: BTreeMap<(i32, i32), BTreeSet<Holder>>,
+    pub null_values: Vec<Holder>,
+    /// Every reference written as a value inside a dictionary, with the object holding it, one entry
+    /// per occurrence (at most [`MAX_DISTINCT_REFERENCES`]): the caller asks which resolve to a
+    /// declared `null`, which qpdf drops the same way.
+    pub dictionary_references: Vec<((i32, i32), Holder)>,
 }
 
 /// Where a dictionary value was written: the number of the object holding it (`None` where the
 /// holder's header did not read, or for a trailer), and whether it is a direct key of that object's
 /// own dictionary rather than of one nested inside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Holder {
     /// The holding object's number.
     pub object: Option<i32>,
     /// Whether the value is a direct key of the object's top-level dictionary.
     pub direct: bool,
 }
-
-/// The most holders recorded for one reference in [`Found::dictionary_references`].
-pub const MAX_HOLDERS: usize = 8;
 
 /// The deepest nesting of arrays and dictionaries a scan follows; deeper is
 /// [`Irregular::BeyondCaps`]. Above the parser nesting burrow sets qpdf to (64, `PARSER_MAX_NESTING`),
@@ -648,17 +645,17 @@ impl<'c> Scan<'c> {
                             && let (Some(number), Some(generation)) =
                                 (plain(number), plain(generation))
                         {
-                            let holders = self
-                                .found
-                                .dictionary_references
-                                .entry((number, generation))
-                                .or_default();
-                            if holders.len() < MAX_HOLDERS {
-                                holders.insert(Holder {
+                            if self.found.dictionary_references.len() >= MAX_DISTINCT_REFERENCES {
+                                self.found.irregular = Some(Irregular::BeyondCaps);
+                                return Ok(end(false, 0, false));
+                            }
+                            self.found.dictionary_references.push((
+                                (number, generation),
+                                Holder {
                                     object: holder,
                                     direct: containers.len() == 1,
-                                });
-                            }
+                                },
+                            ));
                         }
                     }
                     Significant::Other
@@ -666,7 +663,7 @@ impl<'c> Scan<'c> {
                 Token::Word(b"null")
                     if self.judge_names && containers.last() == Some(&Container::Dictionary) =>
                 {
-                    self.found.null_values.insert(Holder {
+                    self.found.null_values.push(Holder {
                         object: holder,
                         direct: containers.len() == 1,
                     });
@@ -733,7 +730,7 @@ impl<'c> Scan<'c> {
         decoded: &[u8],
         count: i64,
         first: i64,
-    ) -> Result<Option<BTreeMap<usize, Option<i32>>>> {
+    ) -> Result<Option<MemberStarts>> {
         let (Ok(first), Ok(count)) = (usize::try_from(first), usize::try_from(count)) else {
             return Ok(None);
         };
@@ -746,21 +743,20 @@ impl<'c> Scan<'c> {
         }
         if count > MAX_DECLARATIONS {
             self.found.irregular = Some(Irregular::BeyondCaps);
-            return Ok(Some(BTreeMap::new()));
+            return Ok(Some(Vec::new()));
         }
         let mut lexer = Lexer::new(decoded, 0);
-        let mut starts = BTreeMap::new();
+        let mut starts = Vec::new();
         for _ in 0..count {
             let Some(number) = self.integer(&mut lexer)? else {
-                return Ok(self.found.irregular.map(|_| BTreeMap::new()));
+                return Ok(self.found.irregular.map(|_| Vec::new()));
             };
             let Some(offset) = self.integer(&mut lexer)? else {
-                return Ok(self.found.irregular.map(|_| BTreeMap::new()));
+                return Ok(self.found.irregular.map(|_| Vec::new()));
             };
             if let Ok(number) = i32::try_from(number) {
                 self.found.members.insert(number);
-                let entries = self.found.member_entries.entry(number).or_default();
-                *entries = entries.saturating_add(1);
+                self.found.member_list.push(number);
             }
             let Ok(offset) = usize::try_from(offset) else {
                 continue;
@@ -768,9 +764,12 @@ impl<'c> Scan<'c> {
             if let Some(start) = first.checked_add(offset)
                 && start < decoded.len()
             {
-                starts.insert(start, i32::try_from(number).ok());
+                starts.push((start, i32::try_from(number).ok()));
             }
         }
+        // IN OFFSET ORDER, each offset once, as the set this replaced read them.
+        starts.sort_by_key(|(start, _)| *start);
+        starts.dedup_by_key(|(start, _)| *start);
         Ok(Some(starts))
     }
 
@@ -827,6 +826,9 @@ impl<'c> Scan<'c> {
         Ok(true)
     }
 }
+
+/// Where each member of an object stream begins, and the number its header gives it.
+type MemberStarts = Vec<(usize, Option<i32>)>;
 
 /// A keyword that cannot be inside a value qpdf reads without warning.
 fn is_stop_word(word: &[u8]) -> bool {

@@ -263,7 +263,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
     let mut listed: BTreeSet<c_int> = BTreeSet::new();
     // HOW MANY OBJECT STREAMS list each number: a number listed twice, or listed and also headed in
     // the file body, is more than one revision of the object.
-    let mut listings: std::collections::BTreeMap<c_int, usize> = std::collections::BTreeMap::new();
+    let mut listings: Vec<c_int> = Vec::new();
 
     // THE OBJECT STREAMS, from every stream object's header. qpdf reads an object stream's
     // members through `getObject(number, 0)` whatever generation the stream was written with
@@ -299,17 +299,10 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         )?;
         wanted.references.extend(members.references);
         // ENTRIES, not streams: a number listed twice in one stream is two copies.
-        for (member, entries) in &members.member_entries {
-            *listings.entry(*member).or_default() += entries;
-        }
+        listings.extend_from_slice(&members.member_list);
         listed.extend(members.members);
         null_holders.extend(members.null_values);
-        for (pair, holders) in members.dictionary_references {
-            dictionary_references
-                .entry(pair)
-                .or_default()
-                .extend(holders);
-        }
+        dictionary_references.extend(members.dictionary_references);
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
             return Err((refusals.unreadable)(Irregular::BeyondCaps));
         }
@@ -403,9 +396,9 @@ fn null_value_found<D: PdfDocument>(
     document: &D,
     wanted: &Found,
     listed: &BTreeSet<c_int>,
-    listings: &std::collections::BTreeMap<c_int, usize>,
-    null_holders: &BTreeSet<Holder>,
-    dictionary_references: &std::collections::BTreeMap<(i32, i32), BTreeSet<Holder>>,
+    listings: &[c_int],
+    null_holders: &[Holder],
+    dictionary_references: &[((i32, i32), Holder)],
 ) -> Result<bool> {
     let trailer = document.trailer()?;
     let root = trailer.key(&ROOT);
@@ -413,7 +406,7 @@ fn null_value_found<D: PdfDocument>(
         let (number, generation) = root.object()?;
         let headed = wanted.declarations.get(&number);
         let headers = headed.map_or(0, |declared| declared.headers);
-        let listed_times = listings.get(&number).copied().unwrap_or(0);
+        let listed_times = listings.iter().filter(|listed| **listed == number).count();
         let once = match (headers, listed_times) {
             (1, 0) => headed.is_some_and(|declared| declared.generations.contains(&generation)),
             (0, 1) => true,
@@ -429,10 +422,10 @@ fn null_value_found<D: PdfDocument>(
     let literal = null_holders.iter().any(|holder| !exempt(holder));
     let declared = dictionary_references
         .iter()
-        .any(|((number, generation), holders)| {
-            wanted.declares_only_null(*number, *generation)
+        .any(|((number, generation), holder)| {
+            !exempt(holder)
+                && wanted.declares_only_null(*number, *generation)
                 && !listed.contains(number)
-                && holders.iter().any(|holder| !exempt(holder))
         });
     Ok(literal || declared)
 }
