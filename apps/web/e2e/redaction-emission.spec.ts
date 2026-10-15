@@ -28,7 +28,9 @@ import {
   REFINED,
   REFUSED_BY,
   THE_CALL,
+  WRITER,
   cleanLog,
+  framesAndSettle,
   onlyRequest,
   r8Violations,
   redactAndSettle,
@@ -61,6 +63,70 @@ test("a refused redaction posts no bytes at all", async ({ page }) => {
   ).toBe(true);
   expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
 });
+
+// #136's read-only op answers through the same worker, the same protocol and the same rules: its
+// reply is listed, carries no bytes, and holds only sizes and rule names.
+test("page frames post no bytes, and their reply is a listed shape", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.burrowHarness.armRedaction({}));
+  const { reply, log, nonce } = await framesAndSettle(page, WRITER);
+  expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(true);
+  // THE RECORDER SAW THE FRAMES: one that recorded nothing would pass every rule below.
+  const terminal = log.filter((m) => m.sent === null && m.ok === true);
+  expect(terminal, "the recorder never saw the reply").toHaveLength(1);
+  expect(terminal[0].fields["frames[]"], "no frames were recorded").toMatch(/^\d/);
+  expect(log.some((m) => m.sent === null && m.bytes > 0)).toBe(false);
+  expect(r8Violations(log, onlyRequest(log, "page_frames"), nonce)).toEqual([]);
+});
+
+test("refused page frames post no bytes either", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.burrowHarness.armRedaction({}));
+  const { reply, log, nonce } = await framesAndSettle(page, new TextEncoder().encode("not a pdf"));
+  expect(reply.ok).toBe(false);
+  expect(r8Violations(log, onlyRequest(log, "page_frames"), nonce)).toEqual([]);
+});
+
+/** Leaks a copy of the worker plants on the page-frames path, each the finding R8 must report. */
+const FRAME_CALL = "    return wasm_bindgen.page_frames(";
+const FRAME_LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
+  {
+    name: "a chunk before the frames are read",
+    from: FRAME_CALL,
+    to: `    self.postMessage({ id: request.id + 1000, chunk: bytes.subarray(0, 16) });\n${FRAME_CALL}`,
+    finding: /has a shape nobody listed/,
+  },
+  {
+    name: "a number past any page's size among the frames",
+    from: "      frames: reply.frames === undefined ? [] : Array.from(reply.frames),\n",
+    to: "      frames: reply.ok ? [612, 4111111111111111] : [],\n",
+    finding: /a value no rule admits in frames\[\]/,
+  },
+  {
+    name: "text among the rule names",
+    from: "      frameRefusals: reply.frameRefusals === undefined ? [] : Array.from(reply.frameRefusals),\n",
+    to: '      frameRefusals: reply.ok ? ["123-45-6789"] : [],\n',
+    finding: /a value no rule admits in frameRefusals\[\]/,
+  },
+];
+
+for (const leak of FRAME_LEAKS) {
+  test(`SHOWN TO FAIL: a copy of the worker whose page frames post ${leak.name} is caught`, async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const { applied } = await page.evaluate(
+      (mutate) => window.burrowHarness.armRedaction({ mutate }),
+      { from: leak.from, to: leak.to },
+    );
+    expect(applied, `the planted leak did not apply: ${leak.name}`).toBe(true);
+    const { log, nonce } = await framesAndSettle(page, WRITER);
+    expect(
+      r8Violations(log, onlyRequest(log, "page_frames"), nonce).join("\n"),
+      "R8's check passed a leaking worker",
+    ).toMatch(leak.finding);
+  });
+}
 
 /** A planted leak before the call, and the finding R8 must report for it. */
 const before = (leak: string) => ({ from: THE_CALL, to: `  ${leak}\n${THE_CALL}` });
@@ -413,6 +479,13 @@ for (const hand of HAND) {
   });
 }
 
+/** The finding that names `key` among the fields no rule admits. Keys carry `.` and `[]`. */
+const namesField = (key: string) =>
+  new RegExp(
+    `a value no rule admits in ([\\w.\\[\\]]+,)*${key.replace(/[.[\]]/g, "\\$&")}(,|$)`,
+    "m",
+  );
+
 // ONE CASE PER FIELD RULE: a validator shared by several fields was witnessed once and left every
 // other field using it unwitnessed, so loosening `requested` to any string stayed green (review of
 // #137). Each case puts that rule's refused value in the clean reply, and must name that field.
@@ -424,9 +497,7 @@ for (const key of Object.keys(FIELD_RULES)) {
       { ...log[1], fields: { ...log[1].fields, [key]: REFUSED_BY[key] } },
       log[2],
     ];
-    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(
-      new RegExp(`a value no rule admits in ([\\w.]+,)*${key.replace(".", "\\.")}(,|$)`, "m"),
-    );
+    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(namesField(key));
   });
 }
 
@@ -451,8 +522,6 @@ for (const [key, value, what] of REFINED) {
   test(`SHOWN TO FAIL, by hand: ${key} as ${what}`, () => {
     const log = cleanLog(7, 42);
     const changed = [log[0], { ...log[1], fields: { ...log[1].fields, [key]: value } }, log[2]];
-    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(
-      new RegExp(`a value no rule admits in ([\\w.]+,)*${key}(,|$)`, "m"),
-    );
+    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(namesField(key));
   });
 }

@@ -1088,6 +1088,30 @@ pub trait PageRedactor {
     ) -> Result<Vec<i64>>;
 }
 
+/// An engine that can read every page's display frame the way redaction reads it (#136).
+///
+/// Read-only: it opens the document as redaction opens it and reads each page's dictionary and the
+/// page tree above it, and nothing else -- no content, no write. Implemented by the native
+/// `qpdf::Qpdf` and the web `web::WebQpdf` over one body, `redact::frames`, so a frame and a
+/// page-level refusal are the same on both platforms except where their renderers differ:
+/// natively PDFium can vouch for a `/MediaBox` from the page tree, and on the web nothing can
+/// yet, so such a page is `[media-box-unverified]` there (#206).
+pub trait PageFrameReader {
+    /// Every page's display frame, or the page-level rule that refuses every region on it, in page
+    /// order. See [`redact::frames`] for what a frame does and does not promise.
+    ///
+    /// # Errors
+    ///
+    /// A document the redaction refuses at its open is refused here with the same error; a
+    /// ceiling is the operation's, never a page's; and an error that is not a frame rule is the
+    /// whole document's.
+    fn page_frames(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+    ) -> Result<Vec<redact::frames::PageFrameReading>>;
+}
+
 /// One page, rasterised.
 ///
 /// **RGBA, eight bits per channel, no padding between rows.** `rgba.len()` is exactly

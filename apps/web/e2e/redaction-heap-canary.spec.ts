@@ -123,6 +123,42 @@ const PAGES: { name: string; bytes: Uint8Array; ok: boolean }[] = [
   },
 ];
 
+// #136's read-only op holds the same document in the same two heaps, and reads no content: the
+// canary is in the input, so it is in each heap while the frames are read (the witness), and must
+// be in neither at the reply -- the input's copies wiped -- and the worker recycled all the same.
+test("after reading page frames, neither heap holds the document's text, and the worker is recycled", async ({
+  page,
+}) => {
+  await openHarness(page);
+  await page.evaluate(
+    (canary) => window.burrowHarness.armRedaction({ heapCanary: canary }),
+    CANARY,
+  );
+  const reply = await page.evaluate(
+    ({ bytes }) => window.burrowHarness.redactFrames("canary.pdf", new Uint8Array(bytes)),
+    { bytes: Array.from(PAGES[0].bytes) },
+  );
+  expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(true);
+  expect(reply.frames).toEqual([612, 792]);
+
+  const scans = await page.evaluate(() => window.burrowHarness.redactHeapScans());
+  expect(scans, "the heap canary saw no reply").toHaveLength(1);
+  const [scan] = scans;
+  expect(scan.map((entry) => entry.heap).sort(), JSON.stringify(scan)).toEqual(["burrow", "qpdf"]);
+  const burrow = scan.find((entry) => entry.heap === "burrow")!;
+  const qpdf = scan.find((entry) => entry.heap === "qpdf")!;
+  expect(qpdf.peak, "the scan never saw the canary in qpdf's heap").toBeGreaterThan(0);
+  expect(burrow.peak, "the scan never saw the canary in burrow's heap").toBeGreaterThan(0);
+  expect(burrow.hits, `burrow's heap (${burrow.bytes} bytes) still holds the text`).toBe(0);
+  expect(qpdf.hits, `qpdf's heap (${qpdf.bytes} bytes) still holds the text`).toBe(0);
+  expect(reply.recycle, "reading page frames must ask for its worker to be recycled").toBe(true);
+  expect(reply.fatal).toBe(false);
+  expect(
+    await page.evaluate(() => window.burrowHarness.redactTerminations()),
+    "the host did not discard the worker it was asked to recycle",
+  ).toBe(1);
+});
+
 for (const { name, bytes, ok } of PAGES) {
   test(`after a redaction, neither heap holds the removed text, and the worker is recycled: ${name}`, async ({
     page,

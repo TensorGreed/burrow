@@ -380,6 +380,26 @@ pub struct Reply {
     /// Marked-content property lists whose carried text a redaction dropped. Zero for every
     /// other operation.
     dropped_carried_text: u32,
+    /// Every page's display frame, as `[width, height]` pairs in page order, in points; or empty.
+    ///
+    /// `page_frames` only (#136). A page refused by a frame rule carries `0, 0` here and its rule
+    /// in [`Reply::frame_refusals`], so the two line up index for index and a page reads one or
+    /// the other. Numbers Rust computed from the page dictionary, never text.
+    ///
+    /// **In the redaction module only**, with its getter. In the base and render modules the field
+    /// and its glue cost every tool page's worker download for an operation none of them answers:
+    /// measured, about 1.7 KB brotli on the base module and 1.1 KB on its worker bundle, past the
+    /// size budget's drift tolerance. So those modules have no `frames` getter at all, and
+    /// `drainReply` reads its absence as empty.
+    #[cfg(feature = "redact")]
+    frames: Vec<f64>,
+    /// Per page, the frame rule that refuses every region on it, or empty for a page with a frame.
+    ///
+    /// `page_frames` only. Each is a `FrameRule::rule()` name -- a fixed word from an enumeration,
+    /// never the message -- so a page picks its sentence without parsing prose. Redaction module
+    /// only, as `frames` is.
+    #[cfg(feature = "redact")]
+    frame_refusals: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -650,7 +670,40 @@ impl Reply {
             report: String::new(),
             retained_fonts: 0,
             dropped_carried_text: 0,
+            #[cfg(feature = "redact")]
+            frames: Vec::new(),
+            #[cfg(feature = "redact")]
+            frame_refusals: Vec::new(),
         }
+    }
+
+    /// Every page's frame or frame rule (#136): no document, no bytes, `pages` the page count.
+    ///
+    /// A reading this build does not know -- `PageFrameReading` is `#[non_exhaustive]` -- is not
+    /// a frame a page may draw on, so it fails the whole reply as `Internal` rather than being
+    /// passed on as one.
+    #[cfg(feature = "redact")]
+    fn framed(readings: &[burrow_core::engines::redact::frames::PageFrameReading]) -> Self {
+        use burrow_core::engines::redact::frames::PageFrameReading;
+        let mut reply = Self::success(u64::try_from(readings.len()).unwrap_or(u64::MAX));
+        for reading in readings {
+            match reading {
+                PageFrameReading::Frame { width, height } => {
+                    reply.frames.extend([*width, *height]);
+                    reply.frame_refusals.push(String::new());
+                }
+                PageFrameReading::Refused { rule, .. } => {
+                    reply.frames.extend([0.0, 0.0]);
+                    reply.frame_refusals.push(rule.rule().to_owned());
+                }
+                _ => {
+                    return Self::failure(&Error::Internal(
+                        "page frames: a reading this build does not know".to_owned(),
+                    ));
+                }
+            }
+        }
+        reply
     }
 
     /// A verified redaction: the document, and what was done beyond it.
@@ -791,6 +844,10 @@ impl Reply {
             report: String::new(),
             retained_fonts: 0,
             dropped_carried_text: 0,
+            #[cfg(feature = "redact")]
+            frames: Vec::new(),
+            #[cfg(feature = "redact")]
+            frame_refusals: Vec::new(),
         }
     }
 }
@@ -833,6 +890,26 @@ impl Reply {
     #[must_use]
     pub fn dropped_carried_text(&self) -> u32 {
         self.dropped_carried_text
+    }
+
+    /// Every page's display frame as `[width, height]` pairs in points, in page order; `0, 0` for a
+    /// page [`Reply::frame_refusals`] names a rule for. Empty for every operation but
+    /// `page_frames`. Crosses as a `Float64Array`: a frame side is a real number in the file.
+    /// Redaction module only (see the field).
+    #[cfg(feature = "redact")]
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn frames(&self) -> Vec<f64> {
+        self.frames.clone()
+    }
+
+    /// Per page, the frame rule refusing every region on it, or `""`; empty for every operation
+    /// but `page_frames`. Redaction module only.
+    #[cfg(feature = "redact")]
+    #[wasm_bindgen(getter, js_name = frameRefusals)]
+    #[must_use]
+    pub fn frame_refusals(&self) -> Vec<String> {
+        self.frame_refusals.clone()
     }
 
     /// Every page's effective rotation, in page order.

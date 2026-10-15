@@ -157,7 +157,9 @@ describe("the production build", () => {
     // route list above: the
     // slug is a name, the operation is the thing held, and a page called anything at all that
     // posts `op: "redact"` ships a redaction tool.
-    const held: string[] = ["redact"];
+    // `page_frames` (#136) is held beside it: it is only ever posted by a page that is about to
+    // ask for a redaction, so a shipped script naming it is the redaction page arriving early.
+    const held: string[] = ["redact", "page_frames"];
     const allowed = [
       "page_count",
       "structure_check",
@@ -184,7 +186,7 @@ describe("the production build", () => {
         `no shipped script mentions the op "${op}", so this scan proves nothing`,
       ).toBe(true);
     }
-    expect(held).toHaveLength(1);
+    expect(held).toHaveLength(2);
     for (const op of held) {
       const offenders = scriptsNaming(scripts, sources, op);
       expect(
@@ -233,6 +235,17 @@ describe("the production build", () => {
     expect(named, 'the op held-list predicate did not catch a planted "redact"').toEqual([
       "_astro/worker.js",
     ]);
+
+    // AND THE SECOND HELD OP (#136), with its own near miss: the words, never the quoted name.
+    const framesScripts = ["_astro/island.js", "_astro/other.js"];
+    const framesSources = [
+      'host.run({ op: "page_frames", blob });',
+      "// reads page frames, page_frames_of(x) -- the name unquoted is not the op",
+    ];
+    expect(
+      scriptsNaming(framesScripts, framesSources, "page_frames"),
+      'the op held-list predicate did not catch a planted "page_frames"',
+    ).toEqual(["_astro/island.js"]);
   });
 
   it("links every tool page it ships, and no tool page it does not", () => {

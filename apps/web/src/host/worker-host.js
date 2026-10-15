@@ -82,6 +82,10 @@
  *   them -- the number ADR 0029 §7's disclosure is about.
  * @property {number} [droppedCarriedText] Marked-content property lists whose carried text a
  *   redaction dropped.
+ * @property {number[]} [frames] Every page's display frame as `[width, height]` pairs in points,
+ *   `0, 0` for a page refused by a frame rule. `page_frames` only (#136).
+ * @property {string[]} [frameRefusals] Per page, the frame rule refusing every region on it, or
+ *   "". `page_frames` only.
  * @property {Blob | null} [output] The document an operation produced, or null.
  *
  *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):

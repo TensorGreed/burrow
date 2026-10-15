@@ -234,6 +234,14 @@ interface Reply {
   readonly retainedFonts: number;
   /** Marked-content property lists whose carried text a redaction dropped. Zero otherwise. */
   readonly droppedCarriedText: number;
+  /**
+   * Every page's display frame as `[width, height]` pairs in points, `0, 0` for a page refused by
+   * a frame rule. `page_frames` only (#136); empty otherwise. ABSENT outside the redaction module,
+   * which is the only one that has the getter.
+   */
+  readonly frames?: Float64Array;
+  /** Per page, the frame rule refusing every region on it, or "". Redaction module only. */
+  readonly frameRefusals?: string[];
   /** Bytes in the produced document, without taking it. Zero if there is none. */
   readonly outputLength: number;
   /**

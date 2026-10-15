@@ -105,6 +105,48 @@ pub fn redact(
     .recycled()
 }
 
+/// Every page's display frame, or the page-level rule that refuses every region on it (#136).
+///
+/// What the redaction page asks before a person draws: the frame a region on each page is measured
+/// against -- width and height in points, after `/Rotate` and `/UserUnit`, `/CropBox` falling back
+/// to `/MediaBox` -- or the rule that would refuse every region on that page. Read-only: nothing is
+/// written, and no page's content is decoded. See `burrow_ops::redact::page_frames`.
+///
+/// # The reply
+///
+/// On success, [`Reply::frames`] carries `[width, height]` per page and [`Reply::frame_refusals`] a
+/// rule name per page (`""` for a page with a frame); `pages` is the page count. No output. A
+/// document the redaction refuses at its open -- a ceiling, a password, a repaired input -- is a
+/// failure reply, with the same error the redaction gives. Here, unlike natively, a page whose
+/// `/MediaBox` comes from the page tree is `media-box-unverified`: the redaction worker has no
+/// renderer to vouch for it (#206).
+///
+/// # Errors
+///
+/// Never panics. Every refusal arrives typed in the reply.
+#[wasm_bindgen]
+#[must_use]
+pub fn page_frames(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
+    // WIPED WHEN DROPPED (#199): the document is the person's, whatever is read from it.
+    let bytes = Zeroizing::new(bytes);
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = crate::password_from(password);
+
+    let mut options = OpenOptions::new(limits, clock);
+    options.password = password.as_ref();
+
+    // RECYCLED AFTER EVERY READING, success or refusal, as a redaction is (#199): it decodes no
+    // page content, but qpdf's heap held the input, and the rule this bundle keeps is that a
+    // worker which held a person's document is not handed the next one.
+    match burrow_core::ops::redact::page_frames(&qpdf(), &bytes, &options) {
+        Ok(readings) => Reply::framed(&readings),
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+    .recycled()
+}
+
 /// A region on the displayed page, as JavaScript hands it over.
 ///
 /// A struct rather than four more arguments on [`redact`], for the reason [`WebLimits`] is one:

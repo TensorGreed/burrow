@@ -65,6 +65,30 @@ pub struct PageFrame {
 }
 
 impl PageFrame {
+    /// Refuse a display box with no positive, finite extent: no region measured against it
+    /// converts anywhere meaningful.
+    ///
+    /// **The one statement of the rule**, so [`Region::to_content_space`] and a caller asking
+    /// before any region exists -- `page_frames`, which reports a page's frame so a region can be
+    /// drawn on it -- cannot disagree about which pages have nothing to draw on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] naming `display-box`.
+    pub fn check_display_box(&self) -> Result<()> {
+        let box_width = self.display_box.right - self.display_box.left;
+        let box_height = self.display_box.top - self.display_box.bottom;
+        if !(box_width > 0.0 && box_height > 0.0)
+            || !box_width.is_finite()
+            || !box_height.is_finite()
+        {
+            return Err(Error::Malformed(
+                "pdf region [display-box]: a display box with no positive extent".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The displayed page's size in display units, after rotation and `/UserUnit`.
     #[must_use]
     pub fn displayed_size(&self) -> (f64, f64) {
@@ -145,16 +169,7 @@ impl Region {
                     .to_owned(),
             ));
         }
-        let box_width = frame.display_box.right - frame.display_box.left;
-        let box_height = frame.display_box.top - frame.display_box.bottom;
-        if !(box_width > 0.0 && box_height > 0.0)
-            || !box_width.is_finite()
-            || !box_height.is_finite()
-        {
-            return Err(Error::Malformed(
-                "pdf region [display-box]: a display box with no positive extent".to_owned(),
-            ));
-        }
+        frame.check_display_box()?;
 
         // (1) out of displayed points.
         let (left, top) = (self.left / frame.user_unit, self.top / frame.user_unit);

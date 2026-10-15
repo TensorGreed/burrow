@@ -206,6 +206,50 @@ describe("#199: the redaction worker zeroes the document and the password", () =
     ).toBe(true);
     expect(w.wipes()).toBe(1);
   });
+
+  // #136's read-only op holds the same document, so it owes the same wipes.
+  it("once the page frames have been read", async () => {
+    const w = load(REDACT_MAIN);
+    w.releaseQpdf();
+    const seen = capture(w.scope, "page_frames");
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({
+      id: 1,
+      op: "page_frames",
+      blob: input.blob,
+      password: new Uint8Array([7]).buffer,
+      limits,
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.intactAtCall).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "the document whose frames were read survived",
+    ).toBe(true);
+    expect(zero(seen[0]!.args[1]), "the password survived").toBe(true);
+    expect(w.wipes()).toBe(1);
+    // AND THE REPLY CAME BACK AS THE FRAMES OP'S, not as a redaction's argument refusal: the
+    // request carries no page or region, and reaching `redact`'s checks would refuse it.
+    expect(w.posted.some((m) => m["ok"] === true)).toBe(true);
+  });
+
+  it("when reading the page frames throws", async () => {
+    const w = load(REDACT_MAIN);
+    w.releaseQpdf();
+    capture(w.scope, "page_frames", () => {
+      throw new Error("a trap");
+    });
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({ id: 1, op: "page_frames", blob: input.blob, limits });
+
+    expect(w.posted.some((m) => m["kind"] === "Internal")).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "a throwing frame read left the document intact",
+    ).toBe(true);
+    expect(w.wipes()).toBe(1);
+  });
 });
 
 describe("#199: the qpdf bridge wipes decoded content", () => {

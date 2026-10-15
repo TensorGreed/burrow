@@ -64,11 +64,32 @@ export async function redactAndSettle(page: Page, pageNumber: number): Promise<S
   return { reply, log, nonce };
 }
 
-/** The id of the one redaction the page sent in `log`. Refuses if it did not send exactly one. */
-export function onlyRequest(log: RedactionMessage[]): number {
-  const ids = log.filter((m) => m.sent === "redact").map((m) => m.id);
+/**
+ * Read `bytes`' page frames through redaction's worker (#136), as armed, then wait for the worker
+ * to go quiet and read the log -- the same settle `redactAndSettle` makes, for the other op.
+ */
+export async function framesAndSettle(page: Page, bytes: Uint8Array): Promise<Settled> {
+  const reply = await page.evaluate(
+    ({ bytes }) => window.burrowHarness.redactFrames("frames.pdf", new Uint8Array(bytes)),
+    { bytes: Array.from(bytes) },
+  );
+  const { settled, nonce } = await page.evaluate(
+    (ms) => window.burrowHarness.settleRedaction(ms),
+    SETTLE_MS,
+  );
+  if (!settled) throw new Error("redaction's worker never answered the settle handshake");
+  const log = await page.evaluate(() => window.burrowHarness.redactMessages());
+  return { reply, log, nonce };
+}
+
+/**
+ * The id of the one `op` request the page sent in `log` -- a redaction unless told otherwise.
+ * Refuses if it did not send exactly one.
+ */
+export function onlyRequest(log: RedactionMessage[], op = "redact"): number {
+  const ids = log.filter((m) => m.sent === op).map((m) => m.id);
   if (ids.length !== 1 || typeof ids[0] !== "number") {
-    throw new Error(`expected one redaction request, found ${JSON.stringify(ids)}`);
+    throw new Error(`expected one ${op} request, found ${JSON.stringify(ids)}`);
   }
   return ids[0];
 }
@@ -113,17 +134,28 @@ const EARLY_COUNT: Record<string, number> = { starting: 2, init: 1, ack: 1 };
  * literals `worker-protocol.js` and `redact-main.js` build by hand -- `refusal`, the unknown-op
  * refusal and `internalFailure`. The success shape is the only one with bytes in it, and only in
  * `output`: that is ADR 0023's "exactly one part", held by the shape rather than by a count.
- * `rotations` is empty in every one, because redaction never fills it.
+ * `rotations` is empty in every one, because redaction never fills it. `frames` and
+ * `frameRefusals` are empty in every one but `page_frames`' success (#136), which carries them and
+ * no output: numbers and rule names, never bytes.
  */
 const REPLIES: Set<string> = (() => {
   const shapes = new Set<string>();
-  const drained = (ok: string, output: string, fatal: string, recycle: string) =>
+  const drained = (
+    ok: string,
+    output: string,
+    fatal: string,
+    recycle: string,
+    frames = "[]",
+    frameRefusals = "[]",
+  ) =>
     shape({
       allowed: "string",
       droppedCarriedText: "number",
       engineHeapBytes: "string",
       failedInput: "number",
       fatal,
+      frameRefusals,
+      frames,
       id: "number",
       innerKind: "string",
       kind: "string",
@@ -145,6 +177,8 @@ const REPLIES: Set<string> = (() => {
     for (const recycle of ["true", "false"]) {
       shapes.add(drained("true", "bytes", fatal, recycle));
       shapes.add(drained("false", "null", fatal, recycle));
+      // `page_frames`' success: one size pair and one rule name (or "") per page, no output.
+      shapes.add(drained("true", "null", fatal, recycle, "[number]", "[string]"));
     }
   }
   const common = {
@@ -243,6 +277,42 @@ function isReport(v: unknown): boolean {
   );
 }
 
+/** `FrameRule::rule` in `core/burrow-engines/src/redact/frames.rs`, every arm, and "" for a frame. */
+const FRAME_RULES = [
+  "",
+  "page-frame-unreadable",
+  "user-unit-not-one",
+  "page-attribute-inherited",
+  "media-box-unverified",
+  "no-display-box",
+  "rotate-not-whole",
+  "page-tree-depth",
+  "display-box",
+];
+/** `MAX_FRAME_SIDE` in the same file: 2^25 points, twice the largest box coordinate read. */
+const MAX_FRAME_SIDE = 2 ** 25;
+
+/** An array as `fieldsOf` records it, comma-joined: "" for none, else every part `part` admits. */
+const joined = (part: (p: string) => boolean) => (v: unknown) =>
+  typeof v === "string" && (v === "" || v.split(",").every(part));
+/**
+ * `page_frames`' sizes, comma-joined: an even count of numbers, each finite, from 0 to
+ * `MAX_FRAME_SIDE`, written as JavaScript writes that number -- so no padding, sign or spare digit
+ * rides on one.
+ */
+function isFrames(v: unknown): boolean {
+  if (typeof v !== "string") return false;
+  if (v === "") return true;
+  const parts = v.split(",");
+  return (
+    parts.length % 2 === 0 &&
+    parts.every((p) => {
+      const n = Number(p);
+      return Number.isFinite(n) && String(n) === p && n >= 0 && n <= MAX_FRAME_SIDE;
+    })
+  );
+}
+
 /**
  * WHAT EACH FIELD'S VALUE MAY BE, where the shape says only its type. Enumerations are copied from
  * the Rust that produces them; numbers are whole, bounded and never `-0`; the two sizes that only
@@ -256,6 +326,10 @@ function isReport(v: unknown): boolean {
  *   up to 64 fonts -- about 650 bytes more at that ceiling.
  * Not text, and not a name a person would recognise as the secret; stated, not closed. (The first
  * version of this said "about 4 bytes a font", counting one of the font's two numbers.)
+ * - and `page_frames`' sizes (#136): two numbers a page, each a double from 0 to 2^25 -- up to
+ *   about 16 bytes a page, for as many pages as `max_pages` admits -- and one of nine rule names a
+ *   page, about 3 bits. The sizes ARE what the document says about its pages, which is the
+ *   operation's whole answer; what the rule holds is that nothing but such numbers rides there.
  */
 export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   id: integer(0, U32),
@@ -277,8 +351,14 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   failedInput: integer(-1, U32),
   message: oneOf([""]),
   report: isReport,
-  // A refusal's report, recorded apart so it can be held empty.
+  // A refusal's report -- or that of a reply with no document -- recorded apart so it can be held
+  // empty.
   refusalReport: oneOf([""]),
+  // ARRAYS, as `fieldsOf` joins them (#136). Redaction never fills `rotations`.
+  "rotations[]": oneOf([""]),
+  "frames[]": isFrames,
+  "frameRefusals[]": joined((p) => FRAME_RULES.includes(p)),
+  "__burrowSideChannelArmed[]": joined((p) => Object.hasOwn(EXITS, p)),
   "output.type": oneOf(["application/pdf"]),
   "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
@@ -327,6 +407,15 @@ export const REFINED: [string, string | number, string][] = [
   ],
   ["report", report([FONT_OK.replace("851968", "0851968")]), "a font identity with a leading zero"],
   ["report", report([FONT_OK], "4294967296"), "a dropped count of 2^32"],
+  ["frames[]", "612", "an odd count of sizes"],
+  ["frames[]", "612,0792", "a size with a leading zero"],
+  ["frames[]", "612,33554433", "a size past 2^25"],
+  ["frames[]", "612,-1", "a negative size"],
+  ["frames[]", "612,NaN", "a size that is not a number"],
+  ["frameRefusals[]", "user-unit-not-one-x", "a rule name with a suffix"],
+  ["frameRefusals[]", ",user-unit-not-one,Jane", "a name no rule has, among real ones"],
+  ["rotations[]", "0", "a rotation redaction never fills"],
+  ["__burrowSideChannelArmed[]", "Worker,toString", "a prototype property"],
 ];
 
 /** A value each rule refuses, for the hand-written case that shows the rule is there. */
@@ -568,7 +657,11 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
     settled: null,
   };
   const success = [...REPLIES].find(
-    (s) => s.includes("ok:true") && s.includes("fatal:false") && s.includes("recycle:false"),
+    (s) =>
+      s.includes("ok:true") &&
+      s.includes("fatal:false") &&
+      s.includes("recycle:false") &&
+      s.includes("output:bytes"),
   );
   if (success === undefined) throw new Error("no successful reply shape is listed");
   return [
@@ -602,6 +695,9 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
         retainedFonts: 0,
         droppedCarriedText: 0,
         failedInput: -1,
+        "rotations[]": "",
+        "frames[]": "",
+        "frameRefusals[]": "",
         report:
           "Report { fonts: [FontOutcome { font: 1179648, cut: true, also_used_by: 0 }, FontOutcome { font: 851968, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
         "output.type": "application/pdf",

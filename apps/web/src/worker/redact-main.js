@@ -1,4 +1,5 @@
-// The redaction bundle's engine and dispatch: qpdf, and one operation. Last file in
+// The redaction bundle's engine and dispatch: qpdf, the redaction, and the read-only page frames
+// the page draws a region on (#136). Last file in
 // `burrow-redact-worker.js` (#137).
 //
 // THE PROTOCOL IS NOT HERE. `worker-protocol.js` owns the policy guard, the memoised init
@@ -39,8 +40,11 @@ async function init() {
   await wasm_bindgen({ module_or_path: burrowModule });
 }
 
-/** The one operation this bundle answers. */
-const KNOWN_OPS = new Set(["redact"]);
+/**
+ * The operations this bundle answers: the redaction, and every page's frame for the page to draw
+ * a region on before it asks for one (#136).
+ */
+const KNOWN_OPS = new Set(["redact", "page_frames"]);
 
 /**
  * A 1-based page number, as the core takes it: a whole number from 1 to 2^32 - 1.
@@ -67,12 +71,72 @@ function badArguments(id, message) {
 }
 
 /**
- * Run one redaction and hand back its reply, or **null** when a refusal was already posted.
+ * The caller's limits as the struct Rust takes. CONSUMED by the call it is handed to.
+ *
+ * @param {Record<string, any>} limits
+ */
+function webLimits(limits) {
+  return new wasm_bindgen.WebLimits(
+    BigInt(limits.maxInputBytes),
+    BigInt(limits.maxMemoryBytes),
+    BigInt(limits.maxDurationMs),
+    BigInt(limits.maxPages),
+    BigInt(limits.maxPixels),
+  );
+}
+
+/**
+ * Apply the input budget before a byte is read; post the refusal and answer false if it fails.
+ *
+ * @param {Record<string, any>} request
+ */
+function withinBudget(request) {
+  // THE BUDGET BEFORE A SINGLE BYTE IS READ, and in Rust -- the base bundle's reason (#51).
+  const budget = wasm_bindgen.check_input_budget(
+    Float64Array.from([request.blob.size]),
+    webLimits(request.limits),
+  );
+  const verdict = drainReply(request.id, budget);
+  if (!verdict.ok) {
+    self.postMessage(verdict);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Every page's frame, or the rule refusing every region on it (#136), and the same wipes as a
+ * redaction: the document is a person's whatever is read from it.
+ *
+ * @param {Record<string, any>} request
+ * @returns {Promise<Reply | null>}
+ */
+async function pageFrames(request) {
+  if (!withinBudget(request)) return null;
+  /** @type {Uint8Array | undefined} */
+  let bytes;
+  /** @type {Uint8Array | undefined} */
+  let password;
+  try {
+    bytes = new Uint8Array(await request.blob.arrayBuffer());
+    password = request.password ? new Uint8Array(request.password) : undefined;
+    return wasm_bindgen.page_frames(bytes, password, webLimits(request.limits));
+  } finally {
+    // #199: zeroed once Rust has copied it in, as the redaction's input is.
+    __burrow_wipe_handed_out();
+    bytes?.fill(0);
+    password?.fill(0);
+  }
+}
+
+/**
+ * Run one operation and hand back its reply, or **null** when a refusal was already posted.
  *
  * @param {Record<string, any>} request
  * @returns {Promise<Reply | null>}
  */
 async function runOperation(request) {
+  if (request.op === "page_frames") return pageFrames(request);
   // THE ARGUMENTS FIRST, BEFORE A BYTE IS READ. Everything here is a number the page chose;
   // nothing is derived from the document, and a malformed request is a bug in the page rather
   // than a reason to touch the file.
@@ -90,22 +154,7 @@ async function runOperation(request) {
     return badArguments(request.id, "a region is four numbers: left, top, width and height");
   }
 
-  // THE BUDGET BEFORE A SINGLE BYTE IS READ, and in Rust -- the base bundle's reason (#51).
-  const budget = wasm_bindgen.check_input_budget(
-    Float64Array.from([request.blob.size]),
-    new wasm_bindgen.WebLimits(
-      BigInt(request.limits.maxInputBytes),
-      BigInt(request.limits.maxMemoryBytes),
-      BigInt(request.limits.maxDurationMs),
-      BigInt(request.limits.maxPages),
-      BigInt(request.limits.maxPixels),
-    ),
-  );
-  const verdict = drainReply(request.id, budget);
-  if (!verdict.ok) {
-    self.postMessage(verdict);
-    return null;
-  }
+  if (!withinBudget(request)) return null;
 
   /** @type {Uint8Array | undefined} */
   let bytes;
@@ -116,13 +165,7 @@ async function runOperation(request) {
     password = request.password ? new Uint8Array(request.password) : undefined;
     // BOTH STRUCTS ARE CONSUMED BY THE CALL: wasm-bindgen moves them into Rust. Freeing either
     // afterwards is a double free; `main.js` records what that looks like.
-    const limits = new wasm_bindgen.WebLimits(
-      BigInt(request.limits.maxInputBytes),
-      BigInt(request.limits.maxMemoryBytes),
-      BigInt(request.limits.maxDurationMs),
-      BigInt(request.limits.maxPages),
-      BigInt(request.limits.maxPixels),
-    );
+    const limits = webLimits(request.limits);
     const area = new wasm_bindgen.WebRegion(region.left, region.top, region.width, region.height);
 
     return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);

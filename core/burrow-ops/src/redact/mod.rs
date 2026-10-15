@@ -32,7 +32,8 @@ use std::sync::Arc;
 
 use burrow_engines::pdfsyntax::region::Region;
 use burrow_engines::redact::Report;
-use burrow_engines::{OpenOptions, OutputReader, PageRedactor};
+use burrow_engines::redact::frames::{FrameRule, MAX_FRAME_SIDE, PageFrameReading};
+use burrow_engines::{OpenOptions, OutputReader, PageFrameReader, PageRedactor};
 use burrow_types::{Deadline, Error, Result};
 
 use crate::verify;
@@ -111,6 +112,56 @@ where
     )?;
 
     Ok(Redaction { document, report })
+}
+
+/// Every page's display frame, or the page-level rule that refuses every region on it (#136).
+///
+/// Read-only: the document is opened as [`page`] opens it, each page's dictionary and the page
+/// tree above it are read, and nothing is written or decoded. A frame is the displayed page's
+/// width and height in points, after `/Rotate` and `/UserUnit`, `/CropBox` falling back to
+/// `/MediaBox` -- the frame a [`Region`] on that page is measured against. See
+/// [`burrow_engines::redact::frames`] for what a frame does **not** promise: most refusals depend on
+/// the region and the content, and arrive when the redaction runs.
+///
+/// # What this adds to the engine's answer
+///
+/// No document comes out, so ADR 0022's `verify::output` has nothing to read back. What the
+/// operation does hold the engine to is the shape of its answer, which a page draws on: every
+/// frame positive, finite and at most [`MAX_FRAME_SIDE`] a side, and every refusal carrying the
+/// rule its own error names. An engine that reports otherwise is a bug in burrow, refused as
+/// [`Error::Internal`] rather than handed to a page to draw a region against.
+///
+/// # Errors
+///
+/// - Whatever the redaction's open refuses: every ceiling `options.limits` names, a password, a
+///   repaired input. `max_duration_ms` is checkpointed per page and once more here.
+/// - [`Error::Internal`] for an answer of the wrong shape, as above.
+pub fn page_frames<E: PageFrameReader>(
+    engine: &E,
+    bytes: &[u8],
+    options: &OpenOptions<'_>,
+) -> Result<Vec<PageFrameReading>> {
+    let clock = Arc::clone(&options.clock);
+    let deadline = Deadline::start(clock.as_ref(), &options.limits);
+    let readings = engine.page_frames(bytes, options)?;
+    deadline.checkpoint(clock.as_ref())?;
+    for reading in &readings {
+        let sound = match reading {
+            PageFrameReading::Frame { width, height } => [*width, *height]
+                .iter()
+                .all(|side| side.is_finite() && *side > 0.0 && *side <= MAX_FRAME_SIDE),
+            PageFrameReading::Refused { rule, error } => FrameRule::of(error) == Some(*rule),
+            _ => false,
+        };
+        if !sound {
+            return Err(Error::Internal(
+                "redact page frames: the engine reported a frame that is not a positive, finite \
+                 size, or a refusal that does not name its rule"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(readings)
 }
 
 #[cfg(test)]
