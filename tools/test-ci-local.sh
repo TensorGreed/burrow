@@ -1584,6 +1584,43 @@ else
 fi
 rm -f "$guard_fixture"
 
+# THE PLAYWRIGHT LOCK (2026-10-15, the five-lane plan): a held lock makes a second taker wait and
+# then give up, naming the holder; a free one is taken. Exercised on a lock file of its own, so the
+# case never waits behind a real sweep.
+lock_out="$(python3 -B - "$here/ci-local.py" <<'PYLOCK' 2>&1
+import fcntl, importlib.util, pathlib, subprocess, sys, tempfile, time
+spec = importlib.util.spec_from_file_location("ci_local", sys.argv[1])
+ci = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ci)
+work = pathlib.Path(tempfile.mkdtemp())
+path = work / "pw.lock"
+holder = subprocess.Popen([sys.executable, "-c", (
+    "import fcntl,sys,time\n"
+    f"h=open({str(path)!r},'a+'); fcntl.flock(h, fcntl.LOCK_EX); h.seek(0); h.truncate()\n"
+    "h.write('the planted holder\\n'); h.flush(); print('held', flush=True); time.sleep(30)\n")],
+    stdout=subprocess.PIPE, text=True)
+assert holder.stdout.readline().strip() == "held"
+started = time.monotonic()
+got = ci.playwright_lock(wait_s=1.0, path=path)
+waited = time.monotonic() - started
+assert got is None, "a held lock was taken"
+assert waited >= 1.0, f"gave up after {waited:.2f}s, before its bound"
+holder.kill(); holder.wait()
+got = ci.playwright_lock(wait_s=1.0, path=path)
+assert got is not None, "a free lock was not taken"
+got.close()
+print("lock-ok")
+PYLOCK
+)" || true
+if grep -q "lock-ok" <<<"$lock_out" && grep -q "held by the planted holder" <<<"$lock_out"; then
+  echo "  ok   a held Playwright lock makes the next run wait, name its holder, and give up at its bound"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the Playwright lock did not wait, name the holder, and time out as required"
+  echo "$lock_out" | tail -6
+  fail=$((fail + 1))
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

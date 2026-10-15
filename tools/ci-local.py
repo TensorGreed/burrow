@@ -50,6 +50,7 @@ Usage:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -57,6 +58,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -2069,12 +2072,75 @@ def qpdf_cli() -> tuple[str | None, str]:
     return None, "not found"
 
 
+# ONE PLAYWRIGHT RUN PER MACHINE, WHICHEVER TREE IT COMES FROM. The e2e suite serves the build on
+# fixed ports (`playwright.config.ts`: 4321 for the site, 4322 for the foreign logger), and the
+# harness build bakes the site's origin into its CSP. Two sweeps in two worktrees at once -- the
+# five-lane plan of 2026-10-15 -- would both bind them: the second fails on `EADDRINUSE`, a
+# failure that reads as the change's. So a job that runs Playwright takes a lock first, the same
+# file for every checkout of every branch, and waits for it, bounded, saying whose run it waits
+# behind. The wait is bounded because an `until` that cannot end is the failure CLAUDE.md names.
+#
+# What it does not cover, stated: a `pnpm e2e` started by hand takes no lock, and neither does
+# anything outside this runner.
+PLAYWRIGHT_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / (
+    f"burrow-playwright-{os.getuid()}.lock"
+)
+PLAYWRIGHT_LOCK_WAIT_S = 3600.0
+
+
+def playwright_lock(wait_s: float = PLAYWRIGHT_LOCK_WAIT_S, path: Path | None = None):
+    """The machine-wide Playwright lock, held until the returned file is closed; None on timeout.
+
+    The holder writes its checkout and pid into the file, so a waiter can say what it waits for.
+    """
+    lock_path = path or PLAYWRIGHT_LOCK
+    handle = open(lock_path, "a+")  # noqa: SIM115 -- held open for the job's duration
+    started = time.monotonic()
+    said = False
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if not said:
+                handle.seek(0)
+                holder = handle.read().strip() or "an unnamed run"
+                print(f"    waiting for the Playwright lock ({lock_path}), held by {holder}")
+                said = True
+            if time.monotonic() - started >= wait_s:
+                handle.close()
+                return None
+            time.sleep(2.0)
+    waited = time.monotonic() - started
+    if said:
+        print(f"    took the Playwright lock after {waited:.0f}s")
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{REPO} (pid {os.getpid()})\n")
+    handle.flush()
+    return handle
+
+
 def run(job: dict, env: dict[str, str] | None = None) -> bool:
     print(f"\n=== {job['name']}")
     if job.get("why"):
         print(f"    ({job['why']})")
     print(f"    $ {job['run']}")
-    result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
+    lock = None
+    if runs_playwright(job):
+        lock = playwright_lock()
+        if lock is None:
+            print(
+                f"    FAIL  {job['name']}: the Playwright lock was not free within "
+                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, so this run would share ports 4321/4322 with "
+                f"another -- not run"
+            )
+            return False
+    try:
+        result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
+    finally:
+        if lock is not None:
+            lock.close()
     ok = result.returncode == 0
     print(f"    {'PASS' if ok else 'FAIL'}  {job['name']}")
     return ok
