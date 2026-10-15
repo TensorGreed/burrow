@@ -4,8 +4,8 @@
   //
   // WHAT IT DOES, AND ONLY THAT: a file, every page's frame (`page_frames`), one page and one
   // region typed in points (D2: one region per run), a run through REDACTION's own worker, a
-  // cancel, and a download. Pictures and pointer selection are S4; "redact another area of this
-  // result" is S6b.
+  // cancel, a download, and "redact another area of this result" (S6b), which runs again on the
+  // output. Pictures and pointer selection are S4.
   //
   // THE WORKER IS REDACTION'S, NOT THE BASE ONE. The redaction bundle is fetched on first use and
   // by nothing else (ADR 0029's 2026-09-21 amendment), through the same `createToolHost` every
@@ -41,6 +41,13 @@
   let phase = $state<"idle" | "working" | "done">("idle");
   let notice = $state<RedactMessage | null>(null);
   let result = $state<Handout | null>(null);
+  /**
+   * The finished run's document, for "redact another area of this result" (S6b, D2's re-feed).
+   *
+   * The same Blob the download link points at, held here rather than read back from the link:
+   * one region per run, so a second area is a second run on the first one's output.
+   */
+  let output: Blob | null = null;
   /** What the run reported that §7 has a paragraph for. */
   let retainedFonts = $state(0);
   let droppedCarriedText = $state(0);
@@ -207,6 +214,7 @@
         phase = "idle";
         return;
       }
+      output = reply.output;
       retainedFonts = reply.retainedFonts ?? 0;
       droppedCarriedText = reply.droppedCarriedText ?? 0;
       result = handout;
@@ -223,7 +231,8 @@
   }
 
   function suggestedName(): string {
-    const base = file?.name.replace(/\.pdf$/i, "") ?? "document";
+    // ONE SUFFIX, however many areas: a re-fed result is already "-redacted".
+    const base = file?.name.replace(/\.pdf$/i, "").replace(/-redacted$/, "") ?? "document";
     return `${base}-redacted.pdf`;
   }
 
@@ -242,9 +251,22 @@
     announce("Ready to try again.");
   }
 
+  /**
+   * Start a second run on the first one's output (S6b). The output becomes the chosen file, so
+   * its frames are read again and a new area is typed: nothing from the first run's area carries
+   * over, because the person is choosing a different one.
+   */
+  function another() {
+    if (!output || !result) return;
+    const next = new File([output], result.name, { type: "application/pdf" });
+    left = top = width = height = "";
+    void choose([next]);
+  }
+
   function clearResult() {
     delivery.release(result);
     result = null;
+    output = null;
     retainedFonts = 0;
     droppedCarriedText = 0;
   }
@@ -449,6 +471,13 @@
       {#each resultNotes(retainedFonts, droppedCarriedText) as note (note)}
         <p data-testid="redact-result-note">{note}</p>
       {/each}
+      <!-- ONE AREA PER RUN (D2): a second area is a run on this result, not on the file chosen
+           first, so the first area's removal is kept. -->
+      <p>
+        <button type="button" onclick={another} data-testid="redact-another"
+          >Redact another area of this result</button
+        >
+      </p>
     </div>
   {/if}
 
