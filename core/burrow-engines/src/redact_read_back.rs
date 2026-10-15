@@ -26,8 +26,8 @@
 //!   other than one it flags as generated, has its **origin** (`FPDFText_GetCharOrigin`) inside the
 //!   region. The region is converted into content space with the **output's** frame as burrow
 //!   reads it -- the same rectangle `redact_verify` tested burrow's own glyphs against -- and
-//!   shrunk by [`TOLERANCE_PT`] on every side, so an origin that merely sits on the edge is not a
-//!   disagreement.
+//!   shrunk by [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) on every side, so an
+//!   origin that merely sits on the edge is not a disagreement.
 //!
 //!   **Origins only, and that is a decision, not an omission** (owner, 2026-10-15, #206 option A).
 //!   PDFium's ink box (`FPDFText_GetCharBox`) is not read. Calibrated against main, an ink-box rule
@@ -35,8 +35,9 @@
 //!   conservative glyph box ignoring `/FontDescriptor`'s `/FontBBox` (#344) rather than to a glyph
 //!   PDFium places in the region. The origin rule refused none. The ink half lands after #344.
 //!
-//!   A region no more than twice [`TOLERANCE_PT`] wide or tall has nothing left to compare once the
-//!   tolerance is taken off, and refuses as `[second-reading-region-too-small]`.
+//!   A region no more than twice [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) wide or
+//!   tall has nothing left to compare once the tolerance is taken off, and refuses as
+//!   `[second-reading-region-too-small]`.
 //! - **R2, `[second-reading-no-text]`.** burrow's walk places glyphs on the page and PDFium reports
 //!   no character it did not generate. A reading that sees nothing cannot vouch for anything.
 //! - **R3, `[second-reading-page-size]`.** PDFium's rotated size for the page equals the output
@@ -48,8 +49,8 @@
 //!   and R5 compare qpdf's reading against that declaration, so a tree whose declared `/Count`
 //!   both engines accept, and whose kids say otherwise, is not caught here.
 //! - **`[second-reading-nesting]`, before any page is loaded.** The output page's marked-content
-//!   work is past [`MAX_MARKED_WORK`]: PDFium's page load grows with nesting, so it is capped
-//!   before it rather than measured after.
+//!   work is past [`MAX_MARKED_WORK`](crate::redact_read_back::MAX_MARKED_WORK): PDFium's page
+//!   load grows with nesting, so it is capped before it rather than measured after.
 //! - **R5, `[second-reading-input-page-count]`.** PDFium's page count of the input, its declared
 //!   root `/Count` as above, equals qpdf's -- #111's half, here for redaction only.
 //!
