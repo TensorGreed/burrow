@@ -5409,6 +5409,10 @@ mod tests {
                 (Content, || {
                     walk_cmap(None, b"/Identity-V usecmap /WMode 0 def")
                 }),
+                // Inline-image syntax, which no CMap program contains (#193).
+                (Content, || {
+                    walk_cmap(None, b"/CMapName /Plain-H def BI /W 1 /H 1 /BPC 8 /CS /G")
+                }),
             ],
             Refusal::MarkedContentPropertiesUnresolved => {
                 vec![(Entry("carried_text_edits"), || {
