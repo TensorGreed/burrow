@@ -221,7 +221,27 @@ self.__burrow_pdfium_bitmap_buffer = (bitmap) => pdfium()._FPDFBitmap_GetBuffer(
 self.__burrow_pdfium_bitmap_stride = (bitmap) => pdfium()._FPDFBitmap_GetStride(bitmap);
 self.__burrow_pdfium_bitmap_destroy = (bitmap) => pdfium()._FPDFBitmap_Destroy(bitmap);
 
+// #199 (D4: rendered pixels are decoded content): every copy this bridge hands to Rust -- a
+// page's pixels, read out of PDFium's bitmap -- is zeroed once wasm-bindgen has copied it in: at
+// the next hand-out, so at most one is live, and at the operation's end, when the worker calls
+// `__burrow_wipe_handed_out`. The qpdf bridge's rule (`bridge-qpdf.js`), for the render bundle,
+// which does not carry that bridge.
+/** @type {Uint8Array[]} */
+const handedOut = [];
+
+/** @param {Uint8Array} copy */
+function handOut(copy) {
+  __burrow_wipe_handed_out();
+  handedOut.push(copy);
+  return copy;
+}
+
+function __burrow_wipe_handed_out() {
+  for (const copy of handedOut) copy.fill(0);
+  handedOut.length = 0;
+}
+
 // `slice`, not `subarray`, and the difference is the whole of it: `subarray` is a VIEW into
 // the engine heap, and wasm memory growth detaches every view of it. The copy is what makes
-// these bytes the caller's. The same rule `__burrow_qpdf_copy_out` follows.
-self.__burrow_pdfium_copy_out = (ptr, len) => pdfium().HEAPU8.slice(ptr, ptr + len);
+// these bytes the caller's. The same rule `__burrow_qpdf_copy_out` follows, and the same wipe.
+self.__burrow_pdfium_copy_out = (ptr, len) => handOut(pdfium().HEAPU8.slice(ptr, ptr + len));

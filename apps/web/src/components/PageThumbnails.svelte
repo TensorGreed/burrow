@@ -30,10 +30,11 @@
   // `data:` and no `blob:` (ADR 0014), and the refusal is silent. Pixels arrive as a
   // transferred `ArrayBuffer` and are put into a `<canvas>`; there is no URL, so there is
   // nothing to revoke and nothing that can outlive the tile.
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
 
   import { CANCELLED } from "../host/worker-host.js";
   import { ENGINE_PAUSED, LIMITS, RENDER, createToolHost, hostKind } from "./tool-host.js";
+  import { createEndGate, discardStale } from "./strip-lifecycle.js";
   import { evictable, outstanding as outstandingPages, releasedState } from "./strip-schedule.js";
   import type { TileState } from "./strip-schedule.js";
   import { LIVE_THUMBNAIL_WINDOW, THUMBNAIL_CSS_HEIGHT, thumbnailBox } from "./thumbnail-policy.js";
@@ -89,6 +90,39 @@
   let running = false;
   /** Invalidates everything in flight when the file changes. */
   let generation = 0;
+  /**
+   * When the render worker ends (#199, D1): at once if nothing is rendering, otherwise when the
+   * render in flight settles, or at `END_DEADLINE_MS` if it has not (`strip-lifecycle.ts`, which
+   * says why, and holds the rule with fake timers).
+   */
+  const ending = createEndGate({
+    discard: () => host.discardWorker(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as number),
+  });
+  /** The document the strip last drew, so the worker ends on a CHANGE of document only. */
+  let drawnFor: File | null = null;
+  /** The page was left (`pagehide`) and not yet shown again: nothing is drawn meanwhile. */
+  let hidden = false;
+
+  /**
+   * #199, D1 AND D4: ONE DOCUMENT PER RENDER WORKER, AND ITS PIXELS ZEROED.
+   *
+   * Rendered pixels are decoded content (D4). PDFium's heap holds the document and its bitmaps for
+   * as long as the worker lives, and nothing reaches into it, so a worker never serves a second
+   * document: it ends when the document changes and when the page is left -- and before an
+   * operation runs, which `paused` already did. A tile's pixels are zeroed when the tile lets go of
+   * them: evicted from the live window, the document changed, the page left or the strip unmounted.
+   * The canvas is cleared in the same moment (`paint`, given `null`).
+   */
+  function wipe(list: readonly Tile[]) {
+    for (const tile of list) tile.data?.data.fill(0);
+  }
+
+  /** End the worker: now, once the render in flight settles, or at the deadline. */
+  function endWorker() {
+    ending.request(running);
+  }
   let observer: IntersectionObserver | null = null;
 
   // THE STRIP IS REBUILT WHENEVER THE DOCUMENT OR ITS PAGE COUNT CHANGES, and everything in
@@ -97,6 +131,13 @@
   $effect(() => {
     const count = pageCount;
     const chosen = file;
+    // THE OLD DOCUMENT'S PIXELS, zeroed before the tiles holding them go. Read untracked: reading
+    // `tiles` here would make this effect re-run on every tile it draws.
+    untrack(() => wipe(tiles));
+    if (chosen !== drawnFor) {
+      drawnFor = chosen;
+      untrack(endWorker);
+    }
     generation += 1;
     wanted = [];
     live = [];
@@ -215,7 +256,7 @@
   });
 
   async function pump(): Promise<void> {
-    if (running || unavailable || paused) return;
+    if (running || unavailable || paused || hidden) return;
     const chosen = file;
     if (!chosen) return;
     running = true;
@@ -242,6 +283,10 @@
       // THE DEFERRED RELEASE: an operation started while this render was in flight, and the
       // render has now settled, so the engine can go without terminating anything mid-run.
       if (paused) host.discardWorker();
+      // And an end the document change or the page leave asked for (`ending`).
+      ending.settled();
+      // A NEW DOCUMENT'S TILES asked while this one ran; ask again for them, on a fresh worker.
+      if (mine !== generation && !paused) void pump();
     }
   }
 
@@ -274,7 +319,12 @@
         {
           maxDurationMs: LIMITS.maxDurationMs,
           onPage: (page, pixels) => {
-            if (mine !== generation) return;
+            // A PREVIOUS DOCUMENT'S PICTURE, arriving after the change: never shown for the new
+            // one, and zeroed on arrival (D4).
+            if (mine !== generation) {
+              discardStale(pixels);
+              return;
+            }
             accept(page.number, page.width, page.height, pixels);
           },
         },
@@ -338,6 +388,7 @@
       live = live.filter((p) => p !== out);
       const stale = tiles[out - 1];
       if (stale?.state === "drawn") {
+        stale.data?.data.fill(0);
         tiles[out - 1] = { ...stale, state: releasedState(out, wanted), data: null };
       }
     }
@@ -376,11 +427,49 @@
       context.putImageData(image, 0, 0);
     };
     draw(data);
-    return { update: draw };
+    return {
+      update: draw,
+      // A CANVAS LEAVING THE DOM KEEPS ITS PIXELS until it is collected (#199, D4: they are decoded
+      // content), so it is cleared and shrunk to nothing as it goes: evicted, refused, the page
+      // left or the strip unmounted.
+      destroy() {
+        node
+          .getContext("2d", { willReadFrequently: true })
+          ?.clearRect(0, 0, node.width, node.height);
+        node.width = 0;
+        node.height = 0;
+      },
+    };
   }
+
+  // LEAVING THE PAGE (#199, D1): every tile's pixels zeroed and the worker ended. The tiles go back
+  // to waiting, so a page restored from the back-forward cache draws them again, on a new worker.
+  $effect(() => {
+    const onPageHide = () => {
+      hidden = true;
+      generation += 1;
+      wipe(tiles);
+      tiles = tiles.map((tile) =>
+        tile.state === "drawn" ? { ...tile, state: "waiting" as const, data: null } : tile,
+      );
+      live = [];
+      endWorker();
+    };
+    const onPageShow = () => {
+      hidden = false;
+      void pump();
+    };
+    globalThis.addEventListener("pagehide", onPageHide);
+    globalThis.addEventListener("pageshow", onPageShow);
+    return () => {
+      globalThis.removeEventListener("pagehide", onPageHide);
+      globalThis.removeEventListener("pageshow", onPageShow);
+    };
+  });
 
   onDestroy(() => {
     observer?.disconnect();
+    wipe(tiles);
     host.dispose();
   });
 </script>

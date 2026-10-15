@@ -131,22 +131,41 @@ describe("the page-picture strip", () => {
     expect('"2d"').not.toMatch(/^"2d",\s*\{\s*willReadFrequently:\s*true\s*\}$/);
   });
 
-  it("never terminates its worker while a render is in flight", () => {
+  it("never terminates its worker while a render is in flight, except at the end deadline", () => {
     // Terminating the render worker mid-render crashed Firefox's content process (SIGSEGV in
     // libxul, the whole tab) about one run in ten on the split test that edits the cuts while
     // it runs; releasing only once the render settles measured 0 in 120. A source scan, and it
-    // says so: every `discardWorker()` in the component must be either guarded by `!running`
-    // or in the `finally` that runs once the render has settled -- and there must be both.
+    // says so: every `discardWorker()` in the component is one of three --
+    // - the pause, guarded by `!running`;
+    // - the `finally` that runs once the render has settled;
+    // - the end gate's `discard` (#199, one document per worker), whose rule -- at once if nothing
+    //   renders, on settle, or at `END_DEADLINE_MS` if the render hangs (owner, 2026-10-15) -- is
+    //   `strip-lifecycle.test.ts`'s, with fake timers.
     const discards = [...source.matchAll(/discardWorker\(\)/g)].map((m) => m.index!);
-    expect(discards.length, "the component never releases its engine").toBe(2);
+    expect(discards.length, "a discardWorker() the three rules do not account for").toBe(3);
     const guarded = discards.filter((at) =>
       /if \(!running\) host\.$/.test(source.slice(at - 25, at)),
     );
     const settled = discards.filter((at) =>
       /finally \{\s*running = false;\s*if \(paused\) host\.$/.test(source.slice(at - 400, at)),
     );
+    const gated = discards.filter((at) =>
+      /createEndGate\(\{\s*discard: \(\) => host\.$/.test(source.slice(at - 80, at)),
+    );
     expect(guarded.length, "the pause terminates the worker without checking for a render").toBe(1);
     expect(settled.length, "nothing releases the engine after an in-flight render settles").toBe(1);
+    expect(gated.length, "the end gate does not own the document-change end").toBe(1);
+    // AND THE GATE IS TOLD WHETHER A RENDER IS IN FLIGHT, and told when it settles.
+    expect(source).toMatch(/ending\.request\(running\)/);
+    expect(source).toMatch(/finally \{[\s\S]{0,600}ending\.settled\(\)/);
+  });
+
+  it("zeroes a previous document's picture on arrival and never shows it (#199, D4)", () => {
+    // The stale branch of `onPage`: a render for a document the strip no longer shows is zeroed and
+    // dropped before anything can paint it. `discardStale` is `strip-lifecycle.test.ts`'s.
+    expect(source).toMatch(
+      /if \(mine !== generation\) \{\s*discardStale\(pixels\);\s*return;\s*\}\s*accept\(/,
+    );
   });
 
   it("sends the same LIMITS every other operation sends", () => {

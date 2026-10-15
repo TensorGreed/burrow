@@ -15,7 +15,7 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Worker } from "@playwright/test";
 
 import { isPinnedArtifact, mark, since } from "./request-log";
 
@@ -171,4 +171,96 @@ test("the tool still works when the strip is not there", async ({ page }) => {
     document.querySelector(".strip")?.remove();
   });
   await expect(page.getByRole("button", { name: "Turn pages" })).toBeEnabled();
+});
+
+// ---- #199 for the render worker (D1, D4): one document per worker, pixels zeroed --------------
+
+/**
+ * The page's render worker, found by what its bundle carries: only the render bundle defines the
+ * PDFium bridge. Polled, because the strip builds its worker on first use.
+ */
+async function renderWorker(page: Page): Promise<Worker> {
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    for (const worker of page.workers()) {
+      const isRender = await worker
+        .evaluate(
+          () =>
+            typeof (self as unknown as Record<string, unknown>)["__burrow_pdfium_copy_out"] ===
+            "function",
+        )
+        .catch(() => false);
+      if (isRender) return worker;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error("no render worker appeared");
+}
+
+/** Whether a canvas holds any pixel that is not fully transparent. */
+async function inked(page: Page): Promise<boolean> {
+  return firstCanvas(page).evaluate((node: HTMLCanvasElement) => {
+    const context = node.getContext("2d", { willReadFrequently: true });
+    if (!context || node.width === 0 || node.height === 0) return false;
+    const data = context.getImageData(0, 0, node.width, node.height).data;
+    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return true;
+    return false;
+  });
+}
+
+test("a render worker draws one document: choosing another ends it (#199)", async ({ page }) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect(firstCanvas(page)).toBeVisible({ timeout: 45_000 });
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const first = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => first.on("close", () => resolve()));
+
+  await choose(page, "mixed-rotation-4page.pdf");
+  await closed;
+  // AND THE NEW DOCUMENT IS DRAWN, on a worker of its own.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the second document was drawn by the first document's worker").not.toBe(first);
+});
+
+test("leaving the page ends the render worker and clears every tile's pixels (#199)", async ({
+  page,
+}) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const worker = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => worker.on("close", () => resolve()));
+  // HELD ACROSS THE UNMOUNT: the canvas the tile drew into, so what it keeps after leaving the DOM
+  // can be read.
+  const canvas = await firstCanvas(page).elementHandle();
+  expect(canvas).not.toBeNull();
+
+  // `pagehide` is what a navigation or a back-forward cache entry fires.
+  await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
+  await closed;
+  await expect(page.locator(".strip__canvas")).toHaveCount(0);
+  const kept = await canvas!.evaluate((node: HTMLCanvasElement) => ({
+    width: node.width,
+    height: node.height,
+    connected: node.isConnected,
+  }));
+  expect(kept, "the canvas left the DOM still holding its picture").toEqual({
+    width: 0,
+    height: 0,
+    connected: false,
+  });
+});
+
+test("an operation ends the render worker before it runs (#199)", async ({ page }) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const worker = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => worker.on("close", () => resolve()));
+
+  await page.getByRole("button", { name: "Turn pages" }).click();
+  await closed;
+  await expect(page.locator(".result a.download")).toBeVisible({ timeout: 45_000 });
 });
