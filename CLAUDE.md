@@ -150,7 +150,9 @@ still local. **Which reviewer depends on what the change decides** (2026-10-14, 
   the 2026-09-24 tooling class (tooling, gates, checkers, their self-tests, CI wiring, fixture
   generators) -- get one `code-reviewer` pass.
 
-When a change is more than one of these, it gets the heaviest. DECISIONS.md rule 17 (owner,
+A change described as **behaviour-preserving** shows in its PR description that `outcomes.tsv` and
+the census are unchanged; any difference means it is reviewed as the refusal or acceptance change it
+is. When a change is more than one of these, it gets the heaviest. DECISIONS.md rule 17 (owner,
 2026-10-14) is the source; this replaced "both reviewers for any code that decides what redaction
 removes or keeps" (2026-09-24).
 

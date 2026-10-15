@@ -158,6 +158,10 @@ one is decided in an issue, with the same three parts.
       reason.
     - **A round-0 finding outside the slice** is filed for the final spec review, unless it is live
       in a shipped tool, when it is a private advisory (rule 15, `SECURITY.md`).
+    - **A change described as behaviour-preserving** -- a refactor, a size cut -- shows in its PR
+      description that `outcomes.tsv` and the census are unchanged. Any difference means it is not,
+      and it is reviewed as the refusal or acceptance change it is (owner, 2026-10-14, after a "Vec
+      refactor" that added a refusal).
     - **The private final-review list is triaged weekly:** each item is queued as A or B (it closes
       a leak) or marked post-launch, so that nothing waits for the final review to be discovered.
 
