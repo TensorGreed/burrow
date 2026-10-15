@@ -80,7 +80,7 @@ jobs:
 
       # --all-targets covers tests and benches, where the panic lints are relaxed but
       # everything else still applies.
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: test
@@ -176,7 +176,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - run: cargo test --workspace --all-features
+      - run: cargo test --locked --workspace --all-features
 
       # THE STANDARD-14 TABLE IS WHAT THE AFMs AND THIS PDFium PRODUCE (#290, ADR 0030; the owner's
       # conditions 1 and 2). Here, where the native PDFium is: the table is re-measured, regenerated
@@ -649,7 +649,7 @@ jobs:
       # is the right place: this job builds one .wasm and a user pays for six artifacts. A
       # budget on the Rust module alone would have passed every regression that mattered --
       # it is 0.7% of the payload. See apps/web/size-budget.json.
-      - run: cargo build -p burrow-wasm --target wasm32-unknown-unknown --release
+      - run: cargo build --locked -p burrow-wasm --target wasm32-unknown-unknown --release
 
   mobile:
     name: check ${{ matrix.target }}
@@ -924,6 +924,16 @@ jobs:
         run: |
           tools/check-no-generated-files.sh
           tools/test-check-no-generated-files.sh
+
+      # LOCKFILE DRIFT FAILS THE BUILD, NEVER RESOLVES (owner, 2026-10-15). Both workspaces' lockfiles
+      # must already satisfy their manifests; a lockfile that does is never rewritten by a later
+      # cargo command, so this one gate covers every job. `--locked` on the main cargo steps and
+      # the binding builds is belt and braces. The self-test plants a manifest change that needs a
+      # new lock entry and requires the gate to refuse it by name.
+      - name: Every lockfile already satisfies its manifests
+        run: |
+          tools/check-lockfile.sh
+          tools/test-check-lockfile.sh
 
       # ADR 0030: Adobe's Core 14 AFM files are committed exactly as published, with their notice,
       # which is what their licence asks. Here, in the job that fetches nothing, because the check

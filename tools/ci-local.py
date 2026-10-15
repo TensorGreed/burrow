@@ -182,7 +182,7 @@ JOBS: list[dict] = [
     },
     {
         "name": "clippy",
-        "run": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+        "run": "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
         "covers": ["cargo:clippy"],
     },
     {
@@ -224,7 +224,7 @@ JOBS: list[dict] = [
     },
     {
         "name": "test",
-        "run": "cargo test --workspace --all-features",
+        "run": "cargo test --locked --workspace --all-features",
         "covers": ["cargo:test"],
         "needs_qpdf_cli": True,
     },
@@ -335,7 +335,7 @@ JOBS: list[dict] = [
     },
     {
         "name": "wasm",
-        "run": "cargo build -p burrow-wasm --target wasm32-unknown-unknown",
+        "run": "cargo build --locked -p burrow-wasm --target wasm32-unknown-unknown",
         "covers": ["cargo:build"],
     },
     {
@@ -348,6 +348,7 @@ JOBS: list[dict] = [
                 "python3 tools/check-referenced-paths.py",
                 "python3 tools/check-python-syntax.py",
                 "tools/check-no-generated-files.sh",
+                "tools/check-lockfile.sh",
                 "tools/check-afm-provenance.sh",
                 "tools/check-no-network-deps.sh",
                 "tools/check-wasm-exports.sh",
@@ -363,6 +364,7 @@ JOBS: list[dict] = [
             "tools/check-referenced-paths.py",
             "tools/check-python-syntax.py",
             "tools/check-no-generated-files.sh",
+            "tools/check-lockfile.sh",
             "tools/check-afm-provenance.sh",
             "tools/check-no-network-deps.sh",
             "tools/check-wasm-exports.sh",
@@ -379,6 +381,7 @@ JOBS: list[dict] = [
                 "tools/test-check-qpdf-trapped.sh",
                 "tools/test-check-handle-identity.sh",
                 "tools/test-check-no-generated-files.sh",
+                "tools/test-check-lockfile.sh",
                 "tools/test-check-afm-provenance.sh",
                 "tools/test-check-wasm-exports.sh",
                 "tools/test-check-qpdf-crypto.sh",
@@ -432,6 +435,7 @@ JOBS: list[dict] = [
             "tools/test-check-qpdf-trapped.sh",
             "tools/test-check-handle-identity.sh",
             "tools/test-check-no-generated-files.sh",
+            "tools/test-check-lockfile.sh",
             "tools/test-check-afm-provenance.sh",
             "tools/test-check-wasm-exports.sh",
             "tools/test-check-qpdf-crypto.sh",
@@ -540,12 +544,13 @@ JOBS: list[dict] = [
         "run": (
             "python3 tools/build-stamp.py wrap pkg --"
             " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
+            " -- --locked"
             " && python3 tools/build-stamp.py wrap pkg-render --"
             " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
-            " --release -- --no-default-features --features render"
+            " --release -- --no-default-features --features render --locked"
             " && python3 tools/build-stamp.py wrap pkg-redact --"
             " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-redact"
-            " --release -- --no-default-features --features redact"
+            " --release -- --no-default-features --features redact --locked"
             # IMMEDIATELY AFTER BOTH BUILDS, for the reason the workflow gives: this is the
             # only point at which both generated `.d.ts` files exist.
             " && python3 tools/check-wasm-binding-names.py"

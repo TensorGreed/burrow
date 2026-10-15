@@ -148,7 +148,9 @@ ARTIFACTS: dict[str, dict] = {
         "output": "bindings/burrow-wasm/pkg",
         "crate": "bindings/burrow-wasm",
         "files": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
-        "command": [*_WASM_PACK, "--out-dir", "pkg", "--release"],
+        # `--locked` on every binding build: lockfile drift fails the build, never resolves
+        # (owner, 2026-10-15). `tools/check-lockfile.sh` proves the same before anything builds.
+        "command": [*_WASM_PACK, "--out-dir", "pkg", "--release", "--", "--locked"],
         "rebuild": "tools/ci-local.py --only wasm-pack",
     },
     "pkg-render": {
@@ -164,6 +166,7 @@ ARTIFACTS: dict[str, dict] = {
             "--no-default-features",
             "--features",
             "render",
+            "--locked",
         ],
         "rebuild": "tools/ci-local.py --only wasm-pack",
     },
@@ -181,6 +184,7 @@ ARTIFACTS: dict[str, dict] = {
             "--no-default-features",
             "--features",
             "redact",
+            "--locked",
         ],
         "rebuild": "tools/ci-local.py --only wasm-pack",
     },

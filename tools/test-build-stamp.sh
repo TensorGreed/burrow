@@ -308,7 +308,7 @@ fi
 exit "${FAKE_WASM_PACK_STATUS:-0}"
 FAKE
 chmod +x "$fake/wasm-pack"
-real_pkg=(wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release)
+real_pkg=(wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release -- --locked)
 
 printf 'old stamp\n' >"$work/wrapped-fail"
 out="" status=0
