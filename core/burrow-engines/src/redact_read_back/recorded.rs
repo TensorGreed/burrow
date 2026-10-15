@@ -7,7 +7,7 @@
 //! Neither can call the other and wait. So the render module **reads** — [`record`] over its
 //! [`SecondReading`] — and hands back a [`Recorded`] as bytes ([`encode`]); the redaction module
 //! decodes it ([`decode`]) and runs the same rules native runs ([`super::agrees`]) over a
-//! [`RecordedReading`] that replays it. The rules run in one place, in Rust, on both platforms.
+//! replay of it. The rules run in one place, in Rust, on both platforms.
 //!
 //! # Bound to the exact bytes, by digest
 //!
@@ -24,7 +24,7 @@
 //!
 //! # Where `sha2` ships
 //!
-//! The digest-taking half -- [`digest`], [`record`], [`RecordedReading`], [`agrees_recorded`] -- is
+//! The digest-taking half -- [`digest`], [`record`] and [`agrees_recorded`] -- is
 //! behind the `redaction-digest` feature, which only the redaction wasm module enables. The render
 //! module takes its digests with `crypto.subtle.digest` and calls [`record_digested`]; the codec
 //! needs no hash. So `sha2` is linked into the redaction module and into nothing else that ships.
@@ -247,51 +247,241 @@ pub fn decode(bytes: &[u8]) -> Result<Recorded> {
     })
 }
 
-#[cfg(any(test, feature = "redaction-digest"))]
-/// A [`SecondReading`] that answers from a recording, and only for the bytes it was taken of.
+/// The longest reply the render worker can send: a recording of a page at [`MAX_CHARS`].
 ///
-/// A `page_count` or `read_page` of bytes whose digest is not the recorded one has no answer
-/// (`Ok(None)`), which [`super::agrees`] refuses. [`agrees_recorded`] checks both digests first,
-/// so that refusal names its own rule; this is the second line of the same check.
-pub struct RecordedReading {
+/// The redaction worker checks a reply's length against this **before** copying it into the wasm
+/// heap, so a reply that cannot be a recording is never allocated for (design review L3).
+pub const MAX_ANSWER_LEN: usize = HEADER + MAX_CHARS * PER_CHAR;
+
+/// The tag of a failure answer. A recording's first byte is its version, [`VERSION`].
+const FAILED: u8 = 0x80;
+/// A failure answer's length: the tag, the kind, the limit and stage indexes, two `u64`.
+const FAILED_LEN: usize = 1 + 1 + 1 + 1 + 8 + 8;
+
+/// The ceilings a failure can name, by index. Fixed, so an index means one name on both sides.
+const LIMITS: [&str; 5] = [
+    "max_input_bytes",
+    "max_memory_bytes",
+    "max_duration_ms",
+    "max_pages",
+    "max_pixels",
+];
+
+/// The stages a failure can name, by index.
+const STAGES: [burrow_types::Stage; 7] = [
+    burrow_types::Stage::InputSize,
+    burrow_types::Stage::SizeEstimate,
+    burrow_types::Stage::Prescan,
+    burrow_types::Stage::PageCount,
+    burrow_types::Stage::Pixels,
+    burrow_types::Stage::Measured,
+    burrow_types::Stage::Deadline,
+];
+
+/// Why the render worker has no recording, as a type and never as text (design review L1).
+///
+/// Rebuilt into an [`Error`] the way [`super::agrees`]'s `wrapped` treats a reading's errors: a
+/// ceiling passes through as itself, an internal fault as an internal fault, and everything else
+/// is no answer, which is a refusal. **No error text crosses**: the render worker's message is
+/// about the person's document, and it is dropped where it is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    /// A ceiling, named by the render worker, with its numbers.
+    Limit {
+        /// Which ceiling.
+        limit: &'static str,
+        /// Which check.
+        stage: burrow_types::Stage,
+        /// What the reading asked for.
+        requested: u64,
+        /// What the ceiling permitted.
+        allowed: u64,
+    },
+    /// The render worker's own code failed.
+    Internal,
+    /// Anything else: the engine could not read the documents, or gave no answer.
+    NoAnswer,
+}
+
+impl Failure {
+    /// What the render worker's `error` becomes on the way back.
+    #[must_use]
+    pub fn of(error: &Error) -> Self {
+        match error {
+            Error::LimitExceeded {
+                limit,
+                stage,
+                requested,
+                allowed,
+            } if LIMITS.contains(limit) && STAGES.contains(stage) => Self::Limit {
+                limit,
+                stage: *stage,
+                requested: *requested,
+                allowed: *allowed,
+            },
+            Error::Internal(_) => Self::Internal,
+            _ => Self::NoAnswer,
+        }
+    }
+
+    /// The failure as the redaction worker reports it: as `wrapped` would.
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        match self {
+            Self::Limit {
+                limit,
+                stage,
+                requested,
+                allowed,
+            } => Error::LimitExceeded {
+                limit,
+                stage,
+                requested,
+                allowed,
+            },
+            Self::Internal => Error::Internal(
+                "redact: the renderer's second reading failed in its own code".to_owned(),
+            ),
+            Self::NoAnswer => unavailable(),
+        }
+    }
+}
+
+/// `[second-reading-unavailable]`: the renderer gave no reading, which is a refusal.
+fn unavailable() -> Error {
+    Error::OutputRejected(
+        "redact: the second reading refuses the output -- [second-reading-unavailable] the \
+         renderer gave no reading of the documents"
+            .to_owned(),
+    )
+}
+
+/// What the render worker sends back: a recording, or why there is none.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// The reading.
+    Read(Recorded),
+    /// No reading, and why, as a type.
+    Failed(Failure),
+}
+
+/// `answer` as bytes: a recording ([`encode`]), or a fixed-length failure.
+///
+/// # Errors
+///
+/// As [`encode`].
+pub fn encode_answer(answer: &Answer) -> Result<Vec<u8>> {
+    match answer {
+        Answer::Read(recorded) => encode(recorded),
+        Answer::Failed(failure) => {
+            let (kind, limit, stage, requested, allowed) = match *failure {
+                Failure::Limit {
+                    limit,
+                    stage,
+                    requested,
+                    allowed,
+                } => {
+                    let at =
+                        |what: &str| Error::Internal(format!("a failure naming no indexed {what}"));
+                    let l = LIMITS
+                        .iter()
+                        .position(|n| *n == limit)
+                        .ok_or_else(|| at("ceiling"))?;
+                    let s = STAGES
+                        .iter()
+                        .position(|n| *n == stage)
+                        .ok_or_else(|| at("stage"))?;
+                    (0_u8, l, s, requested, allowed)
+                }
+                Failure::Internal => (1, 0, 0, 0, 0),
+                Failure::NoAnswer => (2, 0, 0, 0, 0),
+            };
+            let index = |n: usize| {
+                u8::try_from(n).map_err(|_| Error::Internal("an index past u8".to_owned()))
+            };
+            let mut out = Vec::with_capacity(FAILED_LEN);
+            out.push(FAILED);
+            out.push(kind);
+            out.push(index(limit)?);
+            out.push(index(stage)?);
+            out.extend_from_slice(&requested.to_le_bytes());
+            out.extend_from_slice(&allowed.to_le_bytes());
+            Ok(out)
+        }
+    }
+}
+
+/// The [`Answer`] that `bytes` encode.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] for anything [`decode`] refuses, a length past [`MAX_ANSWER_LEN`], or a
+/// failure that is not exactly [`FAILED_LEN`] bytes naming a known kind, ceiling and stage.
+pub fn decode_answer(bytes: &[u8]) -> Result<Answer> {
+    if bytes.len() > MAX_ANSWER_LEN {
+        return Err(malformed());
+    }
+    if bytes.first() != Some(&FAILED) {
+        return decode(bytes).map(Answer::Read);
+    }
+    let mut r = Reader { bytes, at: 0 };
+    let [_, kind, limit, stage] = r.take::<4>()?;
+    let requested = r.u64()?;
+    let allowed = r.u64()?;
+    if bytes.len() != FAILED_LEN {
+        return Err(malformed());
+    }
+    let failure = match kind {
+        0 => Failure::Limit {
+            limit: LIMITS
+                .get(usize::from(limit))
+                .copied()
+                .ok_or_else(malformed)?,
+            stage: *STAGES.get(usize::from(stage)).ok_or_else(malformed)?,
+            requested,
+            allowed,
+        },
+        1 => Failure::Internal,
+        2 => Failure::NoAnswer,
+        _ => return Err(malformed()),
+    };
+    Ok(Answer::Failed(failure))
+}
+
+/// A reading that replays a recording whose digests were checked once, by [`agrees_recorded`],
+/// against exactly the bytes [`super::agrees`] is then handed (design review L2: hash once).
+#[cfg(any(test, feature = "redaction-digest"))]
+struct Replay {
     recorded: Recorded,
 }
 
 #[cfg(any(test, feature = "redaction-digest"))]
-impl RecordedReading {
-    /// A reading that replays `recorded`.
-    #[must_use]
-    pub fn new(recorded: Recorded) -> Self {
-        Self { recorded }
-    }
-}
-
-#[cfg(any(test, feature = "redaction-digest"))]
-impl SecondReading for RecordedReading {
-    fn page_count(&self, bytes: &[u8]) -> Result<Option<u64>> {
-        Ok((digest(bytes) == self.recorded.input_digest).then_some(self.recorded.input_pages))
+impl SecondReading for Replay {
+    fn page_count(&self, _bytes: &[u8]) -> Result<Option<u64>> {
+        Ok(Some(self.recorded.input_pages))
     }
 
-    fn read_page(&self, bytes: &[u8], _page: usize) -> Result<Option<PageReading>> {
+    fn read_page(&self, _bytes: &[u8], _page: usize) -> Result<Option<PageReading>> {
         // THE PAGE IS NOT MATCHED HERE: the recording says which page it read, and `agrees`
         // refuses a reading of another page as `[second-reading-wrong-page]`.
-        Ok((digest(bytes) == self.recorded.output_digest).then(|| self.recorded.page.clone()))
+        Ok(Some(self.recorded.page.clone()))
     }
 }
 
-#[cfg(any(test, feature = "redaction-digest"))]
-/// [`super::agrees`], over a recording: the digests first, then the rules.
+/// [`super::agrees`], over a recording: the digests first, taken once, then the rules.
 ///
 /// # Errors
 ///
 /// `[second-reading-other-document]` unless the recording is of exactly `input` and `output`;
 /// then whatever [`super::agrees`] refuses.
+#[cfg(any(test, feature = "redaction-digest"))]
 pub fn agrees_recorded(
     recorded: Recorded,
     input: &[u8],
     output: &[u8],
     expected: &Agreement,
 ) -> Result<()> {
+    // ONE DIGEST OF EACH, here, of the very slices `agrees` reads below.
     if digest(input) != recorded.input_digest || digest(output) != recorded.output_digest {
         return Err(rejected(format!(
             "[second-reading-other-document] the renderer's reading of page {} is not a reading of \
@@ -299,5 +489,5 @@ pub fn agrees_recorded(
             expected.page
         )));
     }
-    agrees(&RecordedReading::new(recorded), input, output, expected)
+    agrees(&Replay { recorded }, input, output, expected)
 }

@@ -124,7 +124,7 @@ pub struct FontOutcome {
 /// Carried separately from the output because ADR 0022 means there may be no output: a failure
 /// discards the document, and the report of what was *going* to happen is not a consolation
 /// prize. It is reachable on `Finished` before `emit` for that reason.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// One entry per font the operation considered.
     pub fonts: Vec<FontOutcome>,
@@ -143,6 +143,61 @@ pub struct Report {
     /// whose entire point is that nothing happens. `/Alt` is also a prefix of `/Alternate`, in
     /// the ICC colour-space dictionary of a large share of real files.
     pub dropped_carried_text: usize,
+    /// The second reading the output still owes, where it is not taken here (#206's web half).
+    ///
+    /// `None` natively, where PDFium reads the output in-process before the bytes are returned.
+    /// `Some` in a build without the native engines -- the web's redaction worker, which holds no
+    /// PDFium -- where burrow's own check has passed, the nesting ceiling has been asked
+    /// (`redact_read_back::may_load`), and the render worker's reading is still to be judged
+    /// against this agreement (`redact_read_back::recorded::agrees_recorded`). **Output with this
+    /// set is not yet a result**: the caller must not hand it to a person until that verdict is in.
+    pub second_reading: Option<SecondReadingDue>,
+}
+
+/// The agreement a second reading taken elsewhere must be judged against (#206's web half).
+#[derive(Debug, Clone, Copy)]
+pub struct SecondReadingDue(pub crate::redact_read_back::Agreement);
+
+/// Equal when every field is, the floats compared by bit pattern: this is a record of what was
+/// walked, compared in tests, never a geometric comparison.
+impl PartialEq for SecondReadingDue {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (&self.0, &other.0);
+        let region = |r: &crate::pdfsyntax::region::Region| {
+            [r.left, r.top, r.width, r.height].map(f64::to_bits)
+        };
+        let frame = |w: &crate::redact_verify::Walked| {
+            let d = w.frame.display_box;
+            (
+                [d.left, d.bottom, d.right, d.top, w.frame.user_unit].map(f64::to_bits),
+                w.frame.rotate,
+            )
+        };
+        a.page == b.page
+            && a.promised_pages == b.promised_pages
+            && a.walked.glyphs == b.walked.glyphs
+            && a.walked.marked_work == b.walked.marked_work
+            && region(&a.region) == region(&b.region)
+            && frame(&a.walked) == frame(&b.walked)
+    }
+}
+
+impl Eq for SecondReadingDue {}
+
+/// Hand-written so that a report with no second reading due prints exactly as the derived form
+/// did before the field existed: `tests/redaction/outcomes.tsv` and the web differential pin the
+/// sha256 of this text, and a field that is `None` on every native redaction is not a behaviour
+/// change. A due reading is printed, because then it is one.
+impl core::fmt::Debug for Report {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut out = f.debug_struct("Report");
+        out.field("fonts", &self.fonts)
+            .field("dropped_carried_text", &self.dropped_carried_text);
+        if let Some(due) = &self.second_reading {
+            out.field("second_reading", due);
+        }
+        out.finish()
+    }
 }
 
 impl Report {
@@ -356,6 +411,7 @@ impl<S: Steps> ContentEdited<S> {
             report: Report {
                 fonts,
                 dropped_carried_text,
+                second_reading: None,
             },
             cut_paths,
         })
@@ -532,8 +588,8 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     let limits = options.limits;
     let (document, deadline) = engine.open_for_redaction(bytes, options)?;
     // THE PAGE COUNT THE SECOND READING HOLDS BOTH DOCUMENTS TO (#206, R4 and R5): qpdf's count of
-    // the input, read at the open the redaction edits, before any step runs.
-    #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+    // the input, read at the open the redaction edits, before any step runs. On every build: the
+    // web's second reading is judged against it too, in the redaction worker.
     let promised_pages = graph::PdfDocument::page_count(&document)?;
     // THE PAGE BOUND IS THE CONSTRUCTOR'S, with the error that names the rule, and it is not
     // checked again here. `PdfDocument::page` checks it too since #191, with a different error,
@@ -577,6 +633,9 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         std::cell::RefCell::new(std::collections::BTreeSet::new());
     // AND HOW MANY THE REPORT SAYS WERE CUT, which the check holds its read-back to.
     let cut = std::cell::Cell::new(0_usize);
+    // THE SECOND READING STILL OWED, where it is not taken here. Set only by a build without the
+    // native engines, and only once burrow's own check has passed.
+    let due: std::cell::Cell<Option<SecondReadingDue>> = std::cell::Cell::new(None);
     let witness = witness::Witness::over(engine.clone(), limits, clock, deadline);
     let verify = |emitted: &[u8]| {
         let expected = crate::redact_verify::Cleared {
@@ -623,14 +682,32 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
             &expected,
             promised_pages,
         );
+        // WITHOUT THE NATIVE ENGINES -- the web's redaction worker -- burrow's own check runs here,
+        // and the second reading is DUE rather than done: the agreement it must be judged against
+        // is recorded for the caller, after the nesting ceiling refuses a page PDFium must never
+        // be asked to load (#206's web half). See `Report::second_reading`.
         #[cfg(not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")))]
-        let verdict = crate::redact_verify::region_is_cleared(&witness, emitted, &expected);
+        let verdict =
+            crate::redact_verify::region_is_cleared_reporting(&witness, emitted, &expected)
+                .and_then(|walked| {
+                    let agreement = crate::redact_read_back::Agreement {
+                        page,
+                        region,
+                        walked,
+                        promised_pages,
+                    };
+                    crate::redact_read_back::may_load(&agreement)?;
+                    due.set(Some(SecondReadingDue(agreement)));
+                    Ok(())
+                });
         verdict
     };
-    run_reporting(steps, redacted.clone(), &verify, &|report, paths| {
+    let (bytes, mut report) = run_reporting(steps, redacted.clone(), &verify, &|report, paths| {
         *cut_fonts.borrow_mut() = paths.iter().cloned().collect();
         cut.set(report.fonts.iter().filter(|font| font.cut).count());
-    })
+    })?;
+    report.second_reading = due.get();
+    Ok((bytes, report))
 }
 
 #[cfg(test)]

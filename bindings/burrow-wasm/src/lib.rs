@@ -1305,6 +1305,7 @@ mod tests {
                 },
             ],
             dropped_carried_text: 5,
+            second_reading: None,
         };
         let mut reply = Reply::redacted(vec![7, 8, 9], &report);
 

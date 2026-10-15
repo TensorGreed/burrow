@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Error, Limits, ManualClock};
+use burrow_types::{Clock, Deadline, Error, Limits, ManualClock};
 
 use super::WebPdfiumReading;
 use crate::OpenOptions;
@@ -19,6 +19,11 @@ fn reading(text: Option<Vec<FakeChar>>) -> (WebPdfium, Arc<FakeHeap>) {
 
 fn options() -> OpenOptions<'static> {
     OpenOptions::new(Limits::default(), Arc::new(ManualClock::new(0)))
+}
+
+/// The request's one deadline, started now on `options`' clock.
+fn deadline(options: &OpenOptions<'_>) -> Deadline {
+    Deadline::start(options.clock.as_ref(), &options.limits)
 }
 
 fn pdf() -> Vec<u8> {
@@ -45,7 +50,7 @@ fn closes_text_before_page(calls: &[Call]) -> bool {
 fn an_honest_page_is_read_as_the_engine_places_it() {
     let (engine, state) = reading(Some(vec![ch(10.0, 20.0, 0), ch(30.0, 20.0, 1)]));
     let opts = options();
-    let r = WebPdfiumReading::over(&engine, &opts);
+    let r = WebPdfiumReading::over(&engine, &opts, deadline(&opts));
     let page = r.read_page(&pdf(), 0).expect("read").expect("an answer");
     assert_eq!(page.pages, 1);
     assert_eq!(page.page, 0);
@@ -74,7 +79,7 @@ fn only_one_means_generated_as_on_native() {
     // non-negative as not; a value the web read differently would make the platforms disagree.
     let (engine, state) = reading(Some(vec![ch(1.0, 1.0, 2)]));
     let opts = options();
-    let page = WebPdfiumReading::over(&engine, &opts)
+    let page = WebPdfiumReading::over(&engine, &opts, deadline(&opts))
         .read_page(&pdf(), 0)
         .expect("read")
         .expect("an answer");
@@ -98,7 +103,7 @@ fn every_engine_failure_is_no_answer_and_closes_what_was_opened() {
     for (what, text) in failing {
         let (engine, state) = reading(text);
         let opts = options();
-        let result = WebPdfiumReading::over(&engine, &opts).read_page(&pdf(), 0);
+        let result = WebPdfiumReading::over(&engine, &opts, deadline(&opts)).read_page(&pdf(), 0);
         assert!(
             matches!(result, Err(Error::Malformed(_))),
             "{what}: {result:?}"
@@ -120,7 +125,7 @@ fn a_page_past_the_character_ceiling_is_refused_before_any_is_read() {
     let many = vec![ch(1.0, 1.0, 0); MAX_CHARS + 1];
     let (engine, state) = reading(Some(many));
     let opts = options();
-    let result = WebPdfiumReading::over(&engine, &opts).read_page(&pdf(), 0);
+    let result = WebPdfiumReading::over(&engine, &opts, deadline(&opts)).read_page(&pdf(), 0);
     assert!(matches!(result, Err(Error::Unsupported(_))), "{result:?}");
     assert!(
         !state
@@ -137,11 +142,38 @@ fn a_page_past_the_character_ceiling_is_refused_before_any_is_read() {
 fn a_page_outside_the_document_is_refused_before_it_is_loaded() {
     let (engine, state) = reading(Some(vec![]));
     let opts = options();
-    let result = WebPdfiumReading::over(&engine, &opts).read_page(&pdf(), 5);
+    let result = WebPdfiumReading::over(&engine, &opts, deadline(&opts)).read_page(&pdf(), 5);
     assert!(result.is_err(), "{result:?}");
     assert!(
         !state.calls().iter().any(|c| matches!(c, Call::LoadPage(_))),
         "a page outside the document was loaded"
+    );
+    state.assert_empty();
+}
+
+#[test]
+fn both_opens_spend_the_one_deadline_the_request_started() {
+    // THE BUDGET IS SPENT ONCE (#206's web half, design review M1). A fresh deadline per open
+    // handed a reading its budget twice: 100 ms, then 150 ms between the page count and the page,
+    // read Ok where native refuses. One deadline, started when the request arrived, refuses.
+    let (engine, state) = reading(Some(vec![ch(1.0, 1.0, 0)]));
+    let clock = Arc::new(ManualClock::new(0));
+    let mut limits = Limits::default();
+    limits.max_duration_ms = 100;
+    let opts = OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>);
+    let r = WebPdfiumReading::over(&engine, &opts, deadline(&opts));
+    assert_eq!(r.page_count(&pdf()).expect("within the budget"), Some(1));
+    clock.advance(150);
+    let result = r.read_page(&pdf(), 0);
+    assert!(
+        matches!(
+            result,
+            Err(Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            })
+        ),
+        "{result:?}"
     );
     state.assert_empty();
 }

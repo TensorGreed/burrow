@@ -53,6 +53,7 @@ impl PageRedactor for Fake {
             Report {
                 fonts: Vec::new(),
                 dropped_carried_text: 0,
+                second_reading: None,
             },
         ))
     }

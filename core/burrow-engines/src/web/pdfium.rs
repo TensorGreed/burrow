@@ -73,83 +73,23 @@ impl WebPdfium {
     pub fn heap_bytes(&self) -> u64 {
         self.bridge.heap_bytes()
     }
-}
 
-impl core::fmt::Debug for WebPdfium {
-    /// Hand-written: `Arc<dyn PdfiumBridge>` has no `Debug`, and there is nothing about the
-    /// bridge worth rendering anyway.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("WebPdfium").finish_non_exhaustive()
-    }
-}
-
-/// An open document in a PDFium Emscripten module.
-///
-/// `Send + Sync` with no `unsafe impl`, for a stronger reason than the native path's: every
-/// field is a plain number or an `Arc`, and [`PdfiumPtr`] is *not a Rust pointer*. It names
-/// a location in another module's address space and cannot be dereferenced from Rust at
-/// all.
-///
-/// Dropping this closes the document and frees its input buffer, in that order.
-pub struct WebDocument {
-    doc: PdfiumPtr,
-    data: PdfiumPtr,
-    /// How many bytes `data` holds, so [`Drop`] can wipe it. See
-    /// [`PdfiumBridge::close_document`].
-    data_len: u32,
-    deadline: Deadline,
-    clock: Arc<dyn Clock>,
-    pages_at_open: u64,
-    /// The module's heap size when this document was opened. See
-    /// `PdfiumDocument::memory_at_open`; the counter differs, the question does not.
-    memory_at_open: Option<u64>,
-    bridge: Arc<dyn PdfiumBridge>,
-}
-
-impl WebDocument {
-    /// The page count read at open, before any page was touched.
+    /// [`DocumentEngine::open`], spending `spend` instead of starting a deadline of its own.
     ///
-    /// The number `max_pages` was actually checked against. Mirrors
-    /// `PdfiumDocument::pages_at_open` so the differential harness can compare both this
-    /// and [`page_count`](DocumentEngine::page_count) across the two implementations.
-    #[must_use]
-    pub fn pages_at_open(&self) -> u64 {
-        self.pages_at_open
-    }
-}
-
-impl core::fmt::Debug for WebDocument {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("WebDocument")
-            .field("deadline", &self.deadline)
-            .field("pages_at_open", &self.pages_at_open)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for WebDocument {
-    /// Close, then wipe and free — never the other way round.
+    /// Native's `pdfium::open_spending`, on the web. A second reading opens two documents for one
+    /// operation (#206): each starting its own deadline would hand the operation its budget twice,
+    /// so both open under the one deadline the request started when it arrived.
     ///
-    /// PDFium reads from the input buffer for as long as the document is open
-    /// (`fpdfview.h:451`), so freeing first is a use-after-free inside the engine heap. The
-    /// ordering is not enforced here by care: [`PdfiumBridge::close_document`] is a single
-    /// call that does both, so there is no call site at which the order is expressible.
-    fn drop(&mut self) {
-        self.bridge
-            .close_document(self.doc, self.data, self.data_len);
-    }
-}
-
-impl DocumentEngine for WebPdfium {
-    type Document = WebDocument;
-
-    fn name(&self) -> &'static str {
-        "pdfium-wasm"
-    }
-
-    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Document> {
+    /// # Errors
+    ///
+    /// As [`DocumentEngine::open`].
+    pub fn open_spending(
+        &self,
+        bytes: Box<[u8]>,
+        options: &OpenOptions<'_>,
+        spend: Option<Deadline>,
+    ) -> Result<WebDocument> {
         let limits = options.limits;
-
         // Empty input can never be a document. Refusing it here also keeps a zero-length
         // allocation out of the engine heap, where a null return would be ambiguous
         // between "empty" and "out of memory".
@@ -171,7 +111,8 @@ impl DocumentEngine for WebPdfium {
 
         // 5. The budget for everything that follows, including later calls on the handle.
         let clock = Arc::clone(&options.clock);
-        let deadline = Deadline::start(clock.as_ref(), &limits);
+        // ONE DEADLINE PER OPERATION: the caller's, when it has started one (#206).
+        let deadline = spend.unwrap_or_else(|| Deadline::start(clock.as_ref(), &limits));
         deadline.checkpoint(clock.as_ref())?;
 
         // The length PDFium is told about. Narrowed once, here, so the engine and the
@@ -299,6 +240,83 @@ impl DocumentEngine for WebPdfium {
         // since the document was opened.
         document.memory_at_open = Some(self.bridge.heap_bytes());
         Ok(document)
+    }
+}
+
+impl core::fmt::Debug for WebPdfium {
+    /// Hand-written: `Arc<dyn PdfiumBridge>` has no `Debug`, and there is nothing about the
+    /// bridge worth rendering anyway.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WebPdfium").finish_non_exhaustive()
+    }
+}
+
+/// An open document in a PDFium Emscripten module.
+///
+/// `Send + Sync` with no `unsafe impl`, for a stronger reason than the native path's: every
+/// field is a plain number or an `Arc`, and [`PdfiumPtr`] is *not a Rust pointer*. It names
+/// a location in another module's address space and cannot be dereferenced from Rust at
+/// all.
+///
+/// Dropping this closes the document and frees its input buffer, in that order.
+pub struct WebDocument {
+    doc: PdfiumPtr,
+    data: PdfiumPtr,
+    /// How many bytes `data` holds, so [`Drop`] can wipe it. See
+    /// [`PdfiumBridge::close_document`].
+    data_len: u32,
+    deadline: Deadline,
+    clock: Arc<dyn Clock>,
+    pages_at_open: u64,
+    /// The module's heap size when this document was opened. See
+    /// `PdfiumDocument::memory_at_open`; the counter differs, the question does not.
+    memory_at_open: Option<u64>,
+    bridge: Arc<dyn PdfiumBridge>,
+}
+
+impl WebDocument {
+    /// The page count read at open, before any page was touched.
+    ///
+    /// The number `max_pages` was actually checked against. Mirrors
+    /// `PdfiumDocument::pages_at_open` so the differential harness can compare both this
+    /// and [`page_count`](DocumentEngine::page_count) across the two implementations.
+    #[must_use]
+    pub fn pages_at_open(&self) -> u64 {
+        self.pages_at_open
+    }
+}
+
+impl core::fmt::Debug for WebDocument {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WebDocument")
+            .field("deadline", &self.deadline)
+            .field("pages_at_open", &self.pages_at_open)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for WebDocument {
+    /// Close, then wipe and free — never the other way round.
+    ///
+    /// PDFium reads from the input buffer for as long as the document is open
+    /// (`fpdfview.h:451`), so freeing first is a use-after-free inside the engine heap. The
+    /// ordering is not enforced here by care: [`PdfiumBridge::close_document`] is a single
+    /// call that does both, so there is no call site at which the order is expressible.
+    fn drop(&mut self) {
+        self.bridge
+            .close_document(self.doc, self.data, self.data_len);
+    }
+}
+
+impl DocumentEngine for WebPdfium {
+    type Document = WebDocument;
+
+    fn name(&self) -> &'static str {
+        "pdfium-wasm"
+    }
+
+    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Document> {
+        self.open_spending(bytes, options, None)
     }
 
     fn page_count(&self, doc: &Self::Document) -> Result<u64> {

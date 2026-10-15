@@ -616,7 +616,8 @@ fn a_page_nested_to_the_ceiling_is_read() {
 mod recording {
     use super::*;
     use crate::redact_read_back::recorded::{
-        Recorded, RecordedReading, agrees_recorded, decode, digest, encode, record,
+        Answer, Failure, MAX_ANSWER_LEN, Recorded, agrees_recorded, decode, decode_answer, digest,
+        encode, encode_answer, record,
     };
 
     const INPUT: &[u8] = b"the input";
@@ -677,17 +678,86 @@ mod recording {
     }
 
     #[test]
-    fn the_replay_answers_only_for_the_bytes_it_was_taken_of() {
-        // The second line of the same check, under `agrees_recorded`'s digest test.
-        let replay = RecordedReading::new(honest_recording());
-        assert_eq!(replay.page_count(INPUT).expect("ok"), Some(2));
-        assert_eq!(replay.page_count(OUTPUT).expect("ok"), None);
-        assert!(replay.read_page(OUTPUT, 0).expect("ok").is_some());
-        assert!(replay.read_page(INPUT, 0).expect("ok").is_none());
-        // Through `agrees` itself, a replay of the wrong bytes is no answer.
+    fn a_failure_crosses_as_a_type_and_is_rebuilt_as_wrapped_rebuilds_it() {
+        // DESIGN REVIEW L1. A ceiling passes through as itself, an internal fault as itself, and
+        // anything else is no answer -- a refusal by name, never "malformed".
+        let limit = || Error::LimitExceeded {
+            limit: "max_duration_ms",
+            stage: burrow_types::Stage::Deadline,
+            requested: 1_200,
+            allowed: 1_000,
+        };
+        let cases = [
+            (limit(), "not a rejection: LimitExceeded"),
+            (Error::Internal("x".to_owned()), "not a rejection: Internal"),
+            (
+                Error::Malformed("the page".to_owned()),
+                "second-reading-unavailable",
+            ),
+            (
+                Error::Unsupported("too many".to_owned()),
+                "second-reading-unavailable",
+            ),
+        ];
+        for (error, expected) in cases {
+            let failure = Failure::of(&error);
+            let bytes = encode_answer(&Answer::Failed(failure)).expect("encodes");
+            let Answer::Failed(back) = decode_answer(&bytes).expect("decodes") else {
+                panic!("a failure decoded as a recording");
+            };
+            assert_eq!(back, failure);
+            let rebuilt = rule_of(Err(back.into_error()));
+            assert!(rebuilt.starts_with(expected), "{error:?}: {rebuilt}");
+        }
+        // AND NO TEXT: the rebuilt ceiling carries the numbers, and the error text is dropped.
+        assert!(matches!(
+            Failure::of(&limit()).into_error(),
+            Error::LimitExceeded {
+                limit: "max_duration_ms",
+                stage: burrow_types::Stage::Deadline,
+                requested: 1_200,
+                allowed: 1_000,
+            }
+        ));
+        assert!(
+            !format!("{:?}", Failure::of(&Error::Malformed("SECRET".to_owned())))
+                .contains("SECRET")
+        );
+    }
+
+    #[test]
+    fn an_answer_past_its_ceiling_or_of_the_wrong_shape_does_not_decode() {
+        assert!(
+            decode_answer(&vec![1_u8; MAX_ANSWER_LEN + 1]).is_err(),
+            "past the ceiling"
+        );
+        let good = encode_answer(&Answer::Failed(Failure::NoAnswer)).expect("encodes");
+        let mut kind = good.clone();
+        kind[1] = 9;
+        let mut stage = encode_answer(&Answer::Failed(Failure::of(&Error::LimitExceeded {
+            limit: "max_pages",
+            stage: burrow_types::Stage::PageCount,
+            requested: 2,
+            allowed: 1,
+        })))
+        .expect("encodes");
+        stage[3] = 99;
+        for (what, bytes) in [
+            ("a kind past the table", kind),
+            ("a stage past the table", stage),
+            ("one byte short", good[..good.len() - 1].to_vec()),
+            ("one byte long", [good.as_slice(), &[0]].concat()),
+        ] {
+            assert!(
+                matches!(decode_answer(&bytes), Err(Error::Malformed(_))),
+                "{what}"
+            );
+        }
+        // AND A RECORDING STILL DECODES THROUGH THE SAME DOOR.
+        let recorded = honest_recording();
         assert_eq!(
-            rule_of(agrees(&replay, OUTPUT, OUTPUT, &agreement(2))),
-            "second-reading-unavailable"
+            decode_answer(&encode(&recorded).expect("encodes")).expect("decodes"),
+            Answer::Read(recorded)
         );
     }
 

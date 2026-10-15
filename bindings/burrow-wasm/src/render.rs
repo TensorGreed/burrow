@@ -379,35 +379,18 @@ pub fn render_begin(
 /// Redaction's second reading, taken here and judged in the redaction worker (#206's web half).
 ///
 /// Reads `input`'s page count and `output`'s page `page` through this worker's PDFium, and returns
-/// the reading as `burrow_engines::redact_read_back::recorded`'s encoding, carrying the two
-/// digests the worker took of these same bytes with `crypto.subtle.digest`. **No verdict is
-/// reached here**: the rules run in the redaction module, over its own digests of its own bytes.
-#[wasm_bindgen]
-pub struct SecondReadingReply {
-    reply: Reply,
-    recording: Vec<u8>,
-}
-
-#[wasm_bindgen]
-impl SecondReadingReply {
-    /// The outcome, in every other reply's shape.
-    #[must_use]
-    pub fn reply(&self) -> Reply {
-        self.reply.clone()
-    }
-
-    /// The recording's bytes, moved out; empty after the first call, or on a failure.
-    #[wasm_bindgen(js_name = takeRecording)]
-    pub fn take_recording(&mut self) -> Vec<u8> {
-        core::mem::take(&mut self.recording)
-    }
-}
-
-/// See [`SecondReadingReply`].
+/// the **answer** in `burrow_engines::redact_read_back::recorded`'s encoding: the reading, carrying
+/// the two digests the worker took of these same bytes with `crypto.subtle.digest`, or a typed
+/// failure that carries no text. **No verdict is reached here**: the rules run in the redaction
+/// module, over its own digests of its own bytes.
 ///
-/// `input_digest` and `output_digest` are the SHA-256 of `input` and `output`, 32 bytes each. A
-/// digest of the wrong length is refused before anything is opened.
-#[wasm_bindgen]
+/// # The deadline
+///
+/// One `Deadline`, started here and spent by both opens. `limits.max_duration_ms` is the budget
+/// left since the request arrived, which the worker measured before it hashed: the time spent
+/// hashing is the reading's. The redaction worker keeps its own deadline and reads nothing of
+/// this one back.
+#[wasm_bindgen(js_name = secondReading)]
 #[must_use]
 pub fn second_reading(
     input: Box<[u8]>,
@@ -417,42 +400,42 @@ pub fn second_reading(
     output_digest: &[u8],
     password: Option<Box<[u8]>>,
     limits: WebLimits,
-) -> SecondReadingReply {
-    use burrow_core::engines::redact_read_back::recorded::{Digest, encode, record_digested};
+) -> Vec<u8> {
+    use burrow_core::engines::redact_read_back::recorded::{
+        Answer, Digest, Failure, encode_answer, record_digested,
+    };
 
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let deadline = burrow_core::Deadline::start(clock.as_ref(), &limits);
     let password = crate::password_from(password);
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
 
-    let digests = (
+    let read = match (
         Digest::try_from(input_digest),
         Digest::try_from(output_digest),
-    );
-    let outcome = match digests {
+    ) {
         (Ok(input_digest), Ok(output_digest)) => {
             let engine = pdfium();
-            let reading = burrow_core::engines::web::WebPdfiumReading::over(&engine, &options);
+            let reading =
+                burrow_core::engines::web::WebPdfiumReading::over(&engine, &options, deadline);
             usize::try_from(page)
                 .map_err(|_| burrow_core::Error::InvalidArgument("a page past usize".to_owned()))
                 .and_then(|page| {
                     record_digested(&reading, &input, &output, page, input_digest, output_digest)
                 })
-                .and_then(|recorded| encode(&recorded))
         }
         _ => Err(burrow_core::Error::InvalidArgument(
             "a digest that is not 32 bytes".to_owned(),
         )),
     };
-    match outcome {
-        Ok(recording) => SecondReadingReply {
-            reply: Reply::success(1).with_lifecycle(&limits),
-            recording,
-        },
-        Err(error) => SecondReadingReply {
-            reply: Reply::failure(&error).with_lifecycle(&limits),
-            recording: Vec::new(),
-        },
-    }
+    let answer = match read {
+        Ok(recorded) => Answer::Read(recorded),
+        Err(error) => Answer::Failed(Failure::of(&error)),
+    };
+    // AN ANSWER THAT CANNOT BE ENCODED IS NO ANSWER, and says so in the same envelope.
+    encode_answer(&answer)
+        .or_else(|_| encode_answer(&Answer::Failed(Failure::Internal)))
+        .unwrap_or_default()
 }

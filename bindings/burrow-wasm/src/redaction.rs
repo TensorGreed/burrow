@@ -98,11 +98,278 @@ pub fn redact(
     // qpdf's object cache holds the decoded page content -- the text being removed -- and is
     // freed unwiped. A refusal has read it too. The page-number refusals above opened nothing.
     match burrow_core::ops::redact::page(&qpdf(), &bytes, index, &indexes, region.0, &options) {
+        // A SECOND READING STILL DUE IS NOT A RESULT (#206's web half): this one-call entry has no
+        // renderer to take it, so it refuses rather than hand out output nobody has read twice.
+        // `redact_begin` and `redact_confirm` are the path that releases a redaction.
+        Ok(done) if done.report.second_reading.is_some() => Reply::failure(&Error::OutputRejected(
+            "redact: the second reading refuses the output -- [second-reading-unavailable] this \
+             entry takes no second reading; use the two-phase path"
+                .to_owned(),
+        )),
         Ok(done) => Reply::redacted(done.document, &done.report),
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)
     .recycled()
+}
+
+// ---- the second reading, in two phases (#206's web half) ------------------------------------
+//
+// The redaction worker holds no PDFium, so the second reading is taken in a fresh render worker
+// and judged HERE, against burrow's own walk of the output, over the render worker's recording.
+// The design (security-reviewed, owner option A, 2026-10-15):
+//
+// - `redact_begin` redacts and runs burrow's check; the walk's agreement, the input, the output and
+//   this worker's OWN deadline go into one pending slot under a monotonic nonce. The output does
+//   NOT leave: the reply carries copies of the two documents for the render worker, never the
+//   result. This worker is not recycled between the phases.
+// - `redact_confirm` takes the render worker's answer for that nonce, once. The verdict is made
+//   here, over this worker's own digests of its own bytes; nothing the page or the render worker
+//   sends can turn a disagreement into Ok, and a time reported back is never read.
+// - `redact_abort` is the only thing the page may do to a pending reading: end it. It cannot
+//   confirm one.
+// - Either way the slot is wiped and the reply recycles the worker (#199).
+
+/// The reading still to be judged, held in this worker between the two phases.
+struct Pending {
+    nonce: u64,
+    input: Zeroizing<Vec<u8>>,
+    output: Zeroizing<Vec<u8>>,
+    report: burrow_core::engines::redact::Report,
+    due: burrow_core::engines::redact::SecondReadingDue,
+    deadline: burrow_core::Deadline,
+    limits: burrow_core::Limits,
+}
+
+thread_local! {
+    /// ONE pending reading per worker, and a worker redacts one document. A second `begin` while
+    /// one is pending replaces nothing: it is refused.
+    static PENDING: core::cell::RefCell<Option<Pending>> = const { core::cell::RefCell::new(None) };
+    /// Monotonic, so an answer for an earlier reading can never be mistaken for this one.
+    static NEXT_NONCE: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+}
+
+/// Phase 1's reply: an outcome, and on success the copies the render worker reads.
+#[wasm_bindgen]
+pub struct Begun {
+    reply: Reply,
+    nonce: u64,
+    input: Vec<u8>,
+    output: Vec<u8>,
+    remaining_ms: u64,
+}
+
+#[wasm_bindgen]
+impl Begun {
+    /// The outcome. A success here is **not a result**: it means a second reading is due.
+    #[must_use]
+    pub fn reply(&self) -> Reply {
+        self.reply.clone()
+    }
+
+    /// The nonce `redact_confirm` and `redact_abort` must name. Zero on a failure.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// The operation's budget left, for the render worker's limits. Its own deadline is kept here.
+    #[wasm_bindgen(getter, js_name = remainingMs)]
+    #[must_use]
+    pub fn remaining_ms(&self) -> u64 {
+        self.remaining_ms
+    }
+
+    /// A copy of the input for the render worker, moved out once.
+    #[wasm_bindgen(js_name = takeInput)]
+    pub fn take_input(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.input)
+    }
+
+    /// A copy of the output for the render worker, moved out once. Not the result.
+    #[wasm_bindgen(js_name = takeOutput)]
+    pub fn take_output(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.output)
+    }
+}
+
+impl Begun {
+    fn refused(reply: Reply) -> Self {
+        Self {
+            reply,
+            nonce: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            remaining_ms: 0,
+        }
+    }
+}
+
+/// Phase 1: [`redact`]'s work, with the second reading still due. See the block above.
+#[wasm_bindgen(js_name = redactBegin)]
+#[must_use]
+pub fn redact_begin(
+    bytes: Box<[u8]>,
+    page: u32,
+    covered: &[u32],
+    region: WebRegion,
+    password: Option<Box<[u8]>>,
+    limits: WebLimits,
+) -> Begun {
+    let bytes = Zeroizing::new(bytes);
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    // THIS WORKER'S OWN DEADLINE FOR THE WHOLE OPERATION, both phases. Never read back from
+    // anywhere else.
+    let deadline = burrow_core::Deadline::start(clock.as_ref(), &limits);
+    let password = crate::password_from(password);
+    let mut options = OpenOptions::new(limits, Arc::clone(&clock));
+    options.password = password.as_ref();
+
+    let refused =
+        |error: &Error| Begun::refused(Reply::failure(error).with_lifecycle(&limits).recycled());
+    if PENDING.with(|slot| slot.borrow().is_some()) {
+        return refused(&Error::Internal(
+            "redact: a second reading is already pending in this worker".to_owned(),
+        ));
+    }
+    let Some(index) = page_index(page) else {
+        return refused(&zero_page());
+    };
+    let mut indexes = BTreeSet::new();
+    for number in covered {
+        let Some(covered_index) = page_index(*number) else {
+            return refused(&zero_page());
+        };
+        indexes.insert(covered_index);
+    }
+    let done = match burrow_core::ops::redact::page(
+        &qpdf(),
+        &bytes,
+        index,
+        &indexes,
+        region.0,
+        &options,
+    ) {
+        Ok(done) => done,
+        Err(error) => return refused(&error),
+    };
+    let Some(due) = done.report.second_reading else {
+        return refused(&Error::Internal(
+            "redact: the web's redaction returned with no second reading due".to_owned(),
+        ));
+    };
+    let nonce = NEXT_NONCE.with(|next| {
+        let nonce = next.get();
+        next.set(nonce.saturating_add(1));
+        nonce
+    });
+    let input = bytes.to_vec();
+    let output = done.document.clone();
+    let remaining_ms = limits
+        .max_duration_ms
+        .saturating_sub(deadline.elapsed_ms(clock.as_ref()));
+    PENDING.with(|slot| {
+        *slot.borrow_mut() = Some(Pending {
+            nonce,
+            input: Zeroizing::new(bytes.to_vec()),
+            output: Zeroizing::new(done.document),
+            report: done.report,
+            due,
+            deadline,
+            limits,
+        });
+    });
+    Begun {
+        // NOT RECYCLED: the worker must hold the pending reading until it is judged.
+        reply: Reply::success(0),
+        nonce,
+        input,
+        output,
+        remaining_ms,
+    }
+}
+
+/// The longest answer [`redact_confirm`] accepts, for the worker to check before it copies one in.
+#[wasm_bindgen(js_name = maxSecondReadingAnswer)]
+#[must_use]
+pub fn max_second_reading_answer() -> u32 {
+    u32::try_from(burrow_core::engines::redact_read_back::recorded::MAX_ANSWER_LEN)
+        .unwrap_or(u32::MAX)
+}
+
+/// Phase 2: judge the render worker's `answer` for `nonce`, and only then release the output.
+///
+/// An answer for a nonce that is not the pending one is **dropped**: the pending reading is left
+/// as it was, and the reply is a refusal the worker discards. The pending reading is judged once.
+#[wasm_bindgen(js_name = redactConfirm)]
+#[must_use]
+pub fn redact_confirm(nonce: u64, answer: &[u8]) -> Reply {
+    use burrow_core::engines::redact_read_back::recorded::{
+        Answer, agrees_recorded, decode_answer,
+    };
+
+    let pending = PENDING.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_ref() {
+            Some(held) if held.nonce == nonce => slot.take(),
+            _ => None,
+        }
+    });
+    let Some(pending) = pending else {
+        return Reply::failure(&Error::InvalidArgument(
+            "redact: an answer for no pending second reading".to_owned(),
+        ));
+    };
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let limits = pending.limits;
+    let verdict = (|| {
+        // THE OPERATION'S DEADLINE ON ARRIVAL, then again before the rules (design review L2).
+        pending.deadline.checkpoint(clock.as_ref())?;
+        let recorded = match decode_answer(answer) {
+            Ok(Answer::Read(recorded)) => recorded,
+            Ok(Answer::Failed(failure)) => return Err(failure.into_error()),
+            // A REPLY THAT DOES NOT DECODE IS NO ANSWER, refused by name.
+            Err(_) => {
+                return Err(
+                    burrow_core::engines::redact_read_back::recorded::Failure::NoAnswer
+                        .into_error(),
+                );
+            }
+        };
+        pending.deadline.checkpoint(clock.as_ref())?;
+        agrees_recorded(recorded, &pending.input, &pending.output, &pending.due.0)
+    })();
+    match verdict {
+        Ok(()) => Reply::redacted(pending.output.to_vec(), &pending.report),
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+    .recycled()
+}
+
+/// End the pending reading for `nonce` without a verdict: the output is wiped, never released.
+///
+/// The one thing the page may do to a pending reading (owner option A): end it, on a timeout or a
+/// person stopping. It cannot confirm one.
+#[wasm_bindgen(js_name = redactAbort)]
+#[must_use]
+pub fn redact_abort(nonce: u64) -> Reply {
+    let ended = PENDING.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        matches!(slot.as_ref(), Some(held) if held.nonce == nonce) && slot.take().is_some()
+    });
+    let error = if ended {
+        Error::OutputRejected(
+            "redact: the second reading refuses the output -- [second-reading-unavailable] the \
+             renderer's reading did not arrive"
+                .to_owned(),
+        )
+    } else {
+        Error::InvalidArgument("redact: an abort for no pending second reading".to_owned())
+    };
+    Reply::failure(&error).recycled()
 }
 
 /// Every page's display frame, or the page-level rule that refuses every region on it (#136).

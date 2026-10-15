@@ -179,6 +179,10 @@ SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
         _recording([(72.0, 700.0, 0), (0.0, 0.0, 1)]),
         _recording([(float("nan"), 700.0, 0)]),
         _recording([(1.0, 1.0, 0)], version=2),
+        # The three failure answers: a ceiling (max_duration_ms at Deadline), internal, no answer.
+        bytes([0x80, 0, 2, 6]) + (1200).to_bytes(8, "little") + (1000).to_bytes(8, "little"),
+        bytes([0x80, 1, 0, 0]) + bytes(16),
+        bytes([0x80, 2, 0, 0]) + bytes(16),
     ),
     # `redact_references` reads its input twice: as a whole file, which the fixtures seed, and as a
     # DECODED OBJECT STREAM, whose `/N` and `/First` the target derives from the leading integer

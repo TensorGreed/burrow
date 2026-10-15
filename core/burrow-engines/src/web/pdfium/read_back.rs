@@ -10,8 +10,10 @@
 //!
 //! # Limits, because `FPDFText_LoadPage` cannot be interrupted
 //!
-//! - **The budget the request carries**, spent by the open and checkpointed before and after every
-//!   engine call and every 4,096 characters.
+//! - **One deadline for the whole reading**, started once when the request arrived and spent by
+//!   both opens (`WebPdfium::open_spending`), never a deadline per open: the input's page count
+//!   and the output's page read share it, as native's two opens share the operation's. Checkpointed
+//!   before and after every engine call and every 4,096 characters.
 //! - **`estimate::before_page_load` before the page is loaded**, as `render` refuses a load on a
 //!   heap that has already grown past the ceiling.
 //! - **The measured heap check after the loads**, which detects rather than bounds (ADR 0007).
@@ -26,7 +28,7 @@ use burrow_types::{Deadline, Error, Result};
 
 use super::{WebDocument, WebPdfium, page_index};
 use crate::redact_read_back::{MAX_CHARS, PageReading, PlacedChar, SecondReading};
-use crate::{DocumentEngine, OpenOptions, PageRenderer};
+use crate::{OpenOptions, PageRenderer};
 
 /// How many characters are read between deadline checkpoints, as on native.
 const CHARS_PER_CHECKPOINT: usize = 4096;
@@ -35,16 +37,22 @@ const CHARS_PER_CHECKPOINT: usize = 4096;
 pub struct WebPdfiumReading<'a> {
     engine: &'a WebPdfium,
     options: &'a OpenOptions<'a>,
+    deadline: Deadline,
 }
 
 impl<'a> WebPdfiumReading<'a> {
-    /// A reading through `engine`, under `options`' ceilings and password.
+    /// A reading through `engine`, under `options`' ceilings and password, spending `deadline`.
     ///
-    /// The duration in `options.limits` is the budget the redaction module had left when it asked:
-    /// the operation's, carried across the worker boundary, never a fresh one.
+    /// `deadline` is the request's: started once, when the request arrived, and spent by every
+    /// open the reading makes. The redaction worker keeps its own deadline and does not read this
+    /// one back; this one only bounds how long the render worker spends.
     #[must_use]
-    pub fn over(engine: &'a WebPdfium, options: &'a OpenOptions<'a>) -> Self {
-        Self { engine, options }
+    pub fn over(engine: &'a WebPdfium, options: &'a OpenOptions<'a>, deadline: Deadline) -> Self {
+        Self {
+            engine,
+            options,
+            deadline,
+        }
     }
 
     /// Open `bytes`, with the input ceilings raised to fit them, as `burrow_ops::verify` raises
@@ -60,8 +68,11 @@ impl<'a> WebPdfiumReading<'a> {
             .max(crate::estimate::estimated_open_bytes(size));
         let mut options = OpenOptions::new(limits, Arc::clone(&self.options.clock));
         options.password = self.options.password;
-        self.engine
-            .open(bytes.to_vec().into_boxed_slice(), &options)
+        self.engine.open_spending(
+            bytes.to_vec().into_boxed_slice(),
+            &options,
+            Some(self.deadline),
+        )
     }
 }
 
