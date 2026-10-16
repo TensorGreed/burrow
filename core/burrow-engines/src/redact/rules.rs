@@ -170,6 +170,7 @@ pub const RULE_IDS: &[&str] = &[
     "show-operand-not-a-string",
     "simple-font-multi-byte-codes",
     "string-not-whole-codes",
+    "structure-tree",
     "subtype-not-a-name",
     "syntax-read-differently",
     "text-outside-text-object",

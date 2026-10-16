@@ -207,6 +207,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "marked-content-carries-opaque-string": "text-structure",
   "marked-content-named-properties-carry-text": "text-structure",
   "marked-content-properties-unresolved": "text-structure",
+  "structure-tree": "text-structure",
   "marked-content-property-list-malformed": "text-structure",
   "marked-content-split-across-elements": "text-structure",
   "non-finite-geometry": "text-structure",
