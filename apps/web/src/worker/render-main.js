@@ -76,7 +76,123 @@ async function init() {
  * between two *web* engines means. That is a real question — spike 0004 measured five
  * divergences between these exact two readings — and it is not this change's question.
  */
-const KNOWN_OPS = new Set(["page_count", "render"]);
+const KNOWN_OPS = new Set(["page_count", "render", "second_reading_port"]);
+
+// ---- redaction's second reading (#206's web half) -------------------------------------------
+//
+// A FRESH worker per reading, terminated with the verdict (#199; design review L4). The page hands
+// it one end of a `MessagePort` on the global channel and nothing else; the reading is asked and
+// answered only on that port.
+//
+// WHY THE DIGESTS CANNOT DIVERGE FROM WHAT PDFIUM READS. They are the platform's SHA-256, so `sha2`
+// stays out of this visitor-loaded module (owner, 2026-10-15), taken over the very buffers then
+// handed to wasm: each arrived TRANSFERRED, so this worker holds the only reference; it is an
+// `ArrayBuffer`, never shared, which is checked; `crypto.subtle.digest` copies its input when
+// called; and nothing touches the buffers between the digest and the synchronous wasm call, which
+// copies exactly those bytes in. Nor is it trusted: the redaction worker recomputes both digests
+// over the bytes it kept and refuses a reading of anything else.
+
+/** The longest the render worker spends hashing and reading, if the request says less. */
+const SECOND_READING_BUDGET_MS = 10_000;
+
+/**
+ * Hand-built limits for the reading, from the full `Limits` the request carries.
+ *
+ * @param {Record<string, any>} limits
+ * @param {number} durationMs
+ */
+function readingLimits(limits, durationMs) {
+  return new wasm_bindgen.WebLimits(
+    BigInt(limits.maxInputBytes),
+    BigInt(limits.maxMemoryBytes),
+    BigInt(Math.max(0, Math.floor(durationMs))),
+    BigInt(limits.maxPages),
+    BigInt(limits.maxPixels),
+  );
+}
+
+/**
+ * Take the one reading the port asks for, answer on the port, and close it.
+ *
+ * @param {any} data
+ * @param {MessagePort} port
+ */
+async function readOnce(data, port) {
+  // THE ONE DEADLINE STARTS HERE: hashing is the reading's time.
+  const arrived = performance.now();
+  /** @type {Uint8Array[]} */
+  const received = [];
+  try {
+    const shaped =
+      data !== null &&
+      typeof data === "object" &&
+      data.type === "read" &&
+      typeof data.nonce === "bigint" &&
+      Number.isInteger(data.page) &&
+      data.page >= 0 &&
+      data.input instanceof ArrayBuffer &&
+      data.output instanceof ArrayBuffer &&
+      (data.password === undefined || data.password instanceof ArrayBuffer) &&
+      data.limits !== null &&
+      typeof data.limits === "object";
+    if (!shaped) {
+      port.postMessage({ type: "failed", kind: "InvalidArgument" });
+      return;
+    }
+    const input = new Uint8Array(data.input);
+    const output = new Uint8Array(data.output);
+    const password = data.password ? new Uint8Array(data.password) : undefined;
+    received.push(input, output);
+    if (password) received.push(password);
+
+    const [inputDigest, outputDigest] = await Promise.all([
+      crypto.subtle.digest("SHA-256", input),
+      crypto.subtle.digest("SHA-256", output),
+    ]);
+    const spent = performance.now() - arrived;
+    const budget = Math.min(Number(data.limits.maxDurationMs), SECOND_READING_BUDGET_MS);
+    const answer = wasm_bindgen.secondReading(
+      input,
+      output,
+      data.page,
+      new Uint8Array(inputDigest),
+      new Uint8Array(outputDigest),
+      password,
+      readingLimits(data.limits, budget - spent),
+    );
+    const reply = exactBuffer(answer);
+    postTransferring(port, { type: "answer", nonce: data.nonce, answer: reply }, [reply]);
+  } finally {
+    // #199: zeroed once the module has its copy.
+    for (const view of received) view.fill(0);
+    port.close();
+  }
+}
+
+/**
+ * The global channel's half: take the port, serve one reading on it, then report done.
+ *
+ * @param {Record<string, any>} request
+ * @returns {Promise<null>}
+ */
+function secondReadingPort(request) {
+  const port = request.port;
+  if (!(port instanceof MessagePort)) {
+    self.postMessage(refusal(request.id, "InvalidArgument", "a second reading needs its port"));
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    servePort(port, async (data) => {
+      try {
+        await readOnce(data, port);
+      } finally {
+        // Nothing on the global channel: the answer went on the port.
+        self.postMessage(refusalFree(request.id));
+        resolve(null);
+      }
+    });
+  });
+}
 
 /**
  * Draw a strip, posting each page as it is produced.
@@ -219,6 +335,7 @@ function renderStrip(id, bytes, pages, boxWidth, boxHeight, password, limits) {
  * @returns {Promise<Reply | null>}
  */
 async function runOperation(request) {
+  if (request.op === "second_reading_port") return secondReadingPort(request);
   // THE BUDGET IS CHECKED BEFORE A SINGLE BYTE IS READ, exactly as `main.js` does it, and the
   // ordering is the whole point of the call.
   //

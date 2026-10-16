@@ -168,11 +168,110 @@ async function runOperation(request) {
     const limits = webLimits(request.limits);
     const area = new wasm_bindgen.WebRegion(region.left, region.top, region.width, region.height);
 
-    return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+    // TWO PHASES; THE OUTPUT LEAVES ONLY AFTER THE SECOND (#206's web half). Without a port the
+    // one-call path refuses whenever a reading is due, so a page that forgets it gets no document.
+    const port = request.port;
+    if (!(port instanceof MessagePort)) {
+      return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+    }
+    const begun = wasm_bindgen.redactBegin(
+      bytes,
+      page,
+      Uint32Array.from(covered),
+      area,
+      password,
+      limits,
+    );
+    return await secondReading(begun, port, request);
   } finally {
     // #199: the document being redacted is the secret. Zeroed once Rust has copied it in.
     __burrow_wipe_handed_out();
     bytes?.fill(0);
     password?.fill(0);
+  }
+}
+
+/**
+ * How long this worker waits for the render worker's answer, if the operation's budget left is
+ * longer: TEN SECONDS. Most of it is for a fresh render worker compiling PDFium, which the page
+ * starts beside the redaction. On expiry the redaction is refused, and the page terminates the
+ * render worker whatever it is doing (design review L5).
+ */
+const SECOND_READING_WAIT_MS = 10_000;
+
+/**
+ * Send the copies the render worker reads, wait for ONE answer for this nonce, and judge it.
+ *
+ * The verdict is the redaction module's, in Rust, over its own digests of the bytes it kept. This
+ * function moves bytes and a nonce; nothing it receives can turn a disagreement into Ok.
+ *
+ * @param {any} begun the `Begun` phase 1 returned
+ * @param {MessagePort} port
+ * @param {Record<string, any>} request
+ * @returns {Promise<Reply>}
+ */
+async function secondReading(begun, port, request) {
+  const head = begun.reply();
+  if (!head.ok) {
+    begun.free();
+    port.close();
+    return head;
+  }
+  head.free();
+  const nonce = begun.nonce;
+  const remainingMs = Number(begun.remainingMs);
+  /** @type {ArrayBuffer[]} */
+  let buffers = [];
+  try {
+    const input = exactBuffer(begun.takeInput());
+    const output = exactBuffer(begun.takeOutput());
+    buffers = [input, output];
+    const password = request.password ? exactBuffer(new Uint8Array(request.password)) : undefined;
+    if (password) buffers.push(password);
+    postTransferring(
+      port,
+      {
+        type: "read",
+        nonce,
+        page: request.page - 1,
+        input,
+        output,
+        password,
+        // THE FULL LIMITS, with the budget left as the duration. No time is read back.
+        limits: { ...request.limits, maxDurationMs: remainingMs },
+      },
+      buffers,
+    );
+  } finally {
+    begun.free();
+  }
+
+  const answer = await awaitPortReply(
+    port,
+    (data) => {
+      // ONE ANSWER, FOR THIS NONCE: any other is dropped; a failure is no answer.
+      if (data === null || typeof data !== "object" || data.nonce !== nonce) {
+        return data && typeof data === "object" && data.type === "failed" ? { failed: true } : null;
+      }
+      if (data.type !== "answer" || !(data.answer instanceof ArrayBuffer)) return { failed: true };
+      return { answer: /** @type {ArrayBuffer} */ (data.answer) };
+    },
+    Math.min(remainingMs, SECOND_READING_WAIT_MS),
+  );
+
+  if (answer === null || "failed" in answer) {
+    // NO READING: refused, the pending output wiped unreleased.
+    return wasm_bindgen.redactAbort(nonce);
+  }
+  const bytes = new Uint8Array(answer.answer);
+  try {
+    // THE LENGTH BEFORE THE COPY INTO THE MODULE (design review L3).
+    if (bytes.byteLength > wasm_bindgen.maxSecondReadingAnswer()) {
+      return wasm_bindgen.redactAbort(nonce);
+    }
+    return wasm_bindgen.redactConfirm(nonce, bytes);
+  } finally {
+    // #199: an answer carries positions of the person's text. Zeroed once Rust has it.
+    bytes.fill(0);
   }
 }

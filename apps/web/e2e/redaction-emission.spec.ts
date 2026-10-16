@@ -25,6 +25,7 @@ import type { RedactionMessage } from "../src/host/harness-api";
 import { openHarness } from "./harness";
 import {
   FIELD_RULES,
+  PORT_POST,
   REFINED,
   REFUSED_BY,
   THE_CALL,
@@ -34,6 +35,8 @@ import {
   cleanLog,
   framesAndSettle,
   onlyRequest,
+  portRecord,
+  portViolations,
   r8Violations,
   redactAndSettle,
 } from "./redaction-protocol";
@@ -51,6 +54,14 @@ test("a successful redaction posts its document once, in the terminal reply", as
     "the recorder never saw the document",
   ).toBe(1);
   expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
+  // AND ON THE PORT (#206's web half): one request for the second reading, its input the document
+  // the page sent, every buffer transferred -- and the recorder SAW it, or this would pass a worker
+  // that asked for no reading at all.
+  expect(
+    log.filter((m) => m.shape === PORT_POST),
+    "the recorder saw no port post",
+  ).toHaveLength(1);
+  expect(portViolations(log, onlyRequest(log), WRITER.length, true)).toEqual([]);
 });
 
 test("a refused redaction posts no bytes at all", async ({ page }) => {
@@ -64,6 +75,139 @@ test("a refused redaction posts no bytes at all", async ({ page }) => {
     "the recorder never saw the worker's refusal",
   ).toBe(true);
   expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
+  // REFUSED BEFORE A READING WAS DUE, so nothing went down the port.
+  expect(portViolations(log, onlyRequest(log), WRITER.length, false)).toEqual([]);
+});
+
+// #206's web half: THE PORT, on the real worker. The second reading's copies go worker to worker,
+// never to the page (ADR 0029 §7); these hold that what goes down the port is the one request, and
+// that a reading that never comes back is a refusal. Each mutation asserted applied.
+const READING_POST = "    postTransferring(\n      port,\n";
+const READING_WAIT = "  const answer = await awaitPortReply(";
+const PORT_PLANTS: { name: string; from: string; to: string; ok: boolean; finding: RegExp }[] = [
+  {
+    name: "posts a second message down the port",
+    from: READING_WAIT,
+    to: `  port.postMessage({ copy: new Uint8Array(4) });\n${READING_WAIT}`,
+    ok: true,
+    finding: /one port too many|not the second reading's request/,
+  },
+  {
+    name: "keeps a copy of a buffer it posts",
+    from: "  port.postMessage(message, buffers);",
+    to: "  port.postMessage(message, buffers.slice(1));",
+    ok: false,
+    finding: /transferred 1 of its 2 buffers/,
+  },
+  {
+    name: "never asks for the reading",
+    from: READING_POST,
+    to: "    ((..._) => {})(\n      port,\n",
+    ok: false,
+    finding: /no second reading was asked for/,
+  },
+];
+for (const plant of PORT_PLANTS) {
+  test(`SHOWN TO FAIL: a copy of the worker that ${plant.name} is caught`, async ({ page }) => {
+    // THE WAIT IS THE WORKER'S OWN TEN SECONDS when no reading is asked for, inside the host's twelve.
+    test.setTimeout(60_000);
+    await openHarness(page);
+    const { applied } = await page.evaluate(
+      (mutate) => window.burrowHarness.armRedaction({ mutate }),
+      { from: plant.from, to: plant.to },
+    );
+    expect(applied, `the planted change did not apply: ${plant.name}`).toBe(true);
+    const { reply, log, nonce } = await redactAndSettle(page, 1);
+    expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(plant.ok);
+    const found = [
+      ...r8Violations(log, onlyRequest(log), nonce),
+      ...portViolations(log, onlyRequest(log), WRITER.length, true),
+    ];
+    expect(found.join("\n"), "R8's port rules passed the copy").toMatch(plant.finding);
+  });
+}
+
+test("a reading that never comes back is refused by name, and the page gets no document", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await openHarness(page);
+  const { applied } = await page.evaluate(
+    (mutate) => window.burrowHarness.armRedaction({ mutate }),
+    { from: READING_POST, to: "    ((..._) => {})(\n      port,\n" },
+  );
+  expect(applied).toBe(true);
+  const { reply, log, nonce } = await redactAndSettle(page, 1);
+  expect(reply.ok).toBe(false);
+  expect(reply.kind).toBe("OutputRejected");
+  expect(reply.message).toContain("[second-reading-unavailable]");
+  expect(reply.outputSha256).toBeNull();
+  expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
+});
+
+// THE PORT RULES, on hand-written logs: the clean one with its port record passes both checks, and
+// each case changes one thing in it.
+const withPort = (record = portRecord()) => {
+  const [request, reply, settle] = cleanLog(7, 42);
+  return [request, record, reply, settle];
+};
+test("the hand-written log with its port record passes R8 and the port rules", () => {
+  expect(r8Violations(withPort(), 7, 42)).toEqual([]);
+  expect(portViolations(withPort(), 7, 1, true)).toEqual([]);
+});
+const PORT_HAND: { name: string; log: () => RedactionMessage[]; finding: RegExp }[] = [
+  {
+    name: "a port post that is not the reading's request",
+    log: () => withPort(portRecord({ "__burrowPortPost.shape": "unlisted" })),
+    finding: /not the second reading's request/,
+  },
+  {
+    name: "an input that is not the document sent",
+    log: () => withPort(portRecord({ "__burrowPortPost.input": 2 })),
+    finding: /carries 2 input bytes, not 1/,
+  },
+  {
+    name: "no output",
+    log: () => withPort(portRecord({ "__burrowPortPost.output": 0 })),
+    finding: /carries no output/,
+  },
+  {
+    name: "a buffer copied rather than transferred",
+    log: () => withPort(portRecord({ "__burrowPortPost.transfers": 1 })),
+    finding: /transferred 1 of its 2 buffers/,
+  },
+  {
+    name: "a password that was not transferred",
+    log: () =>
+      withPort(portRecord({ "__burrowPortPost.password": 3, "__burrowPortPost.transfers": 2 })),
+    finding: /transferred 2 of its 3 buffers/,
+  },
+  {
+    name: "a success with no reading asked for",
+    log: () => cleanLog(7, 42),
+    finding: /a success reached the page with no second reading asked for/,
+  },
+];
+for (const hand of PORT_HAND) {
+  test(`SHOWN TO FAIL, by hand: ${hand.name}`, () => {
+    expect(portViolations(hand.log(), 7, 1, true).join("\n")).toMatch(hand.finding);
+  });
+}
+test("SHOWN TO FAIL, by hand: a refusal before the reading that posted on a port", () => {
+  const log = withPort();
+  const refused = [log[0], log[1], { ...log[2], ok: false }, log[3]];
+  expect(portViolations(refused, 7, 1, false).join("\n")).toMatch(
+    /a refusal before the reading posted on a port/,
+  );
+});
+test("SHOWN TO FAIL, by hand: two port posts, and one after the reply", () => {
+  const [request, record, reply, settle] = withPort();
+  expect(r8Violations([request, record, record, reply, settle], 7, 42).join("\n")).toMatch(
+    /one port too many/,
+  );
+  expect(r8Violations([request, reply, record, settle], 7, 42).join("\n")).toMatch(
+    /port message after the reply/,
+  );
 });
 
 // #136's read-only op answers through the same worker, the same protocol and the same rules: its

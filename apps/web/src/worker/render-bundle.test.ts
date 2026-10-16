@@ -31,7 +31,13 @@ describe("the render bundle's half of the protocol contract", () => {
 
     // AND THE LIST IS THIS BUNDLE'S, not the other one's. Two bundles declaring the same three
     // names is the contract; declaring the same VALUES would mean the split did nothing.
-    expect([...(declared["KNOWN_OPS"] as Set<string>)]).toEqual(["page_count", "render"]);
+    // `second_reading_port` hands the worker the port redaction's second reading is taken over
+    // (#206's web half); the reading itself is asked and answered only on that port.
+    expect([...(declared["KNOWN_OPS"] as Set<string>)]).toEqual([
+      "page_count",
+      "render",
+      "second_reading_port",
+    ]);
   });
 
   it("answers page_count and refuses every operation it does not have", async () => {

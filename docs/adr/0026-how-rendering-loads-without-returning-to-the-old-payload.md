@@ -291,3 +291,30 @@ named artifact by artifact in `size-budget.json`, and **the base payload moved +
 The sentence this amends is left standing above for the reason ADR 0001 gives. It is marked
 rather than corrected in place, because a reader arriving at that paragraph from a search needs
 to know both that it was true and that it is not.
+
+## Amendment, 2026-10-15 — the bundle reads text positions for redaction's second reading
+
+**[ADR 0029](0029-what-redaction-does-and-what-it-refuses-to-do.md) asked for this record**: #206's web half adds a
+second job to the render bundle, the geometry reading of a redacted page. A fresh render worker
+takes it over a `MessagePort` the page hands it and redaction's worker (`second-reading-port.js`,
+concatenated into those two bundles and not the base one); the verdict stays in redaction's worker.
+
+The bridge grew by five imports, all `FPDFText_*` geometry and none of them mapping:
+`text_load_page`, `text_count_chars`, `text_char_origin`, `text_is_generated` and
+`text_close_page`. Counted on the staged release modules, unique names:
+
+| | `__burrow_pdfium_*` | `__burrow_qpdf_*` |
+|---|--:|--:|
+| `burrow_wasm_bg.wasm` | **0** | 50 |
+| `burrow_wasm_render_bg.wasm`, before | 21 | **0** |
+| `burrow_wasm_render_bg.wasm`, after | 26 | **0** |
+
+The partition holds: the base module still imports nothing of PDFium, and the render module
+nothing of qpdf. (The table above says 7, from before ADR 0027's strip session; 21 is what main
+carried before this change, and it is left as it was, for the reason the previous amendment gives.)
+
+**The cost, measured, brotli:** `burrow_wasm_render_bg.wasm` 23,975 to 27,087 (+3,112);
+`burrow-render-worker.js` 55,935 to 58,758 (+2,823, of which 12,911 raw bytes are the five
+bridge forwards, the port and the reading); the base payload's sources are unchanged. Both render
+lines are inside their budgets and outside the 25% headroom the owner set on 2026-10-13, so the
+re-recording is the owner's to approve, not this record's.

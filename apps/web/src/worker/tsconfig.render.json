@@ -39,6 +39,7 @@
     "bridge-common.js",
     "bridge-pdfium.js",
     "worker-protocol.js",
+    "second-reading-port.js",
     "render-main.js"
   ]
 }

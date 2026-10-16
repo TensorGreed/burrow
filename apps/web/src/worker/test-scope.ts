@@ -38,12 +38,14 @@ export const MAIN = [
 /** Redaction's bundle's worker code (#137), same order, same reason. */
 export const REDACT_MAIN = [
   readFileSync(join(here, "worker-protocol.js"), "utf8"),
+  readFileSync(join(here, "second-reading-port.js"), "utf8"),
   readFileSync(join(here, "redact-main.js"), "utf8"),
 ].join("\n");
 
 /** The render bundle's worker code, same order, same reason. */
 export const RENDER_MAIN = [
   readFileSync(join(here, "worker-protocol.js"), "utf8"),
+  readFileSync(join(here, "second-reading-port.js"), "utf8"),
   readFileSync(join(here, "render-main.js"), "utf8"),
 ].join("\n");
 
@@ -246,6 +248,10 @@ export function load(
     Module: { calledRun: true, _FPDF_InitLibrary: () => {} },
     pdfiumReady: Promise.resolve({ _FPDF_InitLibrary: () => {} }),
     resolvePdfium: () => {},
+    // A WORKER HAS ONE, and the redaction bundle asks whether a request carries one (#206's web
+    // half). A class nothing is an instance of, so a request without a port takes the one-call
+    // path; `second-reading.test.ts` puts the real one here to drive the port.
+    MessagePort: class MessagePort {},
     wasm_bindgen,
   };
   scope["self"] = scope;

@@ -34,6 +34,7 @@
 // `Error::Internal` reply". It is not a simulation of that path; it is that path.
 
 import { createWorkerHost } from "./worker-host.js";
+import { redactWithSecondReading } from "./second-reading.js";
 
 /**
  * @typedef {object} EngineEntry
@@ -513,6 +514,74 @@ const SETTLE = `
 `;
 
 /**
+ * What redaction's worker posts on a `MessagePort`, described, for R8 (#206's web half).
+ *
+ * The second reading's copies travel worker to worker over a port the page never holds, so the
+ * recorder on the page's channel cannot see them, and ADR 0029 requires R8 to follow them. This
+ * wraps `MessagePort.prototype.postMessage` before the bundle runs and reports each post to the
+ * page as ONE fixed shape of numbers and a closed word -- never the content -- so the page can
+ * hold the port to the one message the protocol sends:
+ *
+ *   `{ __burrowPortPost: { shape, input, output, password, transfers } }`
+ *
+ * `shape` is `read` only when the message is exactly the second reading's request -- its seven
+ * keys, `type: "read"`, a BigInt nonce, an integer page, three byte buffers or none, and the five
+ * numeric limits -- and `unlisted` otherwise, with every length zero. The lengths are the
+ * buffers' own; `transfers` is how many values the post transferred.
+ *
+ * A TRIPWIRE, like the stubs: it shares the worker's realm. And like them it posts through the
+ * `postMessage` it captured before the bundle ran.
+ */
+const PORT_RECORDER = `
+(() => {
+  const post = self.postMessage.bind(self);
+  const original = MessagePort.prototype.postMessage;
+  const KEYS = "input,limits,nonce,output,page,password,type";
+  const LIMIT_KEYS = "maxDurationMs,maxInputBytes,maxMemoryBytes,maxPages,maxPixels";
+  const length = (v) => (v instanceof ArrayBuffer ? v.byteLength : -1);
+  const plain = (v) => v !== null && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
+  const describe = (message, transfer) => {
+    const transfers = Array.isArray(transfer) ? transfer.length : 0;
+    const unlisted = { shape: "unlisted", input: 0, output: 0, password: 0, transfers };
+    if (!plain(message) || Reflect.ownKeys(message).sort().join(",") !== KEYS) return unlisted;
+    const { input, limits, nonce, output, page, password, type } = message;
+    const limitsListed =
+      plain(limits) &&
+      Reflect.ownKeys(limits).sort().join(",") === LIMIT_KEYS &&
+      Object.values(limits).every((v) => typeof v === "number");
+    if (
+      type !== "read" ||
+      typeof nonce !== "bigint" ||
+      !Number.isInteger(page) ||
+      !limitsListed ||
+      length(input) < 0 ||
+      length(output) < 0 ||
+      (password !== undefined && length(password) < 0)
+    ) {
+      return unlisted;
+    }
+    return {
+      shape: "read",
+      input: length(input),
+      output: length(output),
+      password: password === undefined ? 0 : length(password),
+      transfers,
+    };
+  };
+  Object.defineProperty(MessagePort.prototype, "postMessage", {
+    configurable: true,
+    writable: true,
+    value: function (message, transfer) {
+      // DESCRIBED BEFORE THE POST: a transfer detaches the buffers, and a detached one reads 0.
+      const record = describe(message, transfer);
+      post({ __burrowPortPost: record });
+      return original.call(this, message, transfer);
+    },
+  });
+})();
+`;
+
+/**
  * The heap canary (#199): count `canary`'s occurrences in every WebAssembly memory redaction's
  * worker holds, at the moment it posts a reply -- after the Rust call has returned and the
  * worker's `finally` has wiped its own copies, and before the page can recycle the worker.
@@ -709,8 +778,13 @@ const NO_STUBS = `
 self.postMessage({ __burrowSideChannelArmed: [] });
 `;
 
-/** @param {"renderWorker" | "redactWorker"} id */
-async function buildBundleHost(id) {
+/**
+ * @param {"renderWorker" | "redactWorker"} id
+ * @param {string} [slot] whose object URL this host spawns from and revokes: its own, for a host
+ *   that is not the memoised one -- a second reading's fresh render host (#206) -- so neither
+ *   revokes the other's.
+ */
+async function buildBundleHost(id, slot = id) {
   const fetched = await fetchBundleSource(id);
   const bundle = fetched.bundle;
   const redaction = id === "redactWorker";
@@ -718,18 +792,18 @@ async function buildBundleHost(id) {
   const prologue = redaction ? redactArming.prologue : "";
   return createWorkerHost({
     spawn: () => {
-      const previous = lazyUrls[id];
+      const previous = lazyUrls[slot];
       if (previous) URL.revokeObjectURL(previous);
       const url = URL.createObjectURL(new Blob([prologue, source], { type: "text/javascript" }));
-      lazyUrls[id] = url;
+      lazyUrls[slot] = url;
       const worker = new Worker(url);
       return redaction ? recordRedaction(worker) : worker;
     },
     release: () => {
-      const previous = lazyUrls[id];
+      const previous = lazyUrls[slot];
       if (previous) {
         URL.revokeObjectURL(previous);
-        lazyUrls[id] = null;
+        lazyUrls[slot] = null;
       }
     },
     now: () => performance.now(),
@@ -1288,6 +1362,7 @@ const harness = {
       // and a forged list then vouched for any number of forged reports (review of #137).
       prologue:
         SETTLE +
+        PORT_RECORDER +
         (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS) +
         (options.heapCanary ? heapScanPrologue(options.heapCanary) : ""),
       source,
@@ -1383,7 +1458,11 @@ const harness = {
    */
   async redactDocument(name, bytes, page, covered, region, options = {}) {
     const worker = await bundleHost("redactWorker");
-    const reply = await worker.run(
+    // WITH ITS SECOND READING (#206's web half): a FRESH render host for this one reading, built
+    // from the same integrity-checked bundle as the memoised one and never shared with it.
+    const reply = await redactWithSecondReading(
+      worker,
+      () => buildBundleHost("renderWorker", "secondReading"),
       {
         op: "redact",
         blob: new File([/** @type {Uint8Array<ArrayBuffer>} */ (bytes)], name, {

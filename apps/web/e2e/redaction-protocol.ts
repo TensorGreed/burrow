@@ -58,8 +58,12 @@ export const WRITER_FRAMES: { frames: number[]; frameRefusals: string[] } = (() 
 
 export const WHOLE = { left: 0, top: 0, width: 5000, height: 5000 };
 
-/** THE LINE A PLANTED VIOLATION GOES BEFORE: `redact-main.js`'s one call into Rust. */
-export const THE_CALL = "  return wasm_bindgen.redact(";
+/**
+ * THE LINE A PLANTED VIOLATION GOES BEFORE: `redact-main.js`'s call into Rust that redacts --
+ * phase 1 of the two since #206's web half, with the input in scope as `bytes`. The one-call
+ * `redact` is still there, for a request with no port, and is not on any path a spec takes.
+ */
+export const THE_CALL = "    const begun = wasm_bindgen.redactBegin(";
 
 /** The settle: the worker echoes after this long, and the page reads the log `2 *` this after the send. */
 export const SETTLE_MS = 500;
@@ -136,6 +140,17 @@ function shape(fields: Record<string, string>): string {
     .join(",")}}`;
 }
 
+/** The shape of the harness's report of one port post; see `PORT_RECORDER` in the driver. */
+export const PORT_POST = shape({
+  __burrowPortPost: shape({
+    input: "number",
+    output: "number",
+    password: "number",
+    shape: "string",
+    transfers: "number",
+  }),
+});
+
 const LIMITS = shape({
   maxDurationMs: "number",
   maxInputBytes: "number",
@@ -160,8 +175,11 @@ const EARLY: Record<string, string> = {
   })]: "init",
   [shape({ fatal: "true", id: "number", kind: "string", ready: "false" })]: "init",
   [shape({ ack: "true", id: "number" })]: "ack",
+  // THE HARNESS'S DESCRIPTION OF A PORT POST (#206's web half): numbers and a closed word, once,
+  // before the reply. What it describes is held by `portViolations`.
+  [PORT_POST]: "port",
 };
-const EARLY_COUNT: Record<string, number> = { starting: 2, init: 1, ack: 1 };
+const EARLY_COUNT: Record<string, number> = { starting: 2, init: 1, ack: 1, port: 1 };
 
 /**
  * EVERY SHAPE A REPLY MAY TAKE, exactly: `drainReply` on success and on refusal, and the three
@@ -412,6 +430,12 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   "defaultLimits.maxPages": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxPixels": integer(0, Number.MAX_SAFE_INTEGER),
   __burrowSettled: integer(1, 2 ** 31),
+  // A PORT POST'S DESCRIPTION: lengths no larger than a buffer can be, and a closed word.
+  "__burrowPortPost.shape": oneOf(["read", "unlisted"]),
+  "__burrowPortPost.input": integer(0, 2 ** 32),
+  "__burrowPortPost.output": integer(0, 2 ** 32),
+  "__burrowPortPost.password": integer(0, 2 ** 32),
+  "__burrowPortPost.transfers": integer(0, 3),
   __burrowSideChannel: (v) => typeof v === "string" && Object.hasOwn(EXITS, v),
 };
 
@@ -432,6 +456,10 @@ const NUMERIC = new Set([
   "defaultLimits.maxPages",
   "defaultLimits.maxPixels",
   "__burrowSettled",
+  "__burrowPortPost.input",
+  "__burrowPortPost.output",
+  "__burrowPortPost.password",
+  "__burrowPortPost.transfers",
 ]);
 
 /**
@@ -632,6 +660,59 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
 }
 
 /**
+ * R8 ON THE PORT (#206's web half; ADR 0029 §7, "the copy never touches the page"). The second
+ * reading's copies go worker to worker, and `r8Violations` holds that a report of one is the
+ * harness's, once, before the reply. This holds WHAT it reports:
+ *
+ * - every post is the second reading's request, exactly (`read`);
+ * - its input is the document the page sent, `inputLength` bytes, and its output is not empty;
+ * - every buffer it carries was TRANSFERRED, so no second copy stayed behind in the worker;
+ * - a SUCCESS had one -- the output reached the page only after a reading was asked for;
+ * - and a refusal before the reading was due (`due: false`) had none.
+ *
+ * WHAT IT CANNOT SEE: whether the render worker read what it was sent -- the verdict, in Rust,
+ * holds that by digest -- or a port post through a `postMessage` the bundle captured before the
+ * prologue's wrapper (none can be: the prologue runs first).
+ */
+export function portViolations(
+  all: RedactionMessage[],
+  id: number,
+  inputLength: number,
+  due: boolean | null = null,
+): string[] {
+  const log = all.filter((m) => m.sent === null);
+  const found: string[] = [];
+  const posts = log.filter((m) => m.shape === PORT_POST);
+  const replies = log.filter((m) => m.id === id && m.ok !== null);
+  const terminal = replies.length > 0 ? replies[replies.length - 1] : null;
+  posts.forEach((m, at) => {
+    const f = m.fields;
+    const what = `port post ${at}`;
+    if (f["__burrowPortPost.shape"] !== "read") {
+      found.push(`${what} is not the second reading's request`);
+      return;
+    }
+    if (f["__burrowPortPost.input"] !== inputLength) {
+      found.push(`${what} carries ${f["__burrowPortPost.input"]} input bytes, not ${inputLength}`);
+    }
+    if (f["__burrowPortPost.output"] === 0) found.push(`${what} carries no output`);
+    const buffers = f["__burrowPortPost.password"] === 0 ? 2 : 3;
+    if (f["__burrowPortPost.transfers"] !== buffers) {
+      found.push(
+        `${what} transferred ${f["__burrowPortPost.transfers"]} of its ${buffers} buffers`,
+      );
+    }
+  });
+  if (terminal?.ok === true && posts.length === 0) {
+    found.push("a success reached the page with no second reading asked for");
+  }
+  if (due === false && posts.length > 0)
+    found.push("a refusal before the reading posted on a port");
+  if (due === true && posts.length === 0) found.push("no second reading was asked for");
+  return found;
+}
+
+/**
  * R9, HELD MORE STRICTLY THAN ADR 0006 WORDS IT. The ADR says no exit before verification; this
  * says NO EXIT AT ALL, from arming until the settle. Redaction's worker has no reason to take one
  * at any point -- the page makes the download link from the Blob it is handed -- and the stricter
@@ -667,6 +748,18 @@ const REDACTION_ARTIFACT =
   /^\/engines\/(burrow-redact-worker\.[0-9a-f]{16}\.js|(qpdf|burrow_wasm_redact_bg)\.[0-9a-f]{16}\.wasm|control\.[0-9a-f]{16}\.txt)$/;
 
 /**
+ * AND THE SECOND READING'S (#206's web half): a redaction now starts a fresh render worker beside
+ * its own, so its window also holds the render bundle, PDFium and the render module -- and the
+ * policy guard's control a second time, because that worker makes the same check before it touches
+ * a file. The server cannot tell the two workers apart; the counts are what it can hold.
+ */
+const SECOND_READING_ARTIFACT =
+  /^\/engines\/(burrow-render-worker\.[0-9a-f]{16}\.js|(pdfium|burrow_wasm_render_bg)\.[0-9a-f]{16}\.wasm)$/;
+
+/** How often each path may appear in one redaction's window: once, but the control once a worker. */
+const timesAllowed = (url: string) => (/^\/engines\/control\./.test(url) ? 2 : 1);
+
+/**
  * The network half of R9, from the test server's own log: between a marker written after arming
  * and the settle, every request is a GET from `site` to one of `REDACTION_ARTIFACT`'s four paths,
  * each at most once. The query string is the point -- `connect-src` admits
@@ -676,15 +769,17 @@ const REDACTION_ARTIFACT =
  */
 export function networkViolations(entries: LogEntry[], site: string): string[] {
   const found: string[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   for (const entry of entries) {
     const what = `${entry.method} ${entry.origin}${entry.url.slice(0, 120)}`;
-    if (entry.origin !== site || entry.method !== "GET" || !REDACTION_ARTIFACT.test(entry.url)) {
+    const listed = REDACTION_ARTIFACT.test(entry.url) || SECOND_READING_ARTIFACT.test(entry.url);
+    const times = (seen.get(entry.url) ?? 0) + 1;
+    seen.set(entry.url, times);
+    if (entry.origin !== site || entry.method !== "GET" || !listed) {
       found.push(`${what} is not a GET of one of redaction's artifacts`);
-    } else if (seen.has(entry.url)) {
-      found.push(`${entry.url} was requested twice`);
+    } else if (times === timesAllowed(entry.url) + 1) {
+      found.push(`${entry.url} was requested ${times} times`);
     }
-    seen.add(entry.url);
   }
   return found;
 }
@@ -821,6 +916,37 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       fields: { __burrowSettled: nonce },
     },
   ];
+}
+
+/**
+ * The harness's report of the second reading's request, as the real worker's is for
+ * `producer-writer.pdf`'s input -- `cleanLog`'s companion for the port rules, which goes between
+ * the request and the reply. `fields` overrides one value.
+ */
+export function portRecord(
+  fields: Record<string, string | number> = {},
+  inputLength = 1,
+): RedactionMessage {
+  return {
+    sent: null,
+    id: null,
+    keys: ["__burrowPortPost"],
+    bytes: 0,
+    shape: PORT_POST,
+    fields: {
+      "__burrowPortPost.shape": "read",
+      "__burrowPortPost.input": inputLength,
+      "__burrowPortPost.output": 900,
+      "__burrowPortPost.password": 0,
+      "__burrowPortPost.transfers": 2,
+      ...fields,
+    },
+    ports: 0,
+    ok: null,
+    sideChannel: null,
+    armed: null,
+    settled: null,
+  };
 }
 
 /**

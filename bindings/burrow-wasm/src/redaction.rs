@@ -255,7 +255,11 @@ pub fn redact_begin(
         Ok(done) => done,
         Err(error) => return refused(&error),
     };
-    let Some(due) = done.report.second_reading else {
+    // TAKEN OUT OF THE REPORT, not copied: the report reaches the page in the reply, and what a
+    // reading is due over is the redaction's own geometry, which is not the page's to see. Its
+    // `Debug` is then the one R8's report rule holds.
+    let mut report = done.report;
+    let Some(due) = report.second_reading.take() else {
         return refused(&Error::Internal(
             "redact: the web's redaction returned with no second reading due".to_owned(),
         ));
@@ -275,7 +279,7 @@ pub fn redact_begin(
             nonce,
             input: Zeroizing::new(bytes.to_vec()),
             output: Zeroizing::new(done.document),
-            report: done.report,
+            report,
             due,
             deadline,
             limits,

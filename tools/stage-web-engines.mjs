@@ -169,6 +169,8 @@ const BUNDLES = [
       { engines: "pdfium.js" },
       { pkgRender: "burrow_wasm.js" },
       { app: "src/worker/worker-protocol.js" },
+      // Redaction's second reading's port (#206): in this bundle and redaction's, never the base.
+      { app: "src/worker/second-reading-port.js" },
       { app: "src/worker/render-main.js" },
     ],
   },
@@ -201,6 +203,7 @@ const BUNDLES = [
       { engines: "qpdf.js" },
       { pkgRedact: "burrow_wasm.js" },
       { app: "src/worker/worker-protocol.js" },
+      { app: "src/worker/second-reading-port.js" },
       { app: "src/worker/redact-main.js" },
     ],
   },

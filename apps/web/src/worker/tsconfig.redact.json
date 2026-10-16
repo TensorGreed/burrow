@@ -22,6 +22,7 @@
     "bridge-common.js",
     "bridge-qpdf.js",
     "worker-protocol.js",
+    "second-reading-port.js",
     "redact-main.js"
   ]
 }

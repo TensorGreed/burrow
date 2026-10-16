@@ -47,5 +47,34 @@ interface BurrowWasm {
     password: Uint8Array | undefined,
     limits: WebLimits,
   ): Reply;
+  /**
+   * Phase 1 of the web's second reading (#206): redact and run burrow's check, and hold the
+   * output pending. A success is NOT a result -- it means a reading is due, and the reply carries
+   * copies of the two documents for the render worker, never the redaction.
+   */
+  redactBegin(
+    bytes: Uint8Array,
+    page: number,
+    covered: Uint32Array,
+    region: WebRegion,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): Begun;
+  /** Phase 2: judge the render worker's answer for `nonce`, once; the output only on agreement. */
+  redactConfirm(nonce: bigint, answer: Uint8Array): Reply;
+  /** End the pending reading for `nonce` without a verdict: refused, the output wiped. */
+  redactAbort(nonce: bigint): Reply;
+  /** The longest answer `redactConfirm` takes, checked before an answer is copied in. */
+  maxSecondReadingAnswer(): number;
   WebRegion: new (left: number, top: number, width: number, height: number) => WebRegion;
+}
+
+/** Phase 1's reply. See `redactBegin`. */
+interface Begun {
+  reply(): Reply;
+  readonly nonce: bigint;
+  readonly remainingMs: bigint;
+  takeInput(): Uint8Array;
+  takeOutput(): Uint8Array;
+  free(): void;
 }

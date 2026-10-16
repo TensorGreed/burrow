@@ -61,15 +61,21 @@ for (const [outcome, pageNumber] of [
       description: requests.map((entry) => entry.url).join(", ") || "none",
     });
     expect(networkViolations(requests, new URL(page.url()).origin)).toEqual([]);
-    // AND EXACTLY THE FOUR, one each: a window that saw nothing would pass every rule above, and a
-    // fresh worker is measured to fetch all four inside it in all three browsers.
+    // AND EXACTLY THE FOUR, one each -- and since #206's web half the second reading's render
+    // worker's three, and its own control: a window that saw nothing would pass every rule above,
+    // and both fresh workers are measured to fetch all of these inside it. On a refusal too: the
+    // render worker is started beside the redaction, before anyone knows it will refuse.
     expect(
       requests.map((entry) => entry.url.replace(/\.[0-9a-f]{16}\./, ".<hash>.")).sort(),
-      "the window did not hold redaction's four artifacts, once each",
+      "the window did not hold redaction's four artifacts and the reading's three, once each",
     ).toEqual([
       "/engines/burrow-redact-worker.<hash>.js",
+      "/engines/burrow-render-worker.<hash>.js",
       "/engines/burrow_wasm_redact_bg.<hash>.wasm",
+      "/engines/burrow_wasm_render_bg.<hash>.wasm",
       "/engines/control.<hash>.txt",
+      "/engines/control.<hash>.txt",
+      "/engines/pdfium.<hash>.wasm",
       "/engines/qpdf.<hash>.wasm",
     ]);
   });
@@ -229,7 +235,29 @@ test("SHOWN TO FAIL, by hand: a request that is not one GET of an artifact from 
     { ...entry, url: "/engines/control.0123456789abcdef.txt" },
   ];
   expect(networkViolations(once, site)).toEqual([]);
-  expect(networkViolations([...once, once[0]], site).join("\n")).toMatch(/requested twice/);
+  expect(networkViolations([...once, once[0]], site).join("\n")).toMatch(/requested 2 times/);
+  // THE CONTROL ONCE A WORKER, and there are two since #206's web half: twice passes, three times
+  // does not. And the second reading's three render artifacts pass, each once.
+  expect(networkViolations([...once, once[1]], site)).toEqual([]);
+  expect(networkViolations([...once, once[1], once[1]], site).join("\n")).toMatch(
+    /control\.0123456789abcdef\.txt was requested 3 times/,
+  );
+  const reading = [
+    { ...entry, url: "/engines/burrow-render-worker.0123456789abcdef.js" },
+    { ...entry, url: "/engines/pdfium.0123456789abcdef.wasm" },
+    { ...entry, url: "/engines/burrow_wasm_render_bg.0123456789abcdef.wasm" },
+  ];
+  expect(networkViolations([...once, ...reading], site)).toEqual([]);
+  expect(networkViolations([...reading, reading[1]], site).join("\n")).toMatch(
+    /pdfium\.0123456789abcdef\.wasm was requested 2 times/,
+  );
+  // A NEAR MISS on the render bundle's name is not admitted.
+  expect(
+    networkViolations(
+      [{ ...entry, url: "/engines/burrow-render-worker.0123456789abcdef.wasm" }],
+      site,
+    ).join("\n"),
+  ).toMatch(/is not a GET of one of redaction's artifacts/);
   expect(networkViolations([{ ...once[0], method: "POST" }], site).join("\n")).toMatch(
     /is not a GET/,
   );

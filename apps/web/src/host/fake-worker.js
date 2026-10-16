@@ -22,10 +22,11 @@
  * @typedef {object} FakeInstance
  * @property {number} generation
  * @property {unknown[]} received Every message posted to this instance.
+ * @property {Transferable[][]} transfers The transfer list each of those was posted with.
  * @property {number} terminations How many times `terminate()` was called. Must end at 1.
  * @property {(message: unknown) => void} reply Deliver a message to the host from this worker.
  * @property {() => void} crash Fire `onerror`, as a browser-killed worker does.
- * @property {(message: unknown) => void} postMessage
+ * @property {(message: unknown, transfer: Transferable[]) => void} postMessage
  * @property {() => void} terminate
  * @property {((event: MessageEvent) => void) | null} onmessage
  * @property {((event: ErrorEvent) => void) | null} onerror
@@ -58,12 +59,14 @@ export function createFakeWorkerFactory(options = {}) {
     const instance = {
       generation: instances.length,
       received: [],
+      transfers: [],
       terminations: 0,
       onmessage: null,
       onerror: null,
 
-      postMessage(message) {
+      postMessage(message, transfer) {
         instance.received.push(message);
+        instance.transfers.push(transfer);
         // Asynchronous, like a real worker. A fake that answered synchronously would let a
         // host with a re-entrancy bug pass, because the reply would arrive before the caller
         // had finished setting up.

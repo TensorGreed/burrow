@@ -34,8 +34,9 @@
 
 /**
  * @typedef {object} WorkerLike
- * @property {(message: unknown) => void} postMessage No transfer list: the input is a Blob,
- *   which structured clone passes by reference, so there is nothing to transfer. See `run`.
+ * @property {(message: unknown, transfer: Transferable[]) => void} postMessage The input is a
+ *   Blob, which structured clone passes by reference, so a document is never transferred. The one
+ *   transfer is the `MessagePort` a second reading is taken over (#206's web half); see `run`.
  * @property {() => void} terminate
  * @property {((event: MessageEvent) => void) | null} onmessage
  * @property {((event: ErrorEvent) => void) | null} onerror
@@ -649,7 +650,7 @@ export function createWorkerHost(options) {
         },
       });
 
-      w.postMessage({ type: "init", id });
+      w.postMessage({ type: "init", id }, []);
     });
   }
 
@@ -942,7 +943,8 @@ export function createWorkerHost(options) {
    * @param {{ maxDurationMs?: number,
    *   onProgress?: (progress: { part: number, of: number }) => void,
    *   onPage?: (page: { number: number, index: number, of: number, width: number,
-   *     height: number }, pixels: ArrayBuffer) => void }} options
+   *     height: number }, pixels: ArrayBuffer) => void,
+   *   transfer?: Transferable[] }} options
    * @returns {Promise<HostReply>}
    */
   async function runOne(message, options) {
@@ -1001,7 +1003,10 @@ export function createWorkerHost(options) {
         // `handleMessage` for why a strip's rule is the opposite of a split's.
         onPage: options.onPage,
       });
-      live.postMessage({ ...message, id });
+      // A TRANSFER LIST ONLY FOR WHAT THE CALLER NAMES: today, the `MessagePort` the second
+      // reading is taken over (#206's web half). Transferred, so it is the worker's and nobody
+      // else's; nothing is cloned that the caller did not put in the message.
+      live.postMessage({ ...message, id }, options.transfer ?? []);
     });
   }
 
@@ -1062,7 +1067,9 @@ export function createWorkerHost(options) {
      * @param {{ maxDurationMs?: number,
      *   onProgress?: (progress: { part: number, of: number }) => void,
      *   onPage?: (page: { number: number, index: number, of: number, width: number,
-     *     height: number }, pixels: ArrayBuffer) => void }} [options]
+     *     height: number }, pixels: ArrayBuffer) => void,
+     *   transfer?: Transferable[] }} [options] `transfer` is posted as the message's transfer
+     *   list: the second reading's port (#206's web half), and nothing else today.
      * @returns {Promise<HostReply>}
      */
     run(message, options = {}) {

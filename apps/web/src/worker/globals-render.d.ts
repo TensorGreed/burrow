@@ -188,6 +188,19 @@ interface BurrowWasm {
     password: Uint8Array | undefined,
     limits: WebLimits,
   ): RenderSession;
+  /**
+   * Redaction's second reading (#206): the answer, encoded -- a recording bound to the two
+   * digests passed in, or a typed failure carrying no text. No verdict is reached here.
+   */
+  secondReading(
+    input: Uint8Array,
+    output: Uint8Array,
+    page: number,
+    inputDigest: Uint8Array,
+    outputDigest: Uint8Array,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): Uint8Array;
 }
 
 /**

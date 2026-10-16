@@ -130,6 +130,33 @@ describe("the ordinary path", () => {
     factory.assertNoLeaks(1);
   });
 
+  // #206's web half: the second reading's port is TRANSFERRED to the worker, and nothing else is.
+  test("an operation is posted with the transfer list its caller names, and others with none", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+    const worker = factory.latest();
+    expect(worker.transfers, "the start-up handshake transfers nothing").toEqual([[]]);
+
+    const port = { stand: "in for a MessagePort" } as unknown as Transferable;
+    const running = host.run(operation, { transfer: [port] });
+    await settle();
+    const request = worker.received.at(-1) as { id: number };
+    expect(worker.transfers.at(-1)).toEqual([port]);
+    expect(worker.transfers.at(-1)?.[0]).toBe(port);
+    worker.reply({ id: request.id, ack: true });
+    worker.reply(workerReply(request.id));
+    await running;
+
+    const plain = host.run(operation);
+    await settle();
+    const second = worker.received.at(-1) as { id: number };
+    expect(worker.transfers.at(-1), "an operation that names none transfers none").toEqual([]);
+    worker.reply({ id: second.id, ack: true });
+    worker.reply(workerReply(second.id));
+    await plain;
+    factory.assertNoLeaks(1);
+  });
+
   test("an operation acks, runs, and returns its reply on the same worker", async () => {
     const { host, factory, clock } = track(build());
     await host.ready();
