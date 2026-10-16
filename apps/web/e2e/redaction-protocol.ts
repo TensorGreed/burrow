@@ -19,8 +19,14 @@ import type { LogEntry } from "./request-log";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 
-/** A committed fixture a whole-page redaction succeeds on, pinned in `outcomes.tsv`. */
-export const WRITER = readFileSync(join(repo, "tests/redaction/fixtures/producer-writer.pdf"));
+/**
+ * A committed fixture a whole-page redaction succeeds on, pinned in `outcomes.tsv`: LibreOffice's
+ * export with its tagging taken off (`tools/make-untagged-writer.py`), since #125 slice 3 refuses
+ * the tagged original `[structure-tree]`. A real producer's fonts and layout, derived.
+ */
+export const WRITER = readFileSync(
+  join(repo, "tests/redaction/fixtures/producer-writer-untagged.pdf"),
+);
 
 /**
  * `WRITER`'s pinned page frames, read from the committed golden file `page_frames_tests.rs`
@@ -36,7 +42,8 @@ export const WRITER_FRAMES: { frames: number[]; frameRefusals: string[] } = (() 
   const golden = readFileSync(join(repo, "tests/redaction/page-frames.tsv"), "utf8");
   for (const line of golden.split("\n")) {
     const [kind, path, , what, ...rest] = line.split("\t");
-    if (kind !== "PAGE" || path !== "tests/redaction/fixtures/producer-writer.pdf") continue;
+    if (kind !== "PAGE" || path !== "tests/redaction/fixtures/producer-writer-untagged.pdf")
+      continue;
     const [tag, ...values] = [what, ...rest].join(" ").split(" ");
     if (tag === "FRAME") {
       frames.push(Number(values[0]), Number(values[1]));
@@ -74,7 +81,7 @@ export async function redactAndSettle(page: Page, pageNumber: number): Promise<S
   const reply = await page.evaluate(
     ({ bytes, pageNumber, region }) =>
       window.burrowHarness.redactDocument(
-        "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         new Uint8Array(bytes),
         pageNumber,
         [pageNumber],
@@ -773,7 +780,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       ok: true,
       shape: success,
       // A SUCCESS AS THE REAL WORKER SENDS ONE, field for field -- `report` as measured on
-      // `producer-writer.pdf` -- so a case that changes one field provokes that field's rule alone.
+      // `producer-writer-untagged.pdf` -- so a case that changes one field provokes that field's rule alone.
       fields: {
         id,
         ok: true,

@@ -65,7 +65,8 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-const WRITER = "tests/redaction/fixtures/producer-writer.pdf";
+// The untagged LibreOffice export: #125 slice 3 refuses the tagged original `[structure-tree]`.
+const WRITER = "tests/redaction/fixtures/producer-writer-untagged.pdf";
 
 /**
  * The generators' builders for the two fixtures these cases use, by file name: the module, and
@@ -132,7 +133,7 @@ for (const label of ["whole", "band", "pdfbuild"]) {
     const reply = await page.evaluate(
       ({ bytes, pageNumber, covered, region }) =>
         window.burrowHarness.redactDocument(
-          "producer-writer.pdf",
+          "producer-writer-untagged.pdf",
           new Uint8Array(bytes),
           pageNumber,
           covered,
@@ -159,12 +160,18 @@ test("a page past the end is refused as the native operation refuses it", async 
   await openHarness(page);
   const reply = await page.evaluate(
     (bytes) =>
-      window.burrowHarness.redactDocument("producer-writer.pdf", new Uint8Array(bytes), 2, [2], {
-        left: 0,
-        top: 0,
-        width: 5000,
-        height: 5000,
-      }),
+      window.burrowHarness.redactDocument(
+        "producer-writer-untagged.pdf",
+        new Uint8Array(bytes),
+        2,
+        [2],
+        {
+          left: 0,
+          top: 0,
+          width: 5000,
+          height: 5000,
+        },
+      ),
     Array.from(readFileSync(join(repo, WRITER))),
   );
   expect(reply.ok).toBe(false);
