@@ -335,6 +335,9 @@ INPUT	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	595f25bf02c6b882d
 DOC	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
 INPUT	tests/conformance/fixtures/canary.pdf	0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d
 DOC	tests/conformance/fixtures/canary.pdf	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/chrome-printed.pdf	54d4fd0000f6858656452f19523ad48e0e2598b1634731fad9ac7a01c75b2bb1
+PAGE	tests/conformance/fixtures/chrome-printed.pdf	0	FRAME 595.91998 842.88
+PAGE	tests/conformance/fixtures/chrome-printed.pdf	1	FRAME 595.91998 842.88
 INPUT	tests/conformance/fixtures/encrypted.pdf	12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74
 DOC	tests/conformance/fixtures/encrypted.pdf	ERR PasswordRequired
 INPUT	tests/conformance/fixtures/five-pages-or-six.pdf	c0ada3521ae2d33c91239eb6f15f6c466836de31ca09d63cfe4d4deef66ca753
