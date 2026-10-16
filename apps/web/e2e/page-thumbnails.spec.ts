@@ -177,6 +177,58 @@ test("the tool still works when the strip is not there", async ({ page }) => {
 // ---- #199 for the render worker (D1, D4): one document per worker, pixels zeroed --------------
 
 /**
+ * Hold the render worker's PDFium download, so the strip's first request is known to be in flight
+ * until `release` is called. Later fetches go through.
+ */
+function holdFirstPdfium(page: Page): { arrived: Promise<void>; release: () => Promise<void> } {
+  let held: (() => Promise<void>) | null = null;
+  const arrived = new Promise<void>((resolve) => {
+    void page.route(/\/pdfium\.[0-9a-f]+\.wasm$/, (route) => {
+      if (held !== null) return route.continue();
+      held = () => route.continue();
+      resolve();
+    });
+  });
+  return { arrived, release: () => held!() };
+}
+
+/** Count every `putImageData`, so what was drawn before a worker closed can be read back. */
+async function countPaints(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const original = CanvasRenderingContext2D.prototype.putImageData;
+    const scope = globalThis as unknown as { __paints: number };
+    scope.__paints = 0;
+    CanvasRenderingContext2D.prototype.putImageData = function (
+      this: CanvasRenderingContext2D,
+      ...args: unknown[]
+    ) {
+      scope.__paints += 1;
+      return (original as (...a: unknown[]) => void).apply(this, args);
+    } as typeof original;
+  });
+}
+
+/**
+ * The paint count when `worker`'s `close` reaches the test: before a new worker could have
+ * compiled PDFium and drawn (about 190 ms measured, S5).
+ */
+function paintsWhenItCloses(
+  page: Page,
+  worker: Worker,
+): { paints: Promise<number>; closedYet: () => boolean } {
+  let closed = false;
+  const paints = new Promise<number>((resolve) =>
+    worker.on("close", () => {
+      closed = true;
+      void page
+        .evaluate(() => (globalThis as unknown as { __paints: number }).__paints)
+        .then(resolve);
+    }),
+  );
+  return { paints, closedYet: () => closed };
+}
+
+/**
  * The page's render worker, found by what its bundle carries: only the render bundle defines the
  * PDFium bridge. Polled, because the strip builds its worker on first use.
  */
@@ -275,45 +327,14 @@ test("a document chosen while a render is in flight is drawn once it settles, an
   // `finally` exists for: the end waits for the render to settle (`ending`, never mid-render,
   // #361), the old pages are discarded as stale, and `pump` is asked again for the new document's
   // tiles -- nothing else will ask, since their intersection already found `running` set.
-  let held: (() => Promise<void>) | null = null;
-  const arrived = new Promise<void>((resolve) => {
-    void page.route(/\/pdfium\.[0-9a-f]+\.wasm$/, (route) => {
-      if (held !== null) return route.continue();
-      held = () => route.continue();
-      resolve();
-    });
-  });
-  // EVERY PAINT COUNTED, so what was drawn before the old worker closed can be read back.
-  await page.addInitScript(() => {
-    const original = CanvasRenderingContext2D.prototype.putImageData;
-    const scope = globalThis as unknown as { __paints: number };
-    scope.__paints = 0;
-    CanvasRenderingContext2D.prototype.putImageData = function (
-      this: CanvasRenderingContext2D,
-      ...args: unknown[]
-    ) {
-      scope.__paints += 1;
-      return (original as (...a: unknown[]) => void).apply(this, args);
-    } as typeof original;
-  });
+  const { arrived, release } = holdFirstPdfium(page);
+  await countPaints(page);
 
   await page.goto("/rotate-pdf/");
   await choose(page, "pages-10.pdf");
   await arrived;
   const first = await renderWorker(page);
-  let paintsAtClose: number | null = null;
-  let closedYet = false;
-  const closed = new Promise<void>((resolve) =>
-    first.on("close", () => {
-      closedYet = true;
-      void page
-        .evaluate(() => (globalThis as unknown as { __paints: number }).__paints)
-        .then((n) => {
-          paintsAtClose = n;
-          resolve();
-        });
-    }),
-  );
+  const ended = paintsWhenItCloses(page, first);
 
   const changed = Date.now();
   await choose(page, "mixed-rotation-4page.pdf");
@@ -323,18 +344,45 @@ test("a document chosen while a render is in flight is drawn once it settles, an
   // RELEASED SHORT OF `END_DEADLINE_MS`, and the old worker still alive: so the end this test
   // reaches is the one that waits for the render to settle, not the deadline's.
   await page.waitForTimeout(300);
-  expect(closedYet, "the old worker ended before its render settled").toBe(false);
+  expect(ended.closedYet(), "the old worker ended before its render settled").toBe(false);
   expect(Date.now() - changed, "the hold ran into the end deadline").toBeLessThan(END_DEADLINE_MS);
-  await held!();
+  await release();
 
-  // THE OLD WORKER CLOSES, once its render settled.
-  await closed;
-  // AND NO OLD TILE SHOWED: every picture the old worker produced arrived for a document nobody
-  // shows any more. Read as the paint count when its `close` reached the test, which is before a
-  // new worker could have compiled PDFium and drawn (about 190 ms measured, S5).
+  // THE OLD WORKER CLOSES, once its render settled. AND NO OLD TILE SHOWED: every picture the
+  // old worker produced arrived for a document nobody shows any more.
+  const paintsAtClose = await ended.paints;
   expect(paintsAtClose, "a page of the previous document was painted").toBe(0);
   // THE NEW DOCUMENT IS DRAWN, on a worker of its own: the re-pump.
   await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
   const second = await renderWorker(page);
   expect(second, "the second document was drawn by the first document's worker").not.toBe(first);
+});
+
+test("a render in flight across a back-forward cache hide and restore is never painted (#199)", async ({
+  page,
+}) => {
+  // OWNER, 2026-10-16, (a): a worker frozen with the page is accepted, and what it posts is
+  // dropped -- zeroed, never painted. The render is held across `pagehide` and a persisted
+  // `pageshow`, then released: every page it delivers arrives for a generation nobody shows.
+  const { arrived, release } = holdFirstPdfium(page);
+  await countPaints(page);
+
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await arrived;
+  const first = await renderWorker(page);
+  const ended = paintsWhenItCloses(page, first);
+
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    globalThis.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  expect(ended.closedYet(), "the worker was terminated mid-render (#361)").toBe(false);
+  await release();
+
+  expect(await ended.paints, "a page the frozen render produced was painted").toBe(0);
+  // AND THE RESTORED PAGE DRAWS, on a worker of its own.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the restored page drew on the frozen page's worker").not.toBe(first);
 });

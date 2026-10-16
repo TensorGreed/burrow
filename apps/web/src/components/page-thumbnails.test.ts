@@ -191,6 +191,18 @@ describe("the page-picture strip", () => {
     expect(source).toMatch(/zeroPixels\(tile\.data\?\.data\);\s*tiles\[page - 1\] = \{/);
   });
 
+  it("asks for one batch per request, and tells the end gate each page arrived (owner, 2026-10-16)", () => {
+    // What a batch is and what progress does are `strip-lifecycle.test.ts`'s. What this pins is
+    // that the strip uses them: every request is `batchOf` the outstanding pages, and every page
+    // that arrives -- current or stale -- restarts a waiting end's deadline before anything else.
+    expect(source).toMatch(/const pages = batchOf\(outstanding\(\)\);/);
+    expect(
+      [...source.matchAll(/(?<!function )\boutstanding\(\)/g)].length,
+      "a call to outstanding() that is not batched",
+    ).toBe(1);
+    expect(source).toMatch(/onPage: \(page, pixels\) => \{\s*ending\.progress\(\);/);
+  });
+
   it("zeroes a previous document's picture on arrival and never shows it (#199, D4)", () => {
     // The stale branch of `onPage`: a render for a document the strip no longer shows is zeroed and
     // dropped before anything can paint it. `discardStale` is `strip-lifecycle.test.ts`'s.

@@ -393,10 +393,12 @@ header records the near shapes that did. The allocator is held natively too
 
 **Still not true of the code:** PDFium's own heap is not zeroed and no canary scans it; it is
 released only by ending the worker, which the strip does on the rules above. That end waits for a
-render in flight to settle (terminating mid-render crashed Firefox, #361), for at most
-`END_DEADLINE_MS`; a strip request is every waiting tile at once, so an honest heavy document can
-still be rendering when the deadline fires, and the end then terminates it mid-render anyway --
-whether to batch requests or re-arm the deadline per page is with the owner. The pixels the worker
+render in flight to settle (terminating mid-render crashed Firefox, #361). A request carries at
+most four pages (`RENDER_BATCH`), so the wait is one batch; and the deadline, `END_DEADLINE_MS`, is
+restarted by every page that arrives, so it ends a render that has gone silent, not one that is
+slow (owner, 2026-10-16). A single page that renders for longer than the deadline is still
+terminated mid-render. A worker frozen in the back-forward cache mid-render is accepted (owner,
+2026-10-16): the frozen page holds the `File` too, and nothing that worker posts is painted. The pixels the worker
 posts are the page as drawn, by design; what holds them on the main thread after the strip lets go
 (the canvas's own backing store, a `putImageData` copy) is cleared by setting the canvas to 0×0,
 not shown to be wiped.

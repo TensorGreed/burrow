@@ -34,7 +34,7 @@
 
   import { CANCELLED } from "../host/worker-host.js";
   import { ENGINE_PAUSED, LIMITS, RENDER, createToolHost, hostKind } from "./tool-host.js";
-  import { createEndGate, discardStale } from "./strip-lifecycle.js";
+  import { batchOf, createEndGate, discardStale } from "./strip-lifecycle.js";
   import { releaseTiles, zeroPixels } from "./strip-release.js";
   import { evictable, outstanding as outstandingPages, releasedState } from "./strip-schedule.js";
   import type { TileState } from "./strip-schedule.js";
@@ -268,7 +268,9 @@
       // ones after it are still wanted, the reply asked for the worker to be recycled, or the
       // viewport moved while a request was in flight.
       while (mine === generation && !unavailable && !paused) {
-        const pages = outstanding();
+        // ONE BATCH PER REQUEST (owner, 2026-10-16): an end asked for while it runs waits for at
+        // most `RENDER_BATCH` pages, and this loop asks again for the rest.
+        const pages = batchOf(outstanding());
         if (pages.length === 0) break;
         if (!(await drawRun(chosen, pages, mine))) break;
       }
@@ -324,6 +326,9 @@
         {
           maxDurationMs: LIMITS.maxDurationMs,
           onPage: (page, pixels) => {
+            // THE RENDER IS ALIVE: a waiting end's deadline starts again, so a slow render that
+            // is still producing pages is not cut short (owner, 2026-10-16).
+            ending.progress();
             // A PREVIOUS DOCUMENT'S PICTURE, arriving after the change: never shown for the new
             // one, and zeroed on arrival (D4).
             if (mine !== generation) {
@@ -456,6 +461,18 @@
 
   // LEAVING THE PAGE (#199, D1): every tile's pixels zeroed and the worker ended. The tiles go back
   // to waiting, so a page restored from the back-forward cache draws them again, on a new worker.
+  //
+  // A WORKER CAN BE FROZEN WITH THE PAGE, AND THAT IS ACCEPTED (owner, 2026-10-16, (a)). The end
+  // waits for a render in flight to settle (#361), so a page left mid-render can enter the
+  // back-forward cache with its worker, and PDFium's heap, still alive. The frozen page holds the
+  // chosen `File` as well, so what the frozen worker holds is the same kind of exposure, for the
+  // same lifetime, and terminating it mid-render to avoid that is the crash #361 records.
+  //
+  // WHAT THAT WORKER POSTS IS NEVER PAINTED. `generation` moves here, so every page the frozen
+  // render delivers -- before the freeze, or queued and delivered after the restore -- arrives
+  // for a generation nobody shows and is zeroed on arrival (`discardStale`). The restore then
+  // draws on a new worker once the old render settles (the `finally`'s re-pump).
+  // `e2e/page-thumbnails.spec.ts` holds it, with the render held across the hide and the show.
   $effect(() => {
     const onPageHide = () => {
       hidden = true;

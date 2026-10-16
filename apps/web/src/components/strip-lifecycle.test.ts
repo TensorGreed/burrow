@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { END_DEADLINE_MS, createEndGate, discardStale } from "./strip-lifecycle";
+import {
+  END_DEADLINE_MS,
+  RENDER_BATCH,
+  batchOf,
+  createEndGate,
+  discardStale,
+} from "./strip-lifecycle";
 
 /** A gate over a fake clock: `advance` fires every timer due by then. */
 function gate() {
@@ -92,8 +98,53 @@ describe("the strip's render worker ends one document after another (#199, D1)",
     expect(t.discards(), "a cancelled end was carried out").toBe(0);
   });
 
+  it("does not kill a slow render that is still producing pages (owner, 2026-10-16)", () => {
+    // Eight pages at 2.5 s each: 20 s in all, past the deadline many times over, but never 3 s
+    // without a page.
+    const t = gate();
+    t.g.request(true);
+    for (let page = 0; page < 8; page += 1) {
+      t.advance(END_DEADLINE_MS - 500);
+      expect(t.discards(), `killed while page ${page + 1} was arriving`).toBe(0);
+      t.g.progress();
+    }
+    expect(t.timers(), "progress left more than one deadline armed").toBe(1);
+    t.g.settled();
+    expect(t.discards(), "the end was not carried out when the render settled").toBe(1);
+  });
+
+  it("kills a silent render at the deadline, counted from its last page", () => {
+    const t = gate();
+    t.g.request(true);
+    t.advance(2_000);
+    t.g.progress();
+    t.advance(END_DEADLINE_MS - 1);
+    expect(t.discards(), "the deadline ran from the request, not the last page").toBe(0);
+    t.advance(1);
+    expect(t.discards(), "a render silent for END_DEADLINE_MS kept its worker").toBe(1);
+  });
+
+  it("a page with no end waiting arms nothing", () => {
+    const t = gate();
+    t.g.progress();
+    expect(t.timers()).toBe(0);
+    t.advance(END_DEADLINE_MS * 2);
+    expect(t.discards()).toBe(0);
+  });
+
   it("is a few seconds, said as a number", () => {
     expect(END_DEADLINE_MS).toBe(3_000);
+  });
+});
+
+describe("an end waits for at most one batch (owner, 2026-10-16)", () => {
+  it("asks for at most RENDER_BATCH pages, in order, and the rest on the next round", () => {
+    expect(RENDER_BATCH).toBeGreaterThanOrEqual(1);
+    expect(RENDER_BATCH).toBeLessThanOrEqual(4);
+    const waiting = Array.from({ length: 40 }, (_, i) => i + 1);
+    expect(batchOf(waiting)).toEqual(waiting.slice(0, RENDER_BATCH));
+    expect(batchOf([7, 3])).toEqual([7, 3]);
+    expect(batchOf([])).toEqual([]);
   });
 });
 
