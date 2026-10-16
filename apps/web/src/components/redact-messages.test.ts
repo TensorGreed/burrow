@@ -186,6 +186,27 @@ describe("redaction's refusal categories (#136, S3 and S7)", () => {
     expect(messageFor({ kind: "Unsupported", message: "[made-up-thing]" }).rule).toBe("");
   });
 
+  it("answers the second reading's refusals with OutputRejected's own copy, never a category (#206)", () => {
+    // They arrive as `OutputRejected`, in the shape `redact_read_back.rs`'s `rejected` writes. Their
+    // `RULES` entries are placeholders (see the comment there): what a visitor reads is the kind's
+    // sentence, with the rule id kept for a report.
+    const ids = engineRules().filter((id) => id.startsWith("second-reading-"));
+    expect(ids, "the engine's list of second-reading ids").toHaveLength(9);
+    const rejected = messageFor({ kind: "OutputRejected", message: "" });
+    expect(rejected.title).toBe("Not Only PDF checked the result and would not hand it over.");
+    const categoryTitles = new Set(Object.values(CATEGORIES).map((c) => c.title));
+    for (const id of ids) {
+      const shown = messageFor({
+        kind: "OutputRejected",
+        message: `redact: the second reading refuses the output -- [${id}] page 1 x`,
+      });
+      expect(shown.title, id).toBe(rejected.title);
+      expect(shown.next, id).toBe(rejected.next);
+      expect(shown.rule, id).toBe(id);
+      expect(categoryTitles.has(shown.title), `${id} showed a category sentence`).toBe(false);
+    }
+  });
+
   it("never puts the engine's message on the page, for any kind (ADR 0009)", () => {
     const CANARY = "SECRET-CANARY-9d1f";
     for (const kind of KINDS) {
