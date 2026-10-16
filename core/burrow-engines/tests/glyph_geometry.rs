@@ -793,7 +793,7 @@ fn an_embedded_cmap_declaring_wmode_one_is_refused_whatever_it_is_called() {
     let resources = CidFont {
         encoding: Encoding::Embedded {
             dictionary_wmode,
-            program,
+            program: program.into(),
         },
     };
     match glyphs_in(
@@ -825,7 +825,7 @@ fn the_horizontal_twin_of_that_document_is_not_refused() {
     let resources = CidFont {
         encoding: Encoding::Embedded {
             dictionary_wmode,
-            program,
+            program: program.into(),
         },
     };
     let glyphs = glyphs_in(

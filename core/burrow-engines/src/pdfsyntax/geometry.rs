@@ -3104,13 +3104,13 @@ pub enum Encoding {
     /// none. Single-byte by construction too, which the walk checks rather than assumes.
     Simple,
     /// A predefined CMap, by registry name. The document carries no program.
-    Predefined(Vec<u8>),
+    Predefined(Arc<[u8]>),
     /// An embedded CMap stream the resolver read: its dictionary's `/WMode` and its program.
     Embedded {
         /// `/WMode` on the CMap stream dictionary, if the file states one.
         dictionary_wmode: Option<i64>,
         /// The CMap program, decoded.
-        program: Vec<u8>,
+        program: Arc<[u8]>,
     },
     /// An embedded CMap stream the resolver could **not** read.
     ///
@@ -5065,7 +5065,7 @@ mod tests {
     fn walk_cmap(dictionary_wmode: Option<i64>, program: &[u8]) -> Result<()> {
         walk_encoded(Encoding::Embedded {
             dictionary_wmode,
-            program: program.to_vec(),
+            program: program.into(),
         })
     }
 
@@ -5420,12 +5420,14 @@ mod tests {
             }
             Refusal::StringNotWholeCodes => vec![
                 (Content, || {
-                    walk_encoded(Encoding::Predefined(b"Identity-H".to_vec())).and_then(|()| {
-                        let mut wide = Fake::new();
-                        wide.bytes_per_code = 2;
-                        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
-                        walk_with("/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide)
-                    })
+                    walk_encoded(Encoding::Predefined(b"Identity-H".as_slice().into())).and_then(
+                        |()| {
+                            let mut wide = Fake::new();
+                            wide.bytes_per_code = 2;
+                            wide.encoding = Encoding::Predefined(b"Identity-H".as_slice().into());
+                            walk_with("/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide)
+                        },
+                    )
                 }),
                 (Invariant, || {
                     cut_forged(
@@ -5440,7 +5442,7 @@ mod tests {
             Refusal::MixedCodeWidths => vec![(Invariant, || {
                 let mut wide = Fake::new();
                 wide.bytes_per_code = 2;
-                wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+                wide.encoding = Encoding::Predefined(b"Identity-H".as_slice().into());
                 let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
                 let mut glyphs = glyphs_in(content, &wide, &unwatched())?;
                 glyphs[1].source.bytes_per_code = 1;
@@ -5488,7 +5490,7 @@ mod tests {
             Refusal::UndeterminedWritingMode => vec![
                 // A predefined name with neither suffix.
                 (Content, || {
-                    walk_encoded(Encoding::Predefined(b"SomethingElse".to_vec()))
+                    walk_encoded(Encoding::Predefined(b"SomethingElse".as_slice().into()))
                 }),
                 // `WMode 2`, from the stream dictionary.
                 (Content, || walk_cmap(Some(2), b"")),
@@ -6888,7 +6890,7 @@ mod tests {
         vertical.bytes_per_code = 2;
         vertical.encoding = Encoding::Embedded {
             dictionary_wmode: None,
-            program: b"/CMapName /Identity-H def /WMode 1 def".to_vec(),
+            program: b"/CMapName /Identity-H def /WMode 1 def".as_slice().into(),
         };
         assert_refused(
             glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &vertical, &unwatched()),
@@ -6899,7 +6901,7 @@ mod tests {
         horizontal.bytes_per_code = 2;
         horizontal.encoding = Encoding::Embedded {
             dictionary_wmode: None,
-            program: b"/CMapName /Identity-H def /WMode 0 def".to_vec(),
+            program: b"/CMapName /Identity-H def /WMode 0 def".as_slice().into(),
         };
         assert_eq!(
             glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &horizontal, &unwatched())
@@ -6931,7 +6933,7 @@ mod tests {
         program.extend_from_slice(b"/WMode 0 def");
         fake.encoding = Encoding::Embedded {
             dictionary_wmode: None,
-            program,
+            program: program.into(),
         };
         // One `Tf`, then 16,000 shows -- the shape `make.py` produces, under `MAX_GLYPHS`.
         let mut content = b"BT /F 12 Tf ".to_vec();
@@ -7152,7 +7154,7 @@ mod tests {
         // is a wrong answer about what the page draws before removal is even reached.
         let mut wide = Fake::new();
         wide.bytes_per_code = 2;
-        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        wide.encoding = Encoding::Predefined(b"Identity-H".as_slice().into());
         assert_refused(
             glyphs_in(b"/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide, &unwatched()),
             Refusal::StringNotWholeCodes,
@@ -7165,7 +7167,7 @@ mod tests {
         // frames correctly and the code that comes out is the one that was asked for.
         let mut wide = Fake::new();
         wide.bytes_per_code = 2;
-        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        wide.encoding = Encoding::Predefined(b"Identity-H".as_slice().into());
         let content = b"/F1 10 Tf BT 0 0 Td (ABCDEF) Tj ET";
         let glyphs = glyphs_in(content, &wide, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 3, "three two-byte codes");
@@ -7188,7 +7190,7 @@ mod tests {
         // parameter that could differ between elements is the shape of the defect above.
         let mut wide = Fake::new();
         wide.bytes_per_code = 2;
-        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        wide.encoding = Encoding::Predefined(b"Identity-H".as_slice().into());
         let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
         let mut glyphs = glyphs_in(content, &wide, &unwatched()).expect("walks");
         glyphs[1].source.bytes_per_code = 1;
@@ -7626,7 +7628,7 @@ mod tests {
         // read it to refuse it, which is what makes this a test of the derivation.
         resources.encoding = Encoding::Embedded {
             dictionary_wmode: None,
-            program: b"/CMapName /Ordinary-H def /WMode 1 def".to_vec(),
+            program: b"/CMapName /Ordinary-H def /WMode 1 def".as_slice().into(),
         };
         resources.bytes_per_code = 2;
         // `(AB)` and not `(A)`: a one-byte string against a two-byte font is now refused for
