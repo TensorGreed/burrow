@@ -17,7 +17,7 @@ repo="$(cd "$here/.." && pwd)"
 ci="$repo/.github/workflows/ci.yml"
 backup="$(mktemp)"
 cp "$ci" "$backup"
-trap 'cp "$backup" "$ci"; rm -f "$backup"' EXIT
+trap 'cp "$backup" "$ci"; rm -f "$backup" "$here/.ci-local-lock-probe.py"' EXIT
 
 pass=0
 fail=0
@@ -319,7 +319,7 @@ if [ -n "$built" ] && [ -x "$built" ]; then
   hidden="$built.hidden-by-test-ci-local"
   mv "$built" "$hidden"
   # RESTORED ON EVERY EXIT, alongside the ci.yml copy the outer trap already handles.
-  trap 'cp "$backup" "$ci"; rm -f "$backup"; [ -n "$hidden" ] && [ -e "$hidden" ] && mv "$hidden" "${hidden%.hidden-by-test-ci-local}"' EXIT
+  trap 'cp "$backup" "$ci"; rm -f "$backup" "$here/.ci-local-lock-probe.py"; [ -n "$hidden" ] && [ -e "$hidden" ] && mv "$hidden" "${hidden%.hidden-by-test-ci-local}"' EXIT
 fi
 
 # A PATH holding the interpreter and NOTHING ELSE, so `shutil.which("qpdf")` genuinely finds
@@ -1583,6 +1583,87 @@ else
   fi
 fi
 rm -f "$guard_fixture"
+
+# THE PLAYWRIGHT LOCK (2026-10-15, the five-lane plan): a held lock makes a second taker wait and
+# then give up, naming the holder; a free one is taken. Exercised on a lock file of its own, so the
+# case never waits behind a real sweep.
+lock_probe="$here/.ci-local-lock-probe.py"
+python3 - "$here/ci-local.py" "$lock_probe" <<'PYPLANT'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = '    handle.write(f"{REPO} (pid {os.getpid()})\\n")\n'
+assert old in text, "MUTATION DID NOT APPLY: the holder line's write has moved"
+dst.write_text(text.replace(old, "", 1))
+PYPLANT
+lock_out="$(python3 -B - "$here/ci-local.py" "$lock_probe" <<'PYLOCK' 2>&1
+import importlib.util, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
+
+def load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+ci = load(sys.argv[1], "ci_local")
+work = pathlib.Path(tempfile.mkdtemp())
+try:
+    path = work / "pw.lock"
+    holder = subprocess.Popen([sys.executable, "-c", (
+        "import fcntl,sys,time\n"
+        f"h=open({str(path)!r},'a+'); fcntl.flock(h, fcntl.LOCK_EX); h.seek(0); h.truncate()\n"
+        "h.write('the planted holder\\n'); h.flush(); print('held', flush=True); time.sleep(30)\n")],
+        stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    started = time.monotonic()
+    got = ci.playwright_lock(wait_s=1.0, path=path, ports=())
+    assert got is None, "a held lock was taken"
+    assert time.monotonic() - started >= 1.0, "gave up on a held lock before its bound"
+    holder.kill(); holder.wait()
+
+    # A FREE LOCK IS TAKEN, AND THE HOLDER LINE IS WRITTEN AT ONCE, naming this checkout and pid.
+    free = socket.socket(); free.bind(("127.0.0.1", 0)); spare = free.getsockname()[1]; free.close()
+    got = ci.playwright_lock(wait_s=1.0, path=path, ports=(spare,))
+    assert got is not None, "a free lock was not taken"
+    written = path.read_text()
+    assert str(ci.REPO) in written and str(os.getpid()) in written, f"holder line: {written!r}"
+    got.close()
+
+    # THE PLANTED DELETION OF THAT WRITE must fail the same assertion: the line is not written by
+    # anything else.
+    probe = load(sys.argv[2], "ci_local_probe")
+    path.write_text("")
+    got = probe.playwright_lock(wait_s=1.0, path=path, ports=())
+    assert got is not None
+    assert str(os.getpid()) not in path.read_text(), "the holder line appeared without its write"
+    got.close()
+
+    # A BOUND PORT, on 127.0.0.1 and on the wildcard address, holds the lock back until its own
+    # short limit, then gives up.
+    for address in ("127.0.0.1", "0.0.0.0"):
+        taken = socket.socket(); taken.bind((address, 0)); taken.listen(1)
+        busy = taken.getsockname()[1]
+        started = time.monotonic()
+        got = ci.playwright_lock(wait_s=60.0, path=path, ports=(busy,), port_wait_s=1.0)
+        assert got is None, f"a port listened on at {address} did not stop the lock being taken"
+        took = time.monotonic() - started
+        assert 1.0 <= took < 30.0, f"the port limit, not the lock's, should end the wait: {took:.1f}s"
+        taken.close()
+    print("lock-ok")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+PYLOCK
+)" || true
+rm -f "$lock_probe"
+if grep -q "lock-ok" <<<"$lock_out" && grep -q "held by the planted holder" <<<"$lock_out" &&
+  grep -q "is still in use after" <<<"$lock_out"; then
+  echo "  ok   the Playwright lock waits for a holder, writes its own holder line, and gives up on a bound port at the port limit"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the Playwright lock did not behave as required"
+  echo "$lock_out" | tail -8
+  fail=$((fail + 1))
+fi
 
 echo
 if [ "$fail" -ne 0 ]; then

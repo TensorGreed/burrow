@@ -50,13 +50,17 @@ Usage:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -2069,12 +2073,132 @@ def qpdf_cli() -> tuple[str | None, str]:
     return None, "not found"
 
 
+# ONE PLAYWRIGHT RUN PER MACHINE, WHICHEVER TREE IT COMES FROM. The e2e suite serves the build on
+# fixed ports (`playwright.config.ts`: 4321 for the site, 4322 for the foreign logger), and the
+# harness build bakes the site's origin into its CSP. Two sweeps in two worktrees at once -- the
+# five-lane plan of 2026-10-15 -- would both bind them: the second fails on `EADDRINUSE`, a
+# failure that reads as the change's. So a job that runs Playwright takes a lock first, the same
+# file for every checkout of every branch, and waits for it, bounded, saying whose run it waits
+# behind. The wait is bounded because an `until` that cannot end is the failure CLAUDE.md names.
+#
+# AND THE PORTS THEMSELVES, after the lock: a runner from before this lock (a branch not yet
+# rebased) or a `pnpm e2e` started by hand takes no lock, so the holder of it also waits, bounded,
+# until the suite's ports (4321 site, 4322 foreign logger, 4323 origin-guard's mismatch) can be
+# bound. That leaves a race of the moment between this check and Playwright's own `listen`, which
+# is stated rather than closed: the failure it allows is the loud `EADDRINUSE` this exists to avoid,
+# never a run against another tree's server.
+PLAYWRIGHT_PORTS = (4321, 4322, 4323)
+# ONE FIXED PATH for every shell of this user: `XDG_RUNTIME_DIR` differs between a desktop session
+# and an ssh one, and two lock files are no lock (code review of the enabler).
+PLAYWRIGHT_LOCK = Path(tempfile.gettempdir()) / f"burrow-playwright-{os.getuid()}.lock"
+PLAYWRIGHT_LOCK_WAIT_S = 3600.0
+# THE PORTS GET THEIR OWN, SHORT LIMIT. Waiting an hour for a lock another sweep holds is right;
+# waiting an hour for a port held by a `pnpm dev` left running is not -- that used to fail at once,
+# on `EADDRINUSE`, and it should still fail fast, naming who holds the port.
+PLAYWRIGHT_PORT_WAIT_S = 120.0
+
+
+def port_in_use(port: int) -> bool:
+    """Whether something LISTENS on `port`, on 127.0.0.1 or the wildcard address.
+
+    `SO_REUSEADDR` on the probe, so a port whose last connection is in TIME_WAIT reads as free --
+    Playwright's server sets it too, and binds such a port -- while a socket that is listening still
+    refuses the bind on Linux.
+    """
+    for address in ("127.0.0.1", "0.0.0.0"):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((address, port))
+            except OSError:
+                return True
+    return False
+
+
+def port_listener(port: int) -> str:
+    """Who listens on `port`, as `ss` reports it, for the message that names it."""
+    try:
+        listing = subprocess.run(
+            ["ss", "-ltnpH", f"sport = :{port}"], capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        listing = ""
+    return listing or "a listener `ss` did not name"
+
+
+def playwright_lock(
+    wait_s: float = PLAYWRIGHT_LOCK_WAIT_S,
+    path: Path | None = None,
+    ports: tuple[int, ...] = PLAYWRIGHT_PORTS,
+    port_wait_s: float = PLAYWRIGHT_PORT_WAIT_S,
+):
+    """The machine-wide Playwright lock, held until the returned file is closed; None on timeout.
+
+    The holder writes its checkout and pid into the file AS SOON AS IT HOLDS IT, so a waiter can
+    say what it waits for even while the holder is still waiting on a port. Taken only once
+    `ports` are free too.
+    """
+    lock_path = path or PLAYWRIGHT_LOCK
+    handle = open(lock_path, "a+")  # noqa: SIM115 -- held open for the job's duration
+    started = time.monotonic()
+    said = False
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if not said:
+                handle.seek(0)
+                holder = handle.read().strip() or "an unnamed run"
+                print(f"    waiting for the Playwright lock ({lock_path}), held by {holder}")
+                said = True
+            if time.monotonic() - started >= wait_s:
+                handle.close()
+                return None
+            time.sleep(2.0)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{REPO} (pid {os.getpid()})\n")
+    handle.flush()
+    ports_started = time.monotonic()
+    busy_said = False
+    while busy := [port for port in ports if port_in_use(port)]:
+        if not busy_said:
+            print(f"    holding the Playwright lock, waiting for port(s) {busy} to be released")
+            busy_said = True
+        if time.monotonic() - ports_started >= port_wait_s:
+            for port in busy:
+                print(f"    port {port} is still in use after {port_wait_s:.0f}s: {port_listener(port)}")
+            handle.close()
+            return None
+        time.sleep(2.0)
+    waited = time.monotonic() - started
+    if said or busy_said:
+        print(f"    took the Playwright lock after {waited:.0f}s")
+    return handle
+
+
 def run(job: dict, env: dict[str, str] | None = None) -> bool:
     print(f"\n=== {job['name']}")
     if job.get("why"):
         print(f"    ({job['why']})")
     print(f"    $ {job['run']}")
-    result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
+    lock = None
+    if runs_playwright(job):
+        lock = playwright_lock()
+        if lock is None:
+            print(
+                f"    FAIL  {job['name']}: the Playwright lock was not free within "
+                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, or its ports {list(PLAYWRIGHT_PORTS)} stayed bound "
+                f"for {PLAYWRIGHT_PORT_WAIT_S:.0f}s (named above), so this run would share them "
+                f"with another -- not run"
+            )
+            return False
+    try:
+        result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
+    finally:
+        if lock is not None:
+            lock.close()
     ok = result.returncode == 0
     print(f"    {'PASS' if ok else 'FAIL'}  {job['name']}")
     return ok
