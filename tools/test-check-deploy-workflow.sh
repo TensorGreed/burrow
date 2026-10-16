@@ -127,6 +127,17 @@ p.write_text(s)
 assert "pull_request" in yaml.safe_load(s)[True], "plant did not reach the parsed document"
 '
 
+# THE MERGE QUEUE'S TRIGGER (owner, 2026-10-16): `ci.yml` gains `merge_group`, and the deploy
+# must not. A queue's merge commit is not on `main` yet, so a deploy it started would publish a
+# tree that has not merged.
+expect_refusal "a merge_group trigger on the deploy is refused" "unexpected: merge_group" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace("  push:\n", "  merge_group:\n    types: [checks_requested]\n  push:\n", 1)
+p.write_text(s)
+assert "merge_group" in yaml.safe_load(s)[True], "plant did not reach the parsed document"
+'
+
 # Since deploy-on-tag the push filter is exactly {branches:[main], tags:[v*]}. A WIDER tag glob
 # lets another tag family reach the job that keys off a tag; dropping the tag line entirely is a
 # different filter. Both must be refused as "not exactly".

@@ -246,8 +246,10 @@ A change is done when all of these hold:
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.
 - [ ] Docs updated: rustdoc on public items, plus `docs/ROADMAP.md` or an ADR if scope
       or a decision changed.
-- [ ] `tools/ci-local.py --changed` passes **before every push**, and **GitHub CI is green on
-      the PR's exact head commit before merge**. That green is the merge gate. No full local
+- [ ] `tools/ci-local.py --changed` passes **before every push**, and the merge gate holds:
+      **once "Require merge queue" is on, the merge-group run, via `gh pr merge --auto`; until
+      then, GitHub CI green on the PR's exact head commit** (DECISIONS rule 11 and its
+      2026-10-16 amendment, which states what the queue does not check). No full local
       sweep runs before merge; that rule was dropped on 2026-09-24, and *Working agreements*
       says why. `ci-local` is the replication of CI, and it refuses to run if CI has a gate
       nothing local covers. The fuzz jobs are not on the pre-push path.
@@ -371,10 +373,13 @@ those at full candour is working and is not what "summarise" is asking you to sh
   tools/ci-local.py --only web # one job
   ```
 
-  **The pre-push gate is `--changed`. The merge gate is GitHub CI, green on the PR's exact head
-  commit.** Read the verdict per job with `gh run view <id> --json conclusion,jobs,headSha`, and
-  check that `headSha` is the PR's head. That is two changes from "run everything before every
-  push".
+  **The pre-push gate is `--changed`. The merge gate, once "Require merge queue" is on, is the
+  merge-group run, entered with `gh pr merge --auto`; until then it is GitHub CI, green on the PR's
+  exact head commit.** Until then, read the verdict per job with
+  `gh run view <id> --json conclusion,jobs,headSha`, and check that `headSha` is the PR's head.
+  The queue enforces the required `ci` check-run rather than the run-level conclusion, so after a
+  queued merge, `main`'s post-merge push run is read as DECISIONS rule 11's amendment says.
+  That is two changes from "run everything before every push".
 
   **The first, in M2: the pre-push gate became `--changed`.** The old rule had stopped being
   followed. A full sweep is over twenty minutes, most of it fuzzing, and a rule that expensive
