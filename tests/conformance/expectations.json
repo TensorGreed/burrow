@@ -884,8 +884,8 @@
           }
         },
         "split": {
-          "err": {
-            "kind": "Unsupported"
+          "ok": {
+            "page_count": 2
           }
         },
         "compress": {
@@ -898,11 +898,6 @@
             "compressed": true
           }
         }
-      },
-      "known_gap": {
-        "issue": "https://github.com/TensorGreed/burrow/issues/358",
-        "reason": "split refuses Chrome's empty-name destination (`/Dest /`, written for `href=\"#\"`) as [split-name-read-differently], so it refuses ordinary Chrome-printed PDFs",
-        "milestone": "M2"
       }
     },
     {

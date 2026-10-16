@@ -670,6 +670,40 @@ fn an_empty_dest_in_a_link_opens_split_and_a_meaningful_key_refuses() {
     }
 }
 
+/// THE UNTAGGED CHROME SHAPE (#358, owner 2026-10-16): Chrome writes `/Dest /` as an annotation's
+/// last entry, so the empty value is followed directly by the `>>` that closes it. Admitted. The
+/// near-miss twin, an empty KEY before the same `>>`, refuses, as does any follower Chrome does
+/// not write, and a `>` that does not begin `>>`.
+#[test]
+fn an_empty_dest_closing_its_link_opens_split_and_an_empty_key_there_refuses() {
+    let link = |inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside}"),
+        )]
+    };
+    for inside in ["/Border [0 0 0]\n/Dest />>", "/Dest />>"] {
+        opens(
+            &format!("untagged Chrome: {inside:?}"),
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+        );
+    }
+    for inside in [
+        "/Dest [3 0 R /Fit] />>",
+        "/Dest /> >>",
+        "/Dest / >>",
+        "/Dest /\t>>",
+        "/Dest /\r>>",
+    ] {
+        refuses(
+            &format!("twin: {inside:?}"),
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
 /// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
 #[test]

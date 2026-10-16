@@ -1378,32 +1378,33 @@ fn a_hidden_layer_in_an_annotation_appearance_past_the_ceiling_is_refused() {
     }
 }
 
-/// A CHROME-PRINTED DOCUMENT, refused today by the empty-name rule, pinned by its rule id (owner,
-/// 2026-10-15; #358).
+/// A CHROME-PRINTED DOCUMENT SPLITS (#358). It was refused by the empty-name rule from v0.1.6
+/// until the empty-name narrowing landed, and recorded as a known refusal (owner, 2026-10-15).
 ///
-/// Chrome's "Save as PDF" writes `href="#"` as an empty-name destination (`/Dest /`), and split
-/// refuses any empty name as `[split-name-read-differently]`. The fixture is our own two pages,
-/// printed by headless Chromium (`tools/make-chrome-printed-fixture.mjs`). This is a KNOWN
-/// REFUSAL, not a goal: lane 1's empty-name narrowing (#358, an acceptance change) flips it to two
-/// parts, and this test and the conformance `known_gap` change with it. Pinned by the rule id
-/// rather than by `Unsupported`, so a different refusal arriving first reads as the change it is.
+/// Chrome's "Save as PDF" writes `href="#"` as an empty-name destination (`/Dest /`). The
+/// fixture is our own two pages, printed by headless Chromium
+/// (`tools/make-chrome-printed-fixture.mjs`). Split now accepts that shape and returns two parts,
+/// each verified by the operation itself; the conformance case asserts the same, with no
+/// `known_gap`. Asserting the part count rather than only `is_ok` means a regression to one part,
+/// or a new refusal arriving, reads as the change it is.
 #[test]
-fn a_chrome_printed_document_is_refused_today_by_the_empty_name_rule() {
+fn a_chrome_printed_document_splits() {
     let pdf = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/conformance/fixtures/chrome-printed.pdf"),
     )
     .expect("the committed Chrome-printed fixture");
     match split_first(pdf, &[1]) {
-        Err(burrow_types::Error::Unsupported(message)) => assert!(
-            message.contains("[split-name-read-differently]"),
-            "refused, but not by the empty-name rule: {message}"
-        ),
-        other => panic!(
-            "a Chrome-printed document is refused by [split-name-read-differently] today; got \
-             {:?}. If lane 1's empty-name narrowing (#358) has landed, flip this test and the \
-             conformance known_gap together.",
-            other.map(|parts| parts.len())
-        ),
+        Ok(parts) => {
+            assert_eq!(
+                parts.len(),
+                2,
+                "a split after page 1 of two pages is two parts"
+            );
+            for part in &parts {
+                assert!(part.starts_with(b"%PDF-"), "each part is a PDF");
+            }
+        }
+        Err(error) => panic!("a Chrome-printed document must split (#358); refused: {error}"),
     }
 }
