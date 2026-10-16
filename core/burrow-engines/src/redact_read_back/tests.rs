@@ -475,13 +475,13 @@ const REJECTED: &[&str] = &[
 /// stripped, string literals kept, so a `#[link_name = "..."]` attribute binding one of them to an
 /// innocent Rust name is counted as the name it binds.
 ///
-/// A scan, not a parse, with two misses stated: a line is cut at its first `//`, so a name after a
-/// string literal containing `//` on the same line is not seen; and a name assembled at compile
-/// time (`concat!`) is not seen. Neither is reachable by accident.
+/// A scan, not a parse, with two misses stated: a line is cut at its first `//` OUTSIDE a
+/// double-quoted string (single-quoted and template strings are not tracked, so a `//` inside one
+/// still cuts the line); and a name assembled at compile time (`concat!`) is not seen.
 fn named(source: &str) -> std::collections::BTreeSet<String> {
     let mut found = std::collections::BTreeSet::new();
     for line in source.lines() {
-        let code = line.split("//").next().unwrap_or_default();
+        let code = code_of(line);
         for prefix in ["FPDFText_", "FPDFTextObj_", "FPDFLink_"] {
             let mut rest = code;
             while let Some(at) = rest.find(prefix) {
@@ -499,8 +499,32 @@ fn named(source: &str) -> std::collections::BTreeSet<String> {
     found
 }
 
+/// `line` up to its first `//` that is not inside a double-quoted string.
+fn code_of(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\\' if in_string => at += 1,
+            b'"' => in_string = !in_string,
+            b'/' if !in_string && bytes.get(at + 1) == Some(&b'/') => return &line[..at],
+            _ => {}
+        }
+        at += 1;
+    }
+    line
+}
+
 #[test]
 fn the_name_scan_matches_its_probes() {
+    // A URL IN A STRING does not hide the code after it (round 2): the cut is at a `//` outside one.
+    assert!(
+        named("    let u = \"https://example\"; FPDFText_GetUnicode(t, 0);")
+            .contains("FPDFText_GetUnicode"),
+        "a call after a URL string was cut off"
+    );
+    assert!(named("    let u = \"https://example\"; // FPDFText_GetUnicode").is_empty());
     // PER-NAME PROBES, every run: each rejected name is seen as a declaration, as a call, and
     // behind a `link_name` that hides it under another Rust name; and is NOT seen in a comment.
     for name in REJECTED {
@@ -587,59 +611,106 @@ fn the_pdfium_text_functions_named_are_the_five_permitted() {
     );
 }
 
-/// THE WEB HALF'S THREE SOURCES (#206), which sit outside this crate: the JavaScript bridge that
-/// forwards the PDFium calls, the Rust imports that bind them, and the declarations the render
-/// worker's types are checked against. Each may name only permitted functions, and the bridge must
-/// name all five -- it is the only route by which the web reading reaches PDFium at all.
+/// THE WEB HALF'S THREE SOURCES (#206), which sit outside this crate, each held to an EXPECTED
+/// count rather than to "nothing forbidden" -- a scan of a file it cannot read examines nothing and
+/// would pass (round 2: `bridge_pdfium.rs` named 0, and a planted mapping import survived):
+///
+/// - `bridge-pdfium.js` calls exactly the five permitted PDFium functions;
+/// - `globals-render.d.ts` declares exactly those five;
+/// - `bridge_pdfium.rs` imports exactly the `__burrow_pdfium_text_*` names the JavaScript bridge
+///   defines, five, and no other: an import nothing forwards fails at instantiation, and one the
+///   bridge forwards to a mapping call is caught by the first rule.
 ///
 /// JavaScript block comments are stripped as well as `//` ones: a line inside `/** ... */` starts
 /// with `*` or `/*` once trimmed, and is prose there exactly as a `//` line is.
 #[test]
 fn the_web_bridge_names_only_the_five_permitted() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let code = |source: &str| -> String {
+    let read = |file: &str| -> String {
+        let source = std::fs::read_to_string(repo.join(file)).expect("a web source file reads");
         source
             .lines()
             .filter(|line| {
                 let trimmed = line.trim_start();
                 !(trimmed.starts_with('*') || trimmed.starts_with("/*"))
             })
+            .map(code_of)
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let mut examined = Vec::new();
-    for (file, must_name_all) in [
-        ("apps/web/src/worker/bridge-pdfium.js", true),
-        ("apps/web/src/worker/globals-render.d.ts", false),
-        ("bindings/burrow-wasm/src/bridge_pdfium.rs", false),
-    ] {
-        let source = std::fs::read_to_string(repo.join(file)).expect("a web source file reads");
-        let names = named(&code(&source));
-        let stray: Vec<&String> = names
-            .iter()
-            .filter(|n| !PERMITTED.contains(&n.as_str()))
-            .collect();
-        assert!(
-            stray.is_empty(),
-            "{file} names {stray:?}, outside the five permitted"
-        );
-        if must_name_all {
-            let seen: Vec<&str> = names.iter().map(String::as_str).collect();
-            assert_eq!(
-                seen,
-                PERMITTED.to_vec(),
-                "{file} does not forward exactly the five"
-            );
-        }
-        examined.push(format!("{file}: {}", names.len()));
-    }
-    eprintln!("  web text-function scan: examined 3 of 3: {examined:?}");
-    // AND THE STRIPPING IS SHOWN TO KEEP CODE: a rejected name in a JS call is still seen, and the
-    // same name in a block comment is not.
-    assert!(
-        named(&code("  return Module._FPDFText_GetUnicode(t, i);")).contains("FPDFText_GetUnicode")
+    let permitted: Vec<&str> = PERMITTED.to_vec();
+    let names_in = |file: &str| -> Vec<String> { named(&read(file)).into_iter().collect() };
+
+    let bridge = names_in("apps/web/src/worker/bridge-pdfium.js");
+    assert_eq!(
+        bridge, permitted,
+        "bridge-pdfium.js calls other than the five permitted"
     );
-    assert!(named(&code("/**\n * FPDFText_GetUnicode is never read\n */")).is_empty());
+    let declared = names_in("apps/web/src/worker/globals-render.d.ts");
+    assert_eq!(
+        declared, permitted,
+        "globals-render.d.ts declares other than the five permitted"
+    );
+
+    let forwards = text_imports(&read("apps/web/src/worker/bridge-pdfium.js"), "self.");
+    let imports = text_imports(
+        &read("bindings/burrow-wasm/src/bridge_pdfium.rs"),
+        "js_name = ",
+    );
+    assert_eq!(forwards.len(), 5, "bridge-pdfium.js defines {forwards:?}");
+    assert_eq!(
+        imports, forwards,
+        "bridge_pdfium.rs imports text functions the JavaScript bridge does not define"
+    );
+    eprintln!(
+        "  web text-function scan: examined 3 of 3: bridge-pdfium.js {} of 5, globals-render.d.ts \
+         {} of 5, bridge_pdfium.rs {} of 5",
+        bridge.len(),
+        declared.len(),
+        imports.len()
+    );
+    // THE STRIPPING KEEPS CODE: a rejected name in a JS call is still seen.
+    assert!(
+        named(code_of("  return Module._FPDFText_GetUnicode(t, i);"))
+            .contains("FPDFText_GetUnicode")
+    );
+}
+
+/// Every `__burrow_pdfium_text_<name>` directly after `lead` in `code`.
+fn text_imports(code: &str, lead: &str) -> std::collections::BTreeSet<String> {
+    let needle = format!("{lead}__burrow_pdfium_text_");
+    let mut found = std::collections::BTreeSet::new();
+    let mut rest = code;
+    while let Some(at) = rest.find(&needle) {
+        let tail = &rest[at + lead.len()..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+            .unwrap_or(tail.len());
+        found.insert(tail[..end].to_owned());
+        rest = &tail[end..];
+    }
+    found
+}
+
+#[test]
+fn the_import_scan_matches_its_probes() {
+    let imports = "    #[wasm_bindgen(js_name = __burrow_pdfium_text_load_page)]\n    fn a();\n";
+    assert_eq!(
+        text_imports(imports, "js_name = "),
+        std::collections::BTreeSet::from(["__burrow_pdfium_text_load_page".to_owned()])
+    );
+    assert_eq!(
+        text_imports("self.__burrow_pdfium_text_count_chars = (t) => 0;", "self."),
+        std::collections::BTreeSet::from(["__burrow_pdfium_text_count_chars".to_owned()])
+    );
+    // THE NEAR MISS: a non-text import is not counted.
+    assert!(
+        text_imports(
+            "#[wasm_bindgen(js_name = __burrow_pdfium_load_page)]",
+            "js_name = "
+        )
+        .is_empty()
+    );
 }
 
 // ---- the nesting ceiling ------------------------------------------------------------------

@@ -181,6 +181,13 @@ fn take_for(nonce: u64) -> Option<Pending> {
     })
 }
 
+/// Drop whatever is pending, under any nonce, so its input and output are wiped NOW -- by
+/// `Zeroizing` and the wipe-on-free allocator -- rather than left in a heap the recycle only
+/// abandons. Every reply that recycles the worker without judging the slot calls this first.
+fn discard() {
+    drop(PENDING.with(|slot| slot.borrow_mut().take()));
+}
+
 /// A copy of the pending input or output for `nonce`, for the render worker.
 fn copy_of(nonce: u64, output: bool) -> Vec<u8> {
     PENDING.with(|slot| match slot.borrow().as_ref() {
@@ -375,6 +382,9 @@ pub fn max_second_reading_answer() -> u32 {
 #[must_use]
 pub fn redact_confirm(nonce: u64, answer: &[u8]) -> Reply {
     let Some(pending) = take_for(nonce) else {
+        // RECYCLED, AND EMPTIED FIRST (round 2): the slot is not judged, and what it holds is
+        // wiped here rather than when the terminated worker's heap is thrown away unwiped.
+        discard();
         return Reply::failure(&Error::InvalidArgument(
             "redact: an answer for no pending second reading".to_owned(),
         ))
@@ -403,6 +413,8 @@ pub fn redact_abort(nonce: u64) -> Reply {
                 .to_owned(),
         )
     } else {
+        // AN ABORT FOR ANOTHER NONCE still ends this worker, so what it holds is wiped first.
+        discard();
         Error::InvalidArgument("redact: an abort for no pending second reading".to_owned())
     };
     Reply::failure(&error).recycled()
@@ -503,7 +515,9 @@ mod tests {
         use burrow_core::{Clock, Deadline, Error, Limits};
         use zeroize::Zeroizing;
 
-        use super::super::{Pending, hold, pending, take_for, verdict};
+        use super::super::{
+            Pending, hold, pending, redact_abort, redact_confirm, take_for, verdict,
+        };
 
         /// A clock a test moves by hand.
         struct Hand(AtomicU64);
@@ -584,6 +598,30 @@ mod tests {
             assert!(pending(), "a foreign nonce emptied the slot");
             assert!(take_for(nonce).is_some());
             clear();
+        }
+
+        #[test]
+        fn a_confirm_or_abort_for_another_nonce_recycles_and_empties_the_slot() {
+            // THE STATE MACHINE keeps the slot on a foreign nonce (above); the EXPORTS end the
+            // worker, so they empty it first and its bytes are wiped, not abandoned (round 2).
+            for refuse in [
+                (|n: u64| redact_confirm(n + 1, b"")) as fn(u64) -> crate::Reply,
+                |n: u64| redact_abort(n + 1),
+            ] {
+                clear();
+                let clock = Hand(AtomicU64::new(0));
+                let nonce = hold(make(&clock)).expect("holds");
+                let reply = refuse(nonce);
+                assert!(!reply.ok());
+                assert!(
+                    reply.recycle(),
+                    "a refusal for another nonce did not recycle"
+                );
+                assert!(
+                    !pending(),
+                    "the slot was left full in a worker being recycled"
+                );
+            }
         }
 
         #[test]

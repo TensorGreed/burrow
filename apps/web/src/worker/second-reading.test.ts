@@ -586,6 +586,44 @@ describe("the port helpers", () => {
   /** A port whose post neither transfers nor throws: every buffer stays attached. */
   const copyingPort = { postMessage: () => {} } as unknown as MessagePort;
 
+  /** A port whose post THROWS, as a clone failure does: nothing was transferred. */
+  const throwingPort = {
+    postMessage: () => {
+      throw new Error("DataCloneError");
+    },
+  } as unknown as MessagePort;
+
+  it("postTransferring zeroes every buffer when the post itself throws, then rethrows", () => {
+    const h = load(REDACT_MAIN);
+    platform(h.scope);
+    const buffer = new Uint8Array([4, 5, 6]).buffer;
+    const post = h.scope["postTransferring"] as (
+      p: MessagePort,
+      m: object,
+      b: ArrayBuffer[],
+    ) => void;
+    expect(() => post(throwingPort, {}, [buffer])).toThrow("DataCloneError");
+    expect([...new Uint8Array(buffer)]).toEqual([0, 0, 0]);
+  });
+
+  it("SHOWN TO FAIL: without the wipe in the catch, a post that throws leaves the bytes", () => {
+    const source = mutated(
+      REDACT_MAIN,
+      "  } catch (error) {\n    wipe();\n    throw error;",
+      "  } catch (error) {\n    throw error;",
+    );
+    const h = load(source);
+    platform(h.scope);
+    const buffer = new Uint8Array([4, 5, 6]).buffer;
+    const post = h.scope["postTransferring"] as (
+      p: MessagePort,
+      m: object,
+      b: ArrayBuffer[],
+    ) => void;
+    expect(() => post(throwingPort, {}, [buffer])).toThrow("DataCloneError");
+    expect([...new Uint8Array(buffer)]).toEqual([4, 5, 6]);
+  });
+
   it("postTransferring zeroes a buffer it could not transfer, then refuses", () => {
     const h = load(REDACT_MAIN);
     platform(h.scope);
