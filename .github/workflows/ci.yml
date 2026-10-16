@@ -784,6 +784,12 @@ jobs:
       #
       # In `deny`, which fetches nothing: it reads two committed files and needs no vendor
       # tree, so it still runs on a clean checkout.
+      # `ci-ok` NEEDS EVERY JOB. In `deny`, which fetches nothing: it reads only ci.yml.
+      - name: The ci-ok gate needs every job
+        run: |
+          python3 tools/check-ci-ok.py needs
+          tools/test-check-ci-ok.sh
+
       - name: The deploy workflow's gates still hold
         run: |
           python3 tools/check-deploy-workflow.py
@@ -1154,3 +1160,23 @@ jobs:
           echo "One or more CI jobs failed." >&2
           exit 1
       - run: echo "All CI jobs passed."
+
+  # THE ONE REQUIRED CHECK, once the ruleset names it in place of `ci` (owner, 2026-10-16). It
+  # needs EVERY other job directly -- `needs.*.result` lists only direct needs -- and fails on any
+  # result that is not `success`: `failure`, `cancelled` and `skipped` alike. `ci` above treats a
+  # skipped job as passing, and the merge queue enforces a required check-run rather than the
+  # run-level conclusion (DECISIONS rule 11's amendment), so this is what closes #275's gap.
+  # `ci` stays until the ruleset is switched: removing it first would leave the required check it
+  # names unreported, and nothing could merge. `tools/check-ci-ok.py needs`, in the `deny` job,
+  # fails if a job is ever added without being added here.
+  ci-ok:
+    name: ci-ok
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web, ci]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/check-ci-ok.py results

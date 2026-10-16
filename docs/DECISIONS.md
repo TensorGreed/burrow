@@ -85,11 +85,17 @@ one is decided in an issue, with the same three parts.
     So a #275-shaped run (a run-level `failure` with every job green) would still merge, and with
     `--auto` nobody reads the run before it does. That residual is read afterwards, from `main`'s
     post-merge `push` run: a non-success there is treated as this rule says, investigated and
-    resolved before the next merge. *Decided:* owner, 2026-10-16, choosing the merge queue over
-    "require branches to be up to date" after two merges raced and turned `main` red. *Does not
-    cover:* the time before the setting is enabled, when a `success` run on the PR's exact head
-    stays the gate as written above; and whether the post-merge residual is acceptable, which is
-    with the owner.
+    resolved before the next merge. **`ci-ok`, once the ruleset requires it in place of `ci`,
+    closes the job-level half of that gap and not the rest.** It needs every other job directly
+    and fails unless each one's result is `success`, so a skipped or cancelled job -- which `ci`
+    counted as passing -- can no longer yield a green required check, and `tools/check-ci-ok.py`
+    fails CI if a job is added without being added to it. It cannot see #275's own shape, a
+    run-level `failure` with every job `success`: every result it reads is then `success`. That
+    shape is still read from the post-merge push run as above. *Decided:* owner, 2026-10-16,
+    choosing the merge queue over "require branches to be up to date" after two merges raced and
+    turned `main` red. *Does not cover:* the time before the setting is enabled, when a `success`
+    run on the PR's exact head stays the gate as written above; and whether the post-merge residual
+    is acceptable, which is with the owner.
 
 12. **Never hand-merge `tests/redaction/outcomes.tsv`; regenerate it from the merged tree.** It is
     the golden the native and web differentials replay, and the only file #125 and #137 both
