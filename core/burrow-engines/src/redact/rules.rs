@@ -115,6 +115,7 @@ pub const RULE_IDS: &[&str] = &[
     "inline-image-repeated-key",
     "inline-image-unknown-key",
     "inline-image-unshared-cs",
+    "last-char",
     "marked-content-carries-opaque-string",
     "marked-content-named-properties-carry-text",
     "marked-content-properties-unresolved",

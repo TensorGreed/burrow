@@ -181,6 +181,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "unreadable-cmap": "fonts",
   "vertical-writing": "fonts",
   "width-out-of-range": "fonts",
+  "last-char": "fonts",
   "width-source": "fonts",
   "widths-overlap": "fonts",
   "widths-too-long": "fonts",
