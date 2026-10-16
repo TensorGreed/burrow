@@ -104,6 +104,15 @@ resource-graph-depth
 resource-graph-work
 rotate
 rotate-not-whole
+second-reading-glyph-in-region
+second-reading-input-page-count
+second-reading-nesting
+second-reading-no-text
+second-reading-page-count
+second-reading-page-size
+second-reading-region-too-small
+second-reading-unavailable
+second-reading-wrong-page
 shading-in-region
 shared-contents
 shared-form-would-change-elsewhere

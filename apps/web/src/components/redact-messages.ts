@@ -257,6 +257,18 @@ export const RULES: Readonly<Record<string, Category>> = {
   "subtype-not-a-name": "file-structure",
   "syntax-read-differently": "file-structure",
 
+  // The second reading (#206): PDFium reads the redacted page again, and a disagreement with
+  // burrow's own reading, or no answer at all, refuses (ADR 0029 §6).
+  "second-reading-glyph-in-region": "text-structure",
+  "second-reading-no-text": "text-structure",
+  "second-reading-page-size": "page-shape",
+  "second-reading-wrong-page": "page-shape",
+  "second-reading-region-too-small": "page-shape",
+  "second-reading-page-count": "file-structure",
+  "second-reading-input-page-count": "file-structure",
+  "second-reading-unavailable": "file-structure",
+  "second-reading-nesting": "too-complex",
+
   // Past a ceiling the walk keeps.
   "contents-too-large": "too-complex",
   "contents-too-many": "too-complex",
