@@ -640,7 +640,8 @@ const ALL_CAPS: u32 = 1 << 16;
 /// and not a name (#125's third security review). PDFium reads it by its bytes, so
 /// `(WinAnsiEncoding)` is WinAnsi to it and was Standard here: 50 codes of 96 then SECRET, placed
 /// with Standard's widths, sat outside the region and stayed -- `Ok`, 385 dark pixels before and
-/// after. A top-level `/Encoding` string is not honoured by PDFium, and is Standard in both.
+/// after. A top-level `/Encoding` string is not honoured by PDFium, and is Standard in both. A
+/// stream `/Encoding` never reaches here: `read_font` refuses it first (#180).
 fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14::BaseEncoding> {
     use crate::pdfsyntax::standard14::BaseEncoding;
     const BASE_ENCODING: Name = Name::literal(b"/BaseEncoding\0");
@@ -700,7 +701,8 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// `/Differences` read as [`differences_by_code`] reads it, and `number-unreadable` for a `/Flags`
 /// past 2^24 or a `/Differences` past [`MAX_NUMBER_ARRAY`] items; [`Error::Malformed`] naming
 /// `type3-matrix`, or `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths`
-/// declared; and whatever [`read_composite`] refuses for a Type 0 font.
+/// declared; [`Error::Unsupported`] naming `encoding-not-a-dictionary` for a simple font whose
+/// `/Encoding` is a stream (#180); and whatever [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
@@ -721,6 +723,21 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         type_three: subtype == Some(SUBTYPE_TYPE3),
     };
 
+    // A SIMPLE FONT'S `/Encoding` THAT IS A STREAM REFUSES (#180's third shape), HERE, where every
+    // simple font is read. qpdf answers null for a stream's keys, so its `/BaseEncoding` and
+    // `/Differences` are nothing to burrow -- to the width lookup, to the `/Differences` narrowing
+    // and to the witness alike -- while a reader that takes a stream's dictionary where one
+    // belongs, as PDFium does for a descendant, reads both. It first sat in `base_encoding`, which
+    // runs only when `/Widths` is absent, so a font with `/Widths` and a stream `/Encoding` went
+    // past it (#180's code review). Refused rather than measured: nothing writes an encoding so. A
+    // Type 0 font's `/Encoding` stream is its CMap, and is read as one.
+    if subtype != Some(SUBTYPE_TYPE0) && font.key(&ENCODING).type_code() == object_type::STREAM {
+        return Err(Error::Unsupported(
+            "pdf resources [encoding-not-a-dictionary]: a font whose /Encoding is a stream, whose \
+             dictionary a renderer may read where burrow cannot"
+                .to_owned(),
+        ));
+    }
     // A NEGATIVE `/FirstChar` REFUSES HERE, where every font is read (#125's fifth security review).
     // PDFium loads no `/Widths` at all for one, so every code is 0 wide or `/MissingWidth`; this
     // indexed `/Widths` from -1. `steps::first_char` refused it, but only for a font that is cut,
@@ -925,9 +942,10 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
 ///
 /// # Errors
 ///
-/// [`Error::Malformed`] naming `descendant-fonts`; [`Error::Unsupported`] naming
-/// `number-unreadable` for a `/DW` or `/WMode` that is not a number, and whatever [`parse_w`]
-/// refuses.
+/// [`Error::Malformed`] naming `descendant-fonts`, for no descendant or one that is not a dictionary
+/// (#180); [`Error::Unsupported`] naming `width-source` for a descendant `/FontDescriptor` that is
+/// neither absent nor a dictionary, and `number-unreadable` for a `/DW` or `/WMode` that is not a
+/// number; and whatever [`parse_w`] refuses.
 fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
     facts.bytes_per_code = 2;
 
@@ -969,6 +987,23 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
         ));
     }
     let descendant = descendants.array_item(0);
+    // A DESCENDANT THAT IS NOT A DICTIONARY REFUSES (#180). qpdf answers null for every key of a
+    // stream, so `/DW` read as the default 1000 here, while PDFium reads the stream's dictionary
+    // and used its `/DW`: glyphs placed 24 pt apart here and 12 pt apart there, measured, and `Ok`
+    // with the secret kept. Refused rather than read through: nothing writes a descendant so.
+    if descendant.type_code() != object_type::DICTIONARY {
+        return Err(Error::Malformed(
+            "pdf resources [descendant-fonts]: a Type 0 font whose descendant is not a \
+             dictionary, which a renderer may read where burrow cannot"
+                .to_owned(),
+        ));
+    }
+    // AND ITS `/FontDescriptor`, as a simple font's is (#125's seventh security review): one that
+    // is neither absent nor a dictionary is read by PDFium through a stream's dictionary.
+    let descriptor_kind = descendant.key(&FONT_DESCRIPTOR).type_code();
+    if descriptor_kind != object_type::NULL && descriptor_kind != object_type::DICTIONARY {
+        return Err(width_source_refusal());
+    }
     facts.default_width = number_strict(&descendant.key(&DW))?.or(Some(1000.0));
     facts.cid_widths = parse_w(&descendant.key(&W))?;
     Ok(())
