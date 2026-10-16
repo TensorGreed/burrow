@@ -1527,6 +1527,54 @@
       }
     },
     {
+      "name": "real-writer-untagged",
+      "inputs": [
+        {
+          "file": "../redaction/fixtures/producer-writer-untagged.pdf",
+          "sha256": "4ed608e245a8762d989607315169958aebec760ad4b6704bfc992a3e8f950b7b"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ]
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
       "name": "real-latex",
       "inputs": [
         {

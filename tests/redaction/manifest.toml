@@ -129,6 +129,59 @@ measured trigger. This fixture is therefore also a #125 case: it is a REAL docum
 proposed signal must be shown to catch.
 """
 
+
+[[fixture]]
+name = "producer-writer-untagged"
+# THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
+# coordinates. Measured once against this committed file, which does not change.
+region = [174, 96, 154, 13]
+file = "fixtures/producer-writer-untagged.pdf"
+kind = "producer"
+producer = "LibreOffice Writer 24.2.7.2, untagged by tools/make-untagged-writer.py"
+pages = 1
+notes = """
+`producer-writer.pdf` with its tagging taken off and nothing else changed (#125 slice 3): the
+catalogue's /StructTreeRoot and /MarkInfo, the page's /StructParents and the three /MCID
+property lists, derived deterministically by tools/make-untagged-writer.py and held to it by
+tools/check-redaction-corpus.sh. The same fonts, subsets, /ToUnicode, /Info and layout, so the
+same region. Slice 3 refuses the tagged original [structure-tree]; this is its near-miss twin,
+and the real producer document the redaction tests redact. Interim coverage for #359, which asks
+for a real untagged export made by the producer itself.
+"""
+
+  [[fixture.placement]]
+  channel = "page text, subset font"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "handle"
+  adr = "§1, §3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+
+  [[fixture.placement]]
+  channel = "font /ToUnicode for the removed run"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "font-mapping"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "Channel 23. The bfchar entries for codes the output no longer draws go with the text."
+
+  [[fixture.placement]]
+  channel = "document /Info /Title and /Keywords"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "disclose"
+  adr = "§7"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "present"
+  notes = """
+DELIBERATELY NOT REMOVED. /Info is on the trailer and unreachable behind qpdf_get_trailer
+(ADR 0013's caller rule), so §7 discloses it and names File -> Properties as the place to look.
+This placement is why that disclosure is concrete rather than hypothetical: a real word
+processor put the document title in the metadata without being asked.
+"""
 [[fixture]]
 name = "producer-latex"
 # THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display

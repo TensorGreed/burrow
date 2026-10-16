@@ -1523,6 +1523,7 @@ fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
 fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
     for name in [
         "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         "producer-latex.pdf",
         "producer-vertical-writing.pdf",
     ] {
@@ -1604,6 +1605,7 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     let mut refused_as_decided = 0usize;
     for name in [
         "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         "producer-latex.pdf",
         "producer-vertical-writing.pdf",
     ] {
@@ -1746,17 +1748,17 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
     }
 
-    // NONE NOW, AND THAT IS STATED, NOT HIDDEN. #292's accepted cost moved
-    // producer-vertical-writing to the decided refusals; #125 slice 3 (2026-10-15) moves
-    // producer-writer, which is tagged, to them too. So this test executes NO redaction of a real
-    // producer's document until an untagged producer fixture is committed (#359) or the
-    // structure-tree narrowing lands: every assertion above the refusals is unexecuted today. The count below
-    // pins that, so the day a document redacts again it must be counted here on purpose.
+    // ONE, AND IT IS DERIVED. #292's accepted cost moved producer-vertical-writing to the decided
+    // refusals; #125 slice 3 (2026-10-15) moves producer-writer, which is tagged, to them too. What
+    // redacts here is `producer-writer-untagged.pdf`: the same LibreOffice export with its tagging
+    // taken off by `tools/make-untagged-writer.py`, so a real producer's fonts and layout, but not
+    // a file a producer wrote. Interim coverage for #359, which asks for a real untagged export.
     assert_eq!(
         (redacted_documents, refused_as_decided),
-        (0, 3),
-        "producer-latex, producer-vertical-writing and producer-writer must each refuse as \
-         decided, and no producer document redacts until one is added on purpose"
+        (1, 3),
+        "producer-writer-untagged must redact, and producer-latex, producer-vertical-writing and \
+         producer-writer must each refuse as decided; a refusal that covered them all would leave \
+         every assertion above unexecuted and this test still green"
     );
 }
 

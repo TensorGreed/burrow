@@ -3927,3 +3927,52 @@ fn a_form_graph_that_branches_is_refused_rather_than_walked_exponentially() {
         "refused, but took {elapsed:?} to do it -- the budget is not bounding the descent"
     );
 }
+
+/// #125 slice 3's twin pair, on a real producer's document: `producer-writer.pdf` is tagged and
+/// refuses `[structure-tree]`; `producer-writer-untagged.pdf` is the same export with its tagging
+/// taken off by `tools/make-untagged-writer.py`, and redacts. Untagged BY THE RULE'S OWN TERMS,
+/// asserted rather than assumed: none of the names a structure tree is made of, anywhere in its
+/// expansion -- so the near-miss is not quietly a second tagged file.
+#[test]
+fn the_untagged_writer_export_carries_no_structure_tree_and_redacts() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/fixtures");
+    let tagged = std::fs::read(fixtures.join("producer-writer.pdf")).expect("the tagged export");
+    let untagged =
+        std::fs::read(fixtures.join("producer-writer-untagged.pdf")).expect("the untagged copy");
+
+    let tagging = [
+        "/StructTreeRoot",
+        "/MarkInfo",
+        "/StructParents",
+        "/MCID",
+        "/StructElem",
+        "/ParentTree",
+    ];
+    // THE INSTRUMENT SEES TAGGING WHERE THERE IS SOME: every name is in the original's expansion,
+    // so its absence from the copy's is a measurement and not a blind search.
+    let original = decompressed(&tagged);
+    for name in tagging {
+        assert!(
+            original.windows(name.len()).any(|w| w == name.as_bytes()),
+            "the tagged original carries no {name}: the search below would prove nothing"
+        );
+    }
+    let copy = decompressed(&untagged);
+    for name in tagging {
+        assert!(
+            !copy.windows(name.len()).any(|w| w == name.as_bytes()),
+            "producer-writer-untagged.pdf still carries {name}"
+        );
+    }
+
+    let refusal = format!(
+        "{:?}",
+        redact(&tagged).expect_err("the tagged export must refuse")
+    );
+    assert!(
+        refusal.contains("[structure-tree]"),
+        "the tagged export refused, but not as a structure tree: {refusal}"
+    );
+    redact(&untagged).expect("the untagged copy redacts");
+}

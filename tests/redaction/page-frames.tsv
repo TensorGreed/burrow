@@ -10,6 +10,8 @@ INPUT	tests/redaction/fixtures/producer-ocr-scan.pdf	27d43eb68ecfbcd929f0c5f0ca3
 PAGE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	FRAME 1748.57 2262.86
 INPUT	tests/redaction/fixtures/producer-vertical-writing.pdf	b6738e36df1e2d04074a55abd3c32244b5dea2131a7f01d46cbe8fc94071c504
 PAGE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	FRAME 595.303937007874 841.889763779528
+INPUT	tests/redaction/fixtures/producer-writer-untagged.pdf	4ed608e245a8762d989607315169958aebec760ad4b6704bfc992a3e8f950b7b
+PAGE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	FRAME 595.303937007874 841.889763779528
 INPUT	tests/redaction/fixtures/producer-writer.pdf	2993655cf9eb9eff9dd55152c7be1b382bbbf9f2905e8fc414447701b64bb7f6
 PAGE	tests/redaction/fixtures/producer-writer.pdf	0	FRAME 595.303937007874 841.889763779528
 INPUT	tests/redaction/generated/00-control-no-canary.pdf	e07721f03b1d506a5fac6914190e1a4a938a4243f7f47cd64bd6200d8adeddf6
