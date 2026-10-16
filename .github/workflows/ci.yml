@@ -21,9 +21,14 @@ on:
     types: [checks_requested]
   workflow_dispatch:
 
+# A PUSH TO `main` IS NEVER CANCELLED (merge queue, 2026-10-16). With queued merges landing in
+# quick succession, `cancel-in-progress` on `main`'s group cancelled the earlier push run, and a
+# cancelled push run is both a non-success rule 11 says to investigate and a refusal at release
+# time: `tools/check-release-preconditions.py` requires the tagged commit's push run to have
+# concluded `success`. PR and merge-group runs, each on its own ref, still cancel superseded runs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read

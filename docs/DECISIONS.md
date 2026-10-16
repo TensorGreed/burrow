@@ -80,12 +80,16 @@ one is decided in an issue, with the same three parts.
     non-success is a real job/step failure — that is an ordinary red, fix it.
 
     **Amended 2026-10-16: through the merge queue.** Once the owner enables "Require merge queue"
-    on `main`, a PR merges with `gh pr merge --auto`, and the run this rule reads is the
-    **merge-group run** on the queue's merge commit, which must conclude `success`; a PR run's
-    green is not the merge gate. *Decided:* owner, 2026-10-16, choosing the merge queue over
+    on `main`, a PR merges with `gh pr merge --auto`, and what the queue enforces is the required
+    **`ci` check-run** on the merge-group commit -- not the run-level conclusion this rule is about.
+    So a #275-shaped run (a run-level `failure` with every job green) would still merge, and with
+    `--auto` nobody reads the run before it does. That residual is read afterwards, from `main`'s
+    post-merge `push` run: a non-success there is treated as this rule says, investigated and
+    resolved before the next merge. *Decided:* owner, 2026-10-16, choosing the merge queue over
     "require branches to be up to date" after two merges raced and turned `main` red. *Does not
-    cover:* the time before the setting is enabled, when the PR run on the exact head stays the
-    gate as written above.
+    cover:* the time before the setting is enabled, when a `success` run on the PR's exact head
+    stays the gate as written above; and whether the post-merge residual is acceptable, which is
+    with the owner.
 
 12. **Never hand-merge `tests/redaction/outcomes.tsv`; regenerate it from the merged tree.** It is
     the golden the native and web differentials replay, and the only file #125 and #137 both
@@ -192,6 +196,20 @@ one is decided in an issue, with the same three parts.
     grew it. Changes rule 6 for such a release. *Does not cover:* a release that closes no live
     leak, which keeps rule 6 as it was; and the headroom policy itself.
 
+    **Extended to what no visitor loads yet** (owner, 2026-10-15). A held bundle (one behind a
+    gate, such as the redaction module until #136's S9), or a held page's total that carries it,
+    may also be re-recorded and raised to its policy minimum without asking, provided its growth in
+    that PR is under 10% and, for a total, every other component of it is unchanged in the PR.
+    Before and after go in the batch summary, as above; for a total, the summary lists each
+    component with its before and after value, which is the check. Changes rule 6 for such a
+    bundle or total. *Decided:* owner, 2026-10-15, after #206 grew the held redaction module 2.4%
+    (226,332 brotli; budget 276,369 -> 282,915) and `redact.total`, which carries it, was raised
+    with it (3,419,553 -> 3,426,099). *Does not cover:* a total in which any other component
+    changed, such as a visitor-loaded one that grew (the landing route, the render total, a shared
+    chunk): that total is not covered and stops for the owner. Nor the base module or anything a
+    visitor loads, which keep the live-leak condition above; nor any change to a policy or a hard
+    limit, which still stops for the owner.
+
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
     output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
     one). It is enough to merge a slice. Before redaction is un-held, the same property needs an
@@ -227,10 +245,11 @@ one is decided in an issue, with the same three parts.
     that page's total download.** The batch summary shows both: the line's own growth, and that
     growth as a share of the page's total. Anything at or above 0.5% stops for the owner, and the
     remedy to propose is a separate bundle -- a wasm and a worker entry -- that only `/redact-pdf`
-    loads, held under rule 18's extension. *Decided:* owner, 2026-10-16, for #206's web half,
-    which grew the render lines about 6 KB, about 0.24% of the render total. *Does not cover:*
-    code every tool needs, which is budgeted as rule 6 says; and the per-line budgets themselves,
-    which still apply.
+    loads, held under rule 18's extension. Exactly 0.5% stops: the owner's words were "under 0.5%"
+    and "anything above", and the gap between them is read toward the stricter one. *Decided:*
+    owner, 2026-10-16, for #206's web half, which grew the render lines about 6 KB, about 0.24% of
+    the render total. *Does not cover:* code every tool needs, which is budgeted as rule 6 says;
+    and the per-line budgets themselves, which still apply.
 
 ## Spec review first (the practice that uses rule 10)
 
