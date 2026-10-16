@@ -408,3 +408,25 @@ export function createToolHost(
     },
   };
 }
+
+/**
+ * A FRESH render host for one second reading of a redacted page (#206's web half), as
+ * `redactWithSecondReading` takes one: built for this reading alone, never the strip's, and
+ * disposed -- its worker terminated -- with the verdict (#199; design review L4).
+ */
+export async function freshReadingHost(deps: ToolHostDeps = browserDeps()): Promise<{
+  run: ReturnType<typeof createWorkerHost>["run"];
+  dispose: () => void;
+}> {
+  const tool = createToolHost(deps, RENDER);
+  try {
+    const built = await tool.ensure();
+    return {
+      run: (message, options) => built.run(message, options),
+      dispose: () => tool.dispose(),
+    };
+  } catch (error) {
+    tool.dispose();
+    throw error;
+  }
+}

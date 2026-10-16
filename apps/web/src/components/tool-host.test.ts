@@ -16,6 +16,7 @@ import {
   ORIGIN_MISMATCH,
   RENDER,
   createToolHost,
+  freshReadingHost,
   hostKind,
 } from "./tool-host.js";
 import type { ToolHostDeps } from "./tool-host.js";
@@ -369,5 +370,34 @@ describe("the ceilings a tool page runs under", () => {
     const pending = host.ensure();
     release();
     await expect(pending).resolves.toBeDefined();
+  });
+});
+
+describe("the second reading's render host (#206's web half)", () => {
+  it("is a NEW render host each time, fetched from the render bundle, and ended by dispose", async () => {
+    const asked: string[] = [];
+    const watching = deps({
+      fetch: (async (url: string) => {
+        asked.push(String(url));
+        return { ok: true, text: async () => "// worker source" } as Response;
+      }) as unknown as typeof globalThis.fetch,
+    });
+    const first = await freshReadingHost(watching.deps);
+    const second = await freshReadingHost(watching.deps);
+    expect(asked, "each reading fetched its own host's bundle").toEqual([
+      RENDER.worker.url,
+      RENDER.worker.url,
+    ]);
+    expect(first).not.toBe(second);
+    first.dispose();
+    second.dispose();
+    // BOTH OBJECT URLS RELEASED: a host that outlived its reading would hold one.
+    expect(watching.urls.revoked).toBe(watching.urls.created);
+  });
+
+  it("releases what it built when the build fails, and rethrows", async () => {
+    const mismatch = deps({ origin: "https://elsewhere.example" });
+    await expect(freshReadingHost(mismatch.deps)).rejects.toBe(ORIGIN_MISMATCH);
+    expect(mismatch.urls.created).toBe(0);
   });
 });

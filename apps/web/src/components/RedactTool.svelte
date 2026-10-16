@@ -14,6 +14,7 @@
   import { onDestroy, tick } from "svelte";
 
   import { CANCELLED } from "../host/worker-host.js";
+  import { redactWithSecondReading } from "../host/second-reading.js";
   import { BUNDLE_REDACT_WORKER } from "../generated/engines.js";
   import { ORIGINAL_MARK } from "../redact-copy.js";
   import {
@@ -27,6 +28,7 @@
     LIMITS,
     ORIGIN_MISMATCH,
     createToolHost,
+    freshReadingHost,
     hostKind,
     originMismatchNotice,
   } from "./tool-host.js";
@@ -207,7 +209,13 @@
       }
       // ONE PAGE, AND IT IS THE ONLY ONE COVERED (D2). A font is cut only when every page using
       // it is covered, so a font another page shares is left whole and reported.
-      const reply = await h.run(
+      //
+      // WITH ITS SECOND READING (#206's web half): a fresh render worker reads the redacted page
+      // again and the redaction worker judges it; the document reaches this page only after an
+      // agreeing verdict. Without the reading the redaction worker refuses every redaction.
+      const reply = await redactWithSecondReading(
+        h,
+        () => freshReadingHost(),
         {
           op: "redact",
           blob: file,
