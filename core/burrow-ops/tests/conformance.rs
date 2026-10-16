@@ -689,7 +689,16 @@ fn the_schema_records_a_route_for_every_limit_failure() {
 ///
 /// It is targeted at **M2 and no later**, because redaction's central claim is exactly this
 /// property. If it is still here when M2 opens, the ceiling is not what should give.
-const MAX_KNOWN_GAPS: usize = 2;
+///
+/// **RAISED 2 -> 3 on 2026-10-15 for #358**, and what changed about the trade: the new gap is the
+/// first that comes from a real producer's ordinary output rather than a hostile file or a
+/// verification property. Split refuses a Chrome-printed PDF that carries an `href="#"` link,
+/// which Chrome writes as an empty-name `/Dest /`; that shipped in v0.1.6 because no corpus held
+/// one. The owner's order is to record it as a known
+/// refusal, pinned by its rule id, until lane 1's narrowing lands, rather than as a case asserting
+/// the refusal is correct behaviour. It is targeted at M2 like the others, and closing it lowers
+/// this back to 2.
+const MAX_KNOWN_GAPS: usize = 3;
 
 /// A recorded gap needs somewhere to lead, and a deadline to lead there by.
 #[test]
