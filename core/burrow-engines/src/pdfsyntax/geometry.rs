@@ -3370,6 +3370,10 @@ pub enum InkKind {
 }
 
 impl InkKind {
+    /// Every kind, so the refusal-id table (`redact::rules`) cannot drift from the enum; an
+    /// exhaustive match there holds this list to the variants.
+    pub const ALL: [Self; 3] = [Self::Image, Self::Vector, Self::Shading];
+
     /// The bracketed refusal rule for this kind, as the caller names it.
     #[must_use]
     pub fn rule(self) -> &'static str {

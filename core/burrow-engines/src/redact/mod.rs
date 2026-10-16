@@ -85,6 +85,8 @@ pub(crate) mod hooks;
 pub(crate) mod optional_content;
 pub(crate) mod references;
 pub(crate) mod resources;
+// Every refusal rule id, as one table (#136): what the web page's refusal categories read.
+pub mod rules;
 pub(crate) mod sharing;
 pub(crate) mod steps;
 pub(crate) mod witness;
