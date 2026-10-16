@@ -627,16 +627,7 @@ fn the_pdfium_text_functions_named_are_the_five_permitted() {
 fn the_web_bridge_names_only_the_five_permitted() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let read = |file: &str| -> String {
-        let source = std::fs::read_to_string(repo.join(file)).expect("a web source file reads");
-        source
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim_start();
-                !(trimmed.starts_with('*') || trimmed.starts_with("/*"))
-            })
-            .map(code_of)
-            .collect::<Vec<_>>()
-            .join("\n")
+        code_lines(&std::fs::read_to_string(repo.join(file)).expect("a web source file reads"))
     };
     let permitted: Vec<&str> = PERMITTED.to_vec();
     let names_in = |file: &str| -> Vec<String> { named(&read(file)).into_iter().collect() };
@@ -653,10 +644,9 @@ fn the_web_bridge_names_only_the_five_permitted() {
     );
 
     let forwards = text_imports(&read("apps/web/src/worker/bridge-pdfium.js"), "self.");
-    let imports = text_imports(
-        &read("bindings/burrow-wasm/src/bridge_pdfium.rs"),
-        "js_name = ",
-    );
+    // EVERY TOKEN in the Rust file's code, not only `js_name = ident`: a quoted `js_name`, one
+    // written without spaces, and a bare `fn __burrow_pdfium_text_x` each name an import too.
+    let imports = text_imports(&read("bindings/burrow-wasm/src/bridge_pdfium.rs"), "");
     assert_eq!(forwards.len(), 5, "bridge-pdfium.js defines {forwards:?}");
     assert_eq!(
         imports, forwards,
@@ -669,14 +659,57 @@ fn the_web_bridge_names_only_the_five_permitted() {
         declared.len(),
         imports.len()
     );
-    // THE STRIPPING KEEPS CODE: a rejected name in a JS call is still seen.
+}
+
+/// Whether `line` is inside a JavaScript block comment: it starts with `*` or `/*` once trimmed.
+fn is_block_comment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('*') || trimmed.starts_with("/*")
+}
+
+/// `source`'s code: block-comment lines dropped, and each line cut at its `//` comment.
+fn code_lines(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !is_block_comment_line(line))
+        .map(code_of)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_comment_stripping_matches_its_probes() {
+    // POSITIVE: every line of a block comment is dropped, so a name in one is not seen.
+    for line in [
+        "/**",
+        " * FPDFText_GetUnicode is never read",
+        " */",
+        "/* FPDFText_GetText */",
+    ] {
+        assert!(is_block_comment_line(line), "{line:?} was kept");
+    }
     assert!(
-        named(code_of("  return Module._FPDFText_GetUnicode(t, i);"))
+        named(&code_lines(
+            "/**\n * FPDFText_GetUnicode is never read\n */"
+        ))
+        .is_empty()
+    );
+    // NEAR MISS: a code line is kept and the name in it is seen. An always-true filter passes the
+    // positives above and fails here.
+    for line in [
+        "  return Module._FPDFText_GetUnicode(t, i);",
+        "const a = 2 * b;",
+    ] {
+        assert!(!is_block_comment_line(line), "{line:?} was dropped");
+    }
+    assert!(
+        named(&code_lines("  return Module._FPDFText_GetUnicode(t, i);"))
             .contains("FPDFText_GetUnicode")
     );
 }
 
-/// Every `__burrow_pdfium_text_<name>` directly after `lead` in `code`.
+/// Every `__burrow_pdfium_text_<name>` directly after `lead` in `code`; with an empty `lead`, every
+/// such token anywhere in it.
 fn text_imports(code: &str, lead: &str) -> std::collections::BTreeSet<String> {
     let needle = format!("{lead}__burrow_pdfium_text_");
     let mut found = std::collections::BTreeSet::new();
@@ -694,23 +727,39 @@ fn text_imports(code: &str, lead: &str) -> std::collections::BTreeSet<String> {
 
 #[test]
 fn the_import_scan_matches_its_probes() {
-    let imports = "    #[wasm_bindgen(js_name = __burrow_pdfium_text_load_page)]\n    fn a();\n";
-    assert_eq!(
-        text_imports(imports, "js_name = "),
-        std::collections::BTreeSet::from(["__burrow_pdfium_text_load_page".to_owned()])
-    );
+    let one = |name: &str| std::collections::BTreeSet::from([name.to_owned()]);
     assert_eq!(
         text_imports("self.__burrow_pdfium_text_count_chars = (t) => 0;", "self."),
-        std::collections::BTreeSet::from(["__burrow_pdfium_text_count_chars".to_owned()])
+        one("__burrow_pdfium_text_count_chars")
     );
-    // THE NEAR MISS: a non-text import is not counted.
-    assert!(
-        text_imports(
-            "#[wasm_bindgen(js_name = __burrow_pdfium_load_page)]",
-            "js_name = "
-        )
-        .is_empty()
-    );
+    // EVERY FORM an import can take in the Rust file is seen by the token scan.
+    for (form, source) in [
+        (
+            "an ident",
+            "#[wasm_bindgen(js_name = __burrow_pdfium_text_unicode)]",
+        ),
+        (
+            "a string",
+            "#[wasm_bindgen(js_name = \"__burrow_pdfium_text_unicode\")]",
+        ),
+        (
+            "no spaces",
+            "#[wasm_bindgen(js_name=__burrow_pdfium_text_unicode)]",
+        ),
+        (
+            "a bare fn",
+            "    fn __burrow_pdfium_text_unicode(text: i32) -> u32;",
+        ),
+    ] {
+        assert_eq!(
+            text_imports(&code_lines(source), ""),
+            one("__burrow_pdfium_text_unicode"),
+            "the scan misses an import written as {form}"
+        );
+    }
+    // THE NEAR MISSES: a non-text import is not counted, nor one in a comment.
+    assert!(text_imports("#[wasm_bindgen(js_name = __burrow_pdfium_load_page)]", "").is_empty());
+    assert!(text_imports(&code_lines("    // __burrow_pdfium_text_unicode"), "").is_empty());
 }
 
 // ---- the nesting ceiling ------------------------------------------------------------------

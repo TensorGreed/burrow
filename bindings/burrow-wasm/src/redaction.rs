@@ -76,6 +76,8 @@ pub fn redact(
 ) -> Reply {
     // WIPED WHEN DROPPED (#199): the document being redacted is the secret.
     let bytes = Zeroizing::new(bytes);
+    // THIS WORKER IS RECYCLED AFTER THIS, so a reading still pending in it is ended now.
+    discard();
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
     let password = crate::password_from(password);
@@ -183,7 +185,14 @@ fn take_for(nonce: u64) -> Option<Pending> {
 
 /// Drop whatever is pending, under any nonce, so its input and output are wiped NOW -- by
 /// `Zeroizing` and the wipe-on-free allocator -- rather than left in a heap the recycle only
-/// abandons. Every reply that recycles the worker without judging the slot calls this first.
+/// abandons.
+///
+/// Called by every export that ends this worker without judging the slot: `redact_begin`'s
+/// refusals, `redact_confirm`'s and `redact_abort`'s for an unknown nonce, and the start of
+/// `redact` and `page_frames`. A slot pending when one of those two arrives is not reachable through
+/// the page -- the host sends a worker one operation at a time, and a redaction worker is recycled
+/// after every verdict -- so ending it there is fail-closed housekeeping rather than a path anything
+/// takes: any later answer for that nonce finds no slot and is refused.
 fn discard() {
     drop(PENDING.with(|slot| slot.borrow_mut().take()));
 }
@@ -294,6 +303,18 @@ pub fn redact_begin(
     limits: WebLimits,
 ) -> Begun {
     let bytes = Zeroizing::new(bytes);
+    // A READING ALREADY PENDING refuses this begin and ends the worker, so it is wiped first --
+    // and checked BEFORE the clock is read, so the refusal needs no JavaScript and is tested
+    // natively. No lifecycle: nothing was opened, and the reply recycles regardless.
+    if pending() {
+        discard();
+        return Begun::refused(
+            Reply::failure(&Error::Internal(
+                "redact: a second reading is already pending in this worker".to_owned(),
+            ))
+            .recycled(),
+        );
+    }
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
     // THIS WORKER'S OWN DEADLINE FOR THE WHOLE OPERATION, both phases. Never read back from
@@ -303,13 +324,12 @@ pub fn redact_begin(
     let mut options = OpenOptions::new(limits, Arc::clone(&clock));
     options.password = password.as_ref();
 
-    let refused =
-        |error: &Error| Begun::refused(Reply::failure(error).with_lifecycle(&limits).recycled());
-    if pending() {
-        return refused(&Error::Internal(
-            "redact: a second reading is already pending in this worker".to_owned(),
-        ));
-    }
+    // EVERY REFUSAL ENDS THE WORKER, so each empties the slot first (nothing is pending past the
+    // check above, unless `hold` refuses, and then something is).
+    let refused = |error: &Error| {
+        discard();
+        Begun::refused(Reply::failure(error).with_lifecycle(&limits).recycled())
+    };
     let Some(index) = page_index(page) else {
         return refused(&zero_page());
     };
@@ -444,6 +464,8 @@ pub fn redact_abort(nonce: u64) -> Reply {
 pub fn page_frames(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
     // WIPED WHEN DROPPED (#199): the document is the person's, whatever is read from it.
     let bytes = Zeroizing::new(bytes);
+    // RECYCLED AFTER THIS, as below: a reading still pending in this worker is ended now.
+    discard();
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
     let password = crate::password_from(password);
@@ -516,7 +538,8 @@ mod tests {
         use zeroize::Zeroizing;
 
         use super::super::{
-            Pending, hold, pending, redact_abort, redact_confirm, take_for, verdict,
+            Pending, WebRegion, hold, pending, redact_abort, redact_begin, redact_confirm,
+            take_for, verdict,
         };
 
         /// A clock a test moves by hand.
@@ -622,6 +645,32 @@ mod tests {
                     "the slot was left full in a worker being recycled"
                 );
             }
+        }
+
+        #[test]
+        fn a_begin_refused_because_a_reading_is_pending_empties_the_slot() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            hold(make(&clock)).expect("holds");
+            let begun = redact_begin(
+                b"%PDF".to_vec().into_boxed_slice(),
+                1,
+                &[1],
+                WebRegion::new(0.0, 0.0, 1.0, 1.0),
+                None,
+                crate::WebLimits::new(1, 1, 1, 1, 1),
+            );
+            let reply = begun.reply();
+            assert!(!reply.ok());
+            assert!(
+                reply.recycle(),
+                "the refused begin did not recycle the worker"
+            );
+            assert_eq!(begun.nonce(), 0);
+            assert!(
+                !pending(),
+                "the refused begin left the held reading in the slot"
+            );
         }
 
         #[test]
