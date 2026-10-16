@@ -3966,13 +3966,10 @@ fn the_untagged_writer_export_carries_no_structure_tree_and_redacts() {
         );
     }
 
-    let refusal = format!(
-        "{:?}",
-        redact(&tagged).expect_err("the tagged export must refuse")
-    );
+    let refused = refusal(&tagged, "the tagged export must refuse");
     assert!(
-        refusal.contains("[structure-tree]"),
-        "the tagged export refused, but not as a structure tree: {refusal}"
+        refused.contains("[structure-tree]"),
+        "the tagged export refused, but not as a structure tree: {refused}"
     );
     redact(&untagged).expect("the untagged copy redacts");
 }

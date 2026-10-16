@@ -439,7 +439,7 @@ const NUMERIC = new Set([
  * there, and every loosening of these -- a leading zero, 2^64, `-0`, a pinned size, a 65th font, a
  * font identity past 48 bits -- stayed green against it (review of #137).
  */
-const FONT_OK = "FontOutcome { font: 851968, cut: true, also_used_by: 0 }";
+const FONT_OK = "FontOutcome { font: 720896, cut: true, also_used_by: 0 }";
 const report = (fonts: string[], dropped = "0") =>
   `Report { fonts: [${fonts.join(", ")}], dropped_carried_text: ${dropped} }`;
 export const REFINED: [string, string | number, string][] = [
@@ -449,13 +449,13 @@ export const REFINED: [string, string | number, string][] = [
   ["originalBytes", "1", "a size only compress fills"],
   ["producedBytes", "1", "a size only compress fills"],
   ["report", report(Array.from({ length: FONTS_MAX + 1 }, () => FONT_OK)), "a 65th font"],
-  ["report", report([FONT_OK.replace("851968", "281474976710656")]), "a font identity of 2^48"],
+  ["report", report([FONT_OK.replace("720896", "281474976710656")]), "a font identity of 2^48"],
   [
     "report",
     report([FONT_OK.replace("also_used_by: 0", "also_used_by: 4294967296")]),
     "a count of 2^32",
   ],
-  ["report", report([FONT_OK.replace("851968", "0851968")]), "a font identity with a leading zero"],
+  ["report", report([FONT_OK.replace("720896", "0720896")]), "a font identity with a leading zero"],
   ["report", report([FONT_OK], "4294967296"), "a dropped count of 2^32"],
   ["frames[]", "612", "an odd count of sizes"],
   ["frames[]", "612,0792", "a size with a leading zero"],
@@ -807,7 +807,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
         "frameRefusals[]": "",
         "frameRefusals[].length": 0,
         report:
-          "Report { fonts: [FontOutcome { font: 1179648, cut: true, also_used_by: 0 }, FontOutcome { font: 851968, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
+          "Report { fonts: [FontOutcome { font: 655360, cut: true, also_used_by: 0 }, FontOutcome { font: 720896, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
         "output.type": "application/pdf",
       },
     },
