@@ -129,6 +129,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "acroform-field": "annotations",
   "annotation-appearance-unbounded": "annotations",
   "annotation-dependent-kept": "annotations",
+  "annotation-in-region": "annotations",
   "annotation-no-rotate": "annotations",
   "annotation-popup-unreadable": "annotations",
   "annotation-quads-outside-rect": "annotations",

@@ -54,6 +54,7 @@ pub const RULE_IDS: &[&str] = &[
     "adjustment-not-expressible",
     "annotation-appearance-unbounded",
     "annotation-dependent-kept",
+    "annotation-in-region",
     "annotation-no-rotate",
     "annotation-popup-unreadable",
     "annotation-quads-outside-rect",

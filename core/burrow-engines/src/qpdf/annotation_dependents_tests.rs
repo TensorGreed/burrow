@@ -98,7 +98,11 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
         .any(|window| window == needle.as_bytes())
 }
 
+/// THE POST-LAUNCH REMOVAL, SWITCHED ON for the call (#136 D3). For launch the operation refuses
+/// an annotation the region reaches; every test here is about what that removal, once it ships,
+/// must take with it, so it is switched on for both engines and off again when the call returns.
 fn on_both(bytes: &[u8]) -> [(&'static str, burrow_types::Result<Vec<u8>>); 2] {
+    let _removing = crate::redact::hooks::removing_annotations();
     let covered = BTreeSet::from([0]);
     let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
     [
@@ -646,6 +650,8 @@ fn a_shared_array_with_nothing_over_the_region_is_left_exactly_as_it_was() {
 
 #[test]
 fn the_reference_walk_reads_the_deadline_at_each_annotation_object() {
+    // The post-launch removal, switched on: see `on_both`.
+    let _removing = crate::redact::hooks::removing_annotations();
     // MEASURED AS A DIFFERENCE, because the sharing walk reads the deadline at every annotation of
     // every page too and would hide these reads end to end. The walk over referenced objects runs
     // only when something with an identity was removed, so the same document with the annotation
@@ -681,6 +687,8 @@ fn the_reference_walk_reads_the_deadline_at_each_annotation_object() {
 
 #[test]
 fn the_reference_walk_reads_the_deadline_at_each_page_object() {
+    // The post-launch removal, switched on: see `on_both`.
+    let _removing = crate::redact::hooks::removing_annotations();
     // THE SAME DIFFERENCE over 200 pages with no annotations at all, so only the per-page read can
     // account for it.
     struct Counting(std::sync::atomic::AtomicU64);
@@ -799,6 +807,8 @@ fn what_something_kept_also_names_is_kept_with_it() {
 
 #[test]
 fn the_popup_walk_reads_the_deadline_at_each_popup() {
+    // The post-launch removal, switched on: see `on_both`.
+    let _removing = crate::redact::hooks::removing_annotations();
     // A CHAIN OF UNLISTED POPUPS, each naming the next as `/Popup`: bounded by the file, not by the
     // page. Measured as a difference, against the same removal with no chain: each popup is read
     // once by the walk that collects them and once by the walk over every referenced object, so

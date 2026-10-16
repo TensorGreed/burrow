@@ -1451,6 +1451,69 @@ mod wiring {
     }
 
     #[test]
+    fn an_annotation_the_region_reaches_refuses_whatever_its_kind_or_flags() {
+        // #136 D3 (owner, 2026-10-15): for launch, an annotation whose `/Rect` reaches the region
+        // refuses as `[annotation-in-region]`, and redaction never silently keeps or removes one.
+        // Every subtype class and both "do not show" flags, because a rule keyed on a kind or a
+        // flag is a rule some annotation walks past. Each has its twin: the same annotation clear
+        // of the region redacts, with the annotation kept.
+        let page = |annotation: &str| {
+            pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} \
+                     /Annots [{annotation}] >>"
+                ),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                    .to_owned(),
+            ])
+        };
+        let kinds = [
+            ("Text", ""),
+            ("FreeText", "/DA (/Helv 10 Tf 0 g)"),
+            ("Square", ""),
+            ("Ink", "/InkList [[30 335 60 345]]"),
+            ("Stamp", ""),
+            ("Link", "/Border [0 0 0]"),
+            ("Widget", "/FT /Btn"),
+            ("Popup", ""),
+            ("Text", "/F 2"),
+            ("Square", "/F 32"),
+        ];
+        for (subtype, extra) in kinds {
+            let annotation =
+                |rect: &str| format!("<< /Type /Annot /Subtype /{subtype} /Rect {rect} {extra} >>");
+            refused_by(
+                redact_in(&page(&annotation("[20 330 120 350]")), UPPER_BAND),
+                "annotation-in-region",
+                &format!("/{subtype} {extra}, over the region"),
+            );
+            let kept = redact_in(&page(&annotation("[20 100 120 120]")), UPPER_BAND)
+                .unwrap_or_else(|error| {
+                    panic!("/{subtype} {extra}, clear of the region: {error:?}")
+                });
+            assert!(
+                String::from_utf8_lossy(&kept).contains(&format!("/{subtype}")),
+                "/{subtype} {extra}, clear of the region, is kept"
+            );
+        }
+        // A TEXT-MARKUP ANNOTATION TOO, whose `/QuadPoints` sit inside its `/Rect`.
+        refused_by(
+            redact_in(
+                &page(
+                    "<< /Type /Annot /Subtype /Highlight /Rect [20 330 120 350] \
+                       /QuadPoints [20 350 120 350 20 330 120 330] >>",
+                ),
+                UPPER_BAND,
+            ),
+            "annotation-in-region",
+            "/Highlight, over the region",
+        );
+    }
+
+    #[test]
     fn an_annotation_rect_past_what_readers_agree_on_is_refused() {
         // #224, security reviews rounds 3 and 4: PDFium reads a whole number outside 32 bits as
         // 0, so a `/Rect` of `[20 4294967296 120 380]` is 0..380 to a viewer that draws
@@ -1508,11 +1571,12 @@ mod wiring {
             "annotation-rect",
             "a /Rect corner below -2^24",
         );
-        // THE NEAR-MISS: the same annotation where both readers put it is removed, and redacts.
-        let output = redact_in(&page("[20 330 120 350]"), UPPER_BAND).expect("redacts");
-        assert!(
-            !String::from_utf8_lossy(&output).contains("/Square"),
-            "the annotation over the region was removed"
+        // THE NEAR-MISS: the same annotation where both readers put it is read, found over the
+        // region, and refused as being there (#136 D3), not as an unreadable `/Rect`.
+        refused_by(
+            redact_in(&page("[20 330 120 350]"), UPPER_BAND),
+            "annotation-in-region",
+            "a /Rect both readers agree on, over the region",
         );
         // AND THE SEARCH CAN SEE IT: a region away from it keeps the annotation, readable.
         let away = Region {

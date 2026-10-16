@@ -1032,19 +1032,25 @@ fn a_page_key_outside_the_allowlist_is_stripped() {
 }
 
 #[test]
-fn an_annotation_whose_rect_reaches_the_region_is_removed() {
-    // KILLS: not removing annotations at all. `/Annots` is on the page-key allowlist and
-    // `affected_streams` never walks `/AP /N`, so before this the appearance stream drawing
-    // over the region survived untouched and the output still rendered the secret.
+fn an_annotation_whose_rect_reaches_the_region_is_refused() {
+    // KILLS: an annotation over the region going out with the page. `/Annots` is on the page-key
+    // allowlist and `affected_streams` never walks `/AP /N`, so an appearance drawing over the
+    // region once survived untouched. For launch (#136 D3) the page is refused, never redacted
+    // around the annotation; the removal this test used to pin is post-launch, and the lib tests
+    // that switch it on (`qpdf::annotation_dependents_tests`) hold it until then.
     let document = annotated_document("[72 690 400 740]");
     assert_present(
         &document,
         b"BURROW-ANNOT-SECRET",
         "the fixture's appearance",
     );
-
-    let (out, _) = redact(&document).expect("a one-page redaction");
-    assert_absent(&out, b"BURROW-ANNOT-SECRET", "the annotation's appearance");
+    match redact(&document) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[annotation-in-region]"),
+            "refused, but not as an annotation in the region: {error:?}"
+        ),
+        Ok(_) => panic!("an annotation over the region must refuse the page"),
+    }
 }
 
 #[test]
@@ -2865,17 +2871,35 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 88] = [
         "evade-annotation-subtype-as-a-string.pdf",
         Some("annotation-quads-outside-rect"),
     ),
-    ("evade-annotation-popup-of-a-removed-parent.pdf", None),
-    ("evade-annotation-reply-to-a-removed-annotation.pdf", None),
+    // REFUSED FOR LAUNCH (#136 D3): the annotation sits in the region. What it probes, the
+    // post-launch removal taking its dependents (#239), is held by the lib tests that switch it on.
+    (
+        "evade-annotation-popup-of-a-removed-parent.pdf",
+        Some("annotation-in-region"),
+    ),
+    // REFUSED FOR LAUNCH (#136 D3): the annotation sits in the region. What it probes, the
+    // post-launch removal taking its dependents (#239), is held by the lib tests that switch it on.
+    (
+        "evade-annotation-reply-to-a-removed-annotation.pdf",
+        Some("annotation-in-region"),
+    ),
+    // REFUSED FOR LAUNCH (#136 D3), before the dependents rule (#239) it probes can fire; that
+    // rule is held by the lib tests that switch the post-launch removal on.
     (
         "evade-annotation-named-from-the-catalogue.pdf",
-        Some("annotation-dependent-kept"),
+        Some("annotation-in-region"),
     ),
+    // REFUSED FOR LAUNCH (#136 D3), before the dependents rule (#239) it probes can fire; that
+    // rule is held by the lib tests that switch the post-launch removal on.
     (
         "evade-annotation-reply-on-another-page.pdf",
-        Some("annotation-dependent-kept"),
+        Some("annotation-in-region"),
     ),
-    ("nearmiss-annotation-popup-of-a-kept-parent.pdf", None),
+    // REFUSED FOR LAUNCH (#136 D3): an annotation sits in the region. Was None.
+    (
+        "nearmiss-annotation-popup-of-a-kept-parent.pdf",
+        Some("annotation-in-region"),
+    ),
     // /AcroForm (#125): a form field anywhere, or an /AcroForm on the catalogue (resolved through
     // the trailer's /Root). The direct-/Root catalogue cases are PDFium-marginal, so they are a
     // qpdf-only test below (`a_direct_root_catalogue_carrying_a_form_is_refused`), not corpus

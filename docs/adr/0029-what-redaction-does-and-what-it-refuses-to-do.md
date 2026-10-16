@@ -117,7 +117,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | text in a **Type 3 `/CharProcs`** | **handle** — same walk |
 | text straddling **two `/Contents` streams** | **handle** — see §4 |
 | `/ActualText` and `/Alt` on marked content in the region | **handle** — it is in the page's own stream. Implemented #165; the entry is **dropped**, not narrowed, and §7 says what that costs |
-| **annotations** whose `/Rect` intersects the region | **handle** — `/Annots` is on the page. Remove the annotation entirely; pruning its `/Contents` and keeping its appearance is two chances to miss one |
+| **annotations** whose `/Rect` intersects the region | **refuse**, `[annotation-in-region]` — **for launch** (owner, 2026-10-15, #136 D3): every subtype and flag, so redaction never silently removes or keeps an annotation in the region; the visitor can flatten or remove it and try again. **Post-launch: handle** — `/Annots` is on the page. Remove the annotation entirely; pruning its `/Contents` and keeping its appearance is two chances to miss one. That removal, and the dependents rows below that go with it (#239, #240), stay in the code behind a test-only switch, held by their own tests, until it ships |
 | the page's **`/Thumb`** | **handle** — strip unconditionally on any redacted page |
 | page **`/Metadata`**, **`/PieceInfo`**, and every unlisted page key | **handle** — §2's allowlist |
 | the font's **`/ToUnicode`** and **`/Differences`** | **handle** — §1 |
