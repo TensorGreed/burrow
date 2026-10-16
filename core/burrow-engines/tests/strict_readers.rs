@@ -36,7 +36,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
-use support::char_box_oracle::dark_pixels_with_annotations;
+use support::char_box_oracle::{chars_on_page, dark_pixels_with_annotations};
 
 /// The region, in display space: x 100..300, and y 250..300 in PDF space on a 400-point page.
 const REGION: Region = Region {
@@ -1040,4 +1040,65 @@ fn a_font_part_written_as_a_stream_refuses_and_the_dictionary_redacts() {
     );
     redact(&with_widths(b"<< /Type /Encoding /Differences [83 /S] >>"))
         .expect("a dictionary /Encoding on a font with /Widths redacts");
+}
+
+/// #182: PDFium stops reading `/Widths` at `/LastChar`, and gives a code past it `/MissingWidth`,
+/// or 0. MEASURED HERE, not assumed: the same four widths, 600 each, for `ABCD` at size 20 from
+/// x = 110, with `/LastChar` 66, 66.7, 68, 0, -1, `(x)` and absent. PDFium advances `C` by 0 for 66
+/// and for 66.7, which it truncates, and by 12 for the other five. So a code past an early
+/// `/LastChar` that `/Widths` still gives a width refuses `[last-char]`, and the five twins, where
+/// both readings agree, redact. Measured for Type1 only; see `past_last_char`.
+#[test]
+fn a_code_past_last_char_that_widths_still_covers_refuses() {
+    let document_for = |last_char: &str| -> Vec<u8> {
+        document(
+            "/Font << /F1 5 0 R >>",
+            b"BT /F1 20 Tf 110 260 Td (ABCD) Tj ET",
+            &[format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 {last_char} \
+                 /Widths [600 600 600 600] >>"
+            )
+            .as_bytes()],
+        )
+    };
+    // WHAT PDFIUM DOES, per `/LastChar`: the gap from C's origin to D's.
+    let gap = |pdf: &[u8]| -> f64 {
+        let drawn: Vec<_> = chars_on_page(pdf, 0)
+            .into_iter()
+            .filter(|c| !c.generated)
+            .collect();
+        match drawn.as_slice() {
+            [_, _, c, d] => d.origin.0 - c.origin.0,
+            other => panic!("PDFium read {} glyphs, not the four drawn", other.len()),
+        }
+    };
+    let early = document_for("/LastChar 66");
+    assert!(
+        gap(&early).abs() < 0.05,
+        "/LastChar 66: PDFium advances C by 0, not by its /Widths entry"
+    );
+    // A REAL IS TRUNCATED, as PDFium reads it: 66.7 is 66, early, and refuses below.
+    let real = document_for("/LastChar 66.7");
+    assert!(
+        gap(&real).abs() < 0.05,
+        "/LastChar 66.7: PDFium truncates it to 66 and advances C by 0"
+    );
+    refuses_by("/LastChar 66.7, C and D past 66", &real, "last-char");
+    // THE TWINS, both readings agreeing: past the array, 0, NEGATIVE (the sign gate), absent, and
+    // not a number at all (PDFium reads a string as 0).
+    for last_char in [
+        "/LastChar 68",
+        "/LastChar 0",
+        "/LastChar -1",
+        "",
+        "/LastChar (x)",
+    ] {
+        let twin = document_for(last_char);
+        assert!(
+            (gap(&twin) - 12.0).abs() < 0.05,
+            "{last_char:?}: PDFium advances C by its /Widths entry, 12"
+        );
+        redact(&twin).unwrap_or_else(|error| panic!("{last_char:?} redacts: {error}"));
+    }
+    refuses_by("/LastChar 66, C and D past it", &early, "last-char");
 }
