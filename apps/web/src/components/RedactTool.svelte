@@ -4,8 +4,8 @@
   //
   // WHAT IT DOES, AND ONLY THAT: a file, every page's frame (`page_frames`), one page and one
   // region typed in points (D2: one region per run), a run through REDACTION's own worker, a
-  // cancel, and a download. Pictures and pointer selection are S4; "redact another area of this
-  // result" is S6b.
+  // cancel, a download, and "redact another area of this result" (S6b), which runs again on the
+  // output. Pictures and pointer selection are S4.
   //
   // THE WORKER IS REDACTION'S, NOT THE BASE ONE. The redaction bundle is fetched on first use and
   // by nothing else (ADR 0029's 2026-09-21 amendment), through the same `createToolHost` every
@@ -41,7 +41,27 @@
   let phase = $state<"idle" | "working" | "done">("idle");
   let notice = $state<RedactMessage | null>(null);
   let result = $state<Handout | null>(null);
-  /** What the run reported that §7 has a paragraph for. */
+  /**
+   * The finished run's document, for "redact another area of this result" (S6b, D2's re-feed).
+   *
+   * The same Blob the download link points at, held here rather than read back from the link:
+   * one region per run, so a second area is a second run on the first one's output.
+   */
+  let output: Blob | null = null;
+  /**
+   * The result a re-fed run started from, kept downloadable until that run succeeds, the person
+   * chooses a different file, or the page goes away -- then released (#199).
+   */
+  let earlier = $state<Handout | null>(null);
+  /** Whether the chosen file is a re-fed result (S6b) rather than one the person chose. */
+  let reFed = $state(false);
+  /** The name of the file the person chose, which every result in its chain is named after. */
+  let baseName = "document";
+  /**
+   * What the runs on this chain reported that §7 has a paragraph for: the most any run in it
+   * counted, so a note stays while the chain lasts and goes with a genuinely new file (L2). A
+   * removal the first run made is in every later result, and so is what it disclosed.
+   */
   let retainedFonts = $state(0);
   let droppedCarriedText = $state(0);
   let announcement = $state("");
@@ -94,11 +114,24 @@
   );
   const preparing = $derived(!engineStarted && file !== null && frames === null && !unreadable);
 
-  async function choose(files: FileList | File[]) {
+  /**
+   * Take a file: one the person chose, or (`fromResult`) the last result re-fed by `another()`.
+   *
+   * A file the person chose starts a new chain: every earlier result is released, the §7 notes
+   * reset, and results are named after it. A re-fed result keeps the chain.
+   */
+  async function choose(files: FileList | File[], fromResult = false) {
     const [chosen] = Array.from(files);
     if (!chosen) return;
     delivery.invalidate();
     clearResult();
+    if (!fromResult) {
+      releaseEarlier();
+      retainedFonts = 0;
+      droppedCarriedText = 0;
+      baseName = chosen.name.replace(/\.pdf$/i, "") || "document";
+    }
+    reFed = fromResult;
     phase = "idle";
     notice = null;
     file = chosen;
@@ -207,8 +240,14 @@
         phase = "idle";
         return;
       }
-      retainedFonts = reply.retainedFonts ?? 0;
-      droppedCarriedText = reply.droppedCarriedText ?? 0;
+      output = reply.output;
+      const retained = reply.retainedFonts ?? 0;
+      const dropped = reply.droppedCarriedText ?? 0;
+      retainedFonts = reFed ? Math.max(retainedFonts, retained) : retained;
+      droppedCarriedText = reFed ? Math.max(droppedCarriedText, dropped) : dropped;
+      // THE NEW RESULT REPLACES THE ONE IT STARTED FROM, which is released only now that this
+      // one exists.
+      releaseEarlier();
       result = handout;
       phase = "done";
       announce("Done. The new file is ready to download.");
@@ -222,9 +261,9 @@
     }
   }
 
+  /** Named after the file the person chose, however many areas its chain has redacted. */
   function suggestedName(): string {
-    const base = file?.name.replace(/\.pdf$/i, "") ?? "document";
-    return `${base}-redacted.pdf`;
+    return `${baseName}-redacted.pdf`;
   }
 
   /** Stop the run in flight: only terminating the worker stops an engine call (ADR 0007). */
@@ -242,11 +281,37 @@
     announce("Ready to try again.");
   }
 
+  /**
+   * Start a second run on the first one's output (S6b). The output becomes the chosen file, so
+   * its frames are read again and a new area is typed: nothing from the first run's area carries
+   * over, because the person is choosing a different one.
+   */
+  function another() {
+    if (!output || !result) return;
+    const next = new File([output], result.name, { type: "application/pdf" });
+    // THE RESULT STAYS DOWNLOADABLE while the next area is chosen and run.
+    earlier = result;
+    result = null;
+    output = null;
+    void choose([next], true);
+  }
+
   function clearResult() {
     delivery.release(result);
     result = null;
-    retainedFonts = 0;
-    droppedCarriedText = 0;
+    output = null;
+  }
+
+  function releaseEarlier() {
+    delivery.release(earlier);
+    earlier = null;
+  }
+
+  /** Release every result the page holds (#199): on page leave and on unmount. */
+  function releaseAll() {
+    delivery.invalidate();
+    clearResult();
+    releaseEarlier();
   }
 
   function announce(text: string) {
@@ -254,11 +319,36 @@
     queueMicrotask(() => (announcement = text));
   }
 
+  // LEAVING THE PAGE RELEASES EVERY RESULT (#199), as the render worker is terminated on
+  // `pagehide` (D1): a result left behind in a bfcached page is a copy of the document nobody
+  // asked to keep.
+  $effect(() => {
+    const onPageHide = () => releaseAll();
+    // A PAGE RESTORED FROM THE BACK-FORWARD CACHE after leaving mid-run would still say "Working"
+    // over a run whose reply `releaseAll` already invalidated; it is back to idle, with nothing
+    // to download, which is what it now is.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      if (phase === "working") {
+        // AND THE WORKER IT WAS RUNNING ON IS GONE, so "Stopped." is true: a frozen worker could
+        // otherwise still be holding the document when the page comes back.
+        host?.discardWorker();
+        phase = "idle";
+        announce("Stopped.");
+      }
+    };
+    globalThis.addEventListener("pagehide", onPageHide);
+    globalThis.addEventListener("pageshow", onPageShow);
+    return () => {
+      globalThis.removeEventListener("pagehide", onPageHide);
+      globalThis.removeEventListener("pageshow", onPageShow);
+    };
+  });
+
   onDestroy(() => {
-    // INVALIDATE FIRST, so a reply landing during teardown cannot hand out a URL after the
-    // release below (L4).
-    delivery.invalidate();
-    clearResult();
+    // INVALIDATE FIRST (inside `releaseAll`), so a reply landing during teardown cannot hand out
+    // a URL after the release (L4).
+    releaseAll();
     host?.dispose();
   });
 
@@ -438,6 +528,17 @@
     {/if}
   </div>
 
+  {#if earlier && !(phase === "done" && result && !stale)}
+    <p class="result" data-testid="redact-earlier">
+      <!-- NOT LABELLED WITH ITS FILE NAME (L-B): the name is the chain's, which a finished second
+           run would share, and after a refused or stopped run a link saying it would read as the
+           result with both areas removed. -->
+      <a class="download" href={earlier.url} download={earlier.name}
+        >Download the last result, with only the earlier areas removed</a
+      >
+    </p>
+  {/if}
+
   {#if phase === "done" && result && !stale}
     <div class="result">
       <p>
@@ -449,6 +550,13 @@
       {#each resultNotes(retainedFonts, droppedCarriedText) as note (note)}
         <p data-testid="redact-result-note">{note}</p>
       {/each}
+      <!-- ONE AREA PER RUN (D2): a second area is a run on this result, not on the file chosen
+           first, so the first area's removal is kept. -->
+      <p>
+        <button type="button" onclick={another} data-testid="redact-another"
+          >Redact another area of this result</button
+        >
+      </p>
     </div>
   {/if}
 
