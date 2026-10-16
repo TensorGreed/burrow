@@ -374,7 +374,11 @@ describe("the ceilings a tool page runs under", () => {
 });
 
 describe("the second reading's render host (#206's web half)", () => {
-  it("is a NEW render host each time, fetched from the render bundle, and ended by dispose", async () => {
+  // WHAT THIS COVERS, AND WHAT IT DOES NOT. These cases pin `freshReadingHost` itself: a new host
+  // per reading, each with its own worker, each worker terminated and its URL released on
+  // dispose. That the /redact-pdf island actually CALLS it per redaction is covered only by the
+  // e2e (redact-pdf.spec.ts, "every redaction reads its page again in a NEW render worker").
+  it("is a NEW render host each time, with its own worker, ended by dispose", async () => {
     const asked: string[] = [];
     const watching = deps({
       fetch: (async (url: string) => {
@@ -382,6 +386,8 @@ describe("the second reading's render host (#206's web half)", () => {
         return { ok: true, text: async () => "// worker source" } as Response;
       }) as unknown as typeof globalThis.fetch,
     });
+    const made = FakeWorker.made;
+    const terminated = FakeWorker.terminated;
     const first = await freshReadingHost(watching.deps);
     const second = await freshReadingHost(watching.deps);
     expect(asked, "each reading fetched its own host's bundle").toEqual([
@@ -389,15 +395,26 @@ describe("the second reading's render host (#206's web half)", () => {
       RENDER.worker.url,
     ]);
     expect(first).not.toBe(second);
+    // RUN, SO EACH SPAWNS. The worker is spawned lazily; without a run there is no worker and no
+    // URL, and a release check would compare nothing with nothing.
+    void first.run({ op: "second_reading_port" }).catch(() => {});
+    void second.run({ op: "second_reading_port" }).catch(() => {});
+    await vi.waitFor(() => expect(FakeWorker.made - made).toBe(2));
+    expect(watching.urls.created, "one worker URL per reading").toBe(2);
+    expect(watching.urls.revoked).toBe(0);
     first.dispose();
     second.dispose();
-    // BOTH OBJECT URLS RELEASED: a host that outlived its reading would hold one.
-    expect(watching.urls.revoked).toBe(watching.urls.created);
+    // BOTH WORKERS TERMINATED AND BOTH URLS RELEASED: a host that outlived its reading would
+    // hold a worker and the document in it.
+    expect(FakeWorker.terminated - terminated).toBe(2);
+    expect(watching.urls.revoked).toBe(2);
   });
 
-  it("releases what it built when the build fails, and rethrows", async () => {
+  it("rethrows a failed build as the host's own sentinel, having spawned nothing", async () => {
+    const made = FakeWorker.made;
     const mismatch = deps({ origin: "https://elsewhere.example" });
     await expect(freshReadingHost(mismatch.deps)).rejects.toBe(ORIGIN_MISMATCH);
     expect(mismatch.urls.created).toBe(0);
+    expect(FakeWorker.made).toBe(made);
   });
 });

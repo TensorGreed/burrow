@@ -99,4 +99,40 @@ describe("redaction with its second reading, from the page", () => {
     const render = fakeHost(async () => ({ ok: false, kind: "Internal" }));
     expect(await redactWithSecondReading(redact, async () => render, REQUEST)).toBe(refusal);
   });
+
+  test("a run stopped while the render host builds queues no redaction and spawns no reading", async () => {
+    const redact = fakeHost(async () => ({ ok: true, output: new Uint8Array([1]) }));
+    const render = fakeHost(() => new Promise(() => {}));
+    let live = true;
+    const reply = await redactWithSecondReading(
+      redact,
+      async () => {
+        // THE STOP LANDS HERE, during the build.
+        live = false;
+        return render;
+      },
+      REQUEST,
+      { isLive: () => live },
+    );
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("Cancelled");
+    expect(reply.output).toBeNull();
+    expect(redact.calls, "no redaction was queued after the Stop").toHaveLength(0);
+    expect(render.calls, "no reading was started").toHaveLength(0);
+    expect(render.disposed()).toBe(1);
+  });
+
+  test("a live run is not cancelled by the check, and isLive is not passed on to a host", async () => {
+    const redact = fakeHost(async () => ({ ok: true }));
+    const render = fakeHost(() => new Promise(() => {}));
+    await redactWithSecondReading(redact, async () => render, REQUEST, {
+      maxDurationMs: 12_000,
+      isLive: () => true,
+    });
+    expect(redact.calls).toHaveLength(1);
+    expect(redact.calls[0].options).not.toHaveProperty("isLive");
+    expect(redact.calls[0].options.maxDurationMs).toBe(12_000);
+    (redact.calls[0].message.port as MessagePort).close();
+    (render.calls[0].message.port as MessagePort).close();
+  });
 });

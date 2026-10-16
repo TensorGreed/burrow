@@ -403,7 +403,14 @@ export function createToolHost(
       // THROUGH THE PROMISE, not the binding: `host` is assigned only after two awaits, so a
       // page destroyed during them would otherwise never dispose and would leave a worker
       // holding the file blob alive. Found by security review.
-      void building?.then((built) => built.dispose());
+      //
+      // A FAILED BUILD HAS NOTHING TO DISPOSE, and its rejection is the caller's, from
+      // `ensure()`. Without the second handler this chain re-raised it as an unhandled
+      // rejection, which `pnpm test` counts as a failure (code review of abc97ce).
+      void building?.then(
+        (built) => built.dispose(),
+        () => {},
+      );
       host?.dispose();
     },
   };
@@ -411,8 +418,20 @@ export function createToolHost(
 
 /**
  * A FRESH render host for one second reading of a redacted page (#206's web half), as
- * `redactWithSecondReading` takes one: built for this reading alone, never the strip's, and
- * disposed -- its worker terminated -- with the verdict (#199; design review L4).
+ * `redactWithSecondReading` takes one: built for this reading alone, never a host shared with
+ * anything else, and disposed -- its worker terminated -- with the verdict (#199; design review
+ * L4).
+ *
+ * NO `paused` IS PASSED, and that is right for a host that runs one request and is gone: there is
+ * no later operation for a pause to hold off.
+ *
+ * ITS CIRCUIT BREAKER CANNOT LATCH. Each reading gets a new host and so a new breaker, so render
+ * workers that keep dying never trip one. That is acceptable because the verdict fails closed: a
+ * reading that never arrives is a refusal in the redaction worker, never an output.
+ *
+ * A FAILED BUILD IS DISPOSED AND RETHROWN. Nothing was spawned by then -- the worker is spawned
+ * lazily, on the first `run` -- so the dispose releases nothing today; it is there so a build that
+ * one day acquires something before failing still lets it go.
  */
 export async function freshReadingHost(deps: ToolHostDeps = browserDeps()): Promise<{
   run: ReturnType<typeof createWorkerHost>["run"];

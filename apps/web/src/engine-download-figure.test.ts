@@ -31,6 +31,7 @@ interface BudgetLine {
 const budget: {
   artifacts: Record<string, BudgetLine>;
   redact: { artifacts: Record<string, BudgetLine> };
+  render: { artifacts: Record<string, BudgetLine> };
 } = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
 const engineLines = Object.entries(budget.artifacts).filter(([key]) => key.startsWith("engines/"));
@@ -40,10 +41,16 @@ const engineBrotli = engineLines.reduce((sum, [, line]) => sum + line.measured_b
  * What the HELD redaction page downloads (#136): its own bundle -- the redaction worker and module
  * -- plus the two base artifacts it shares, qpdf and the guard control. Not the base worker or the
  * base module, which a redacting page never fetches (ADR 0029's 2026-09-21 amendment).
+ *
+ * AND THE RENDER BUNDLE, since #206's web half: every redaction takes its second reading in a
+ * fresh render worker, which fetches the render worker, its module and pdfium.wasm. That is the
+ * first redaction's download. Whether a LATER redaction's fresh worker is served pdfium.wasm from
+ * the HTTP cache is not measured, so the page does not say "downloaded once".
  */
 const redactLines = [
   ...engineLines.filter(([key]) => key === "engines/qpdf.wasm" || key === "engines/control.txt"),
   ...Object.entries(budget.redact.artifacts),
+  ...Object.entries(budget.render.artifacts),
 ];
 const redactBrotli = redactLines.reduce((sum, [, line]) => sum + line.measured_brotli, 0);
 
@@ -79,7 +86,7 @@ const SHOWN = [
     file: "src/components/RedactTool.svelte",
     // NOT "downloaded once": redaction's worker recycles after every reply (#199), and whether
     // the browser serves the engine from cache the second time is not measured.
-    pattern: /Starting the PDF engine — about ([\d,.]+) KB\. Nothing has been sent anywhere\./,
+    pattern: /Starting the PDF engines — about ([\d,.]+) KB\. Nothing has been sent anywhere\./,
     measured: redactBrotli,
   },
 ];
@@ -114,7 +121,7 @@ describe("the engine download figure people are shown", () => {
     expect(SHOWN.map((s) => s.file).sort()).toEqual(islandsOnDisk());
 
     const found: string[] = [];
-    expect(redactLines.length, "the redaction page's payload is four budget lines").toBe(4);
+    expect(redactLines.length, "the redaction page's payload is seven budget lines").toBe(7);
     for (const { file, pattern, measured } of SHOWN) {
       const source = readFileSync(join(webApp, file), "utf8");
       const match = pattern.exec(source);

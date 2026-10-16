@@ -148,6 +148,76 @@ test("Stop ends a run without a result or a refusal", async ({ page }) => {
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
 });
 
+test("Stop while the reading's render host is building ends the run before any worker starts", async ({
+  page,
+}, testInfo) => {
+  // "STOP ENDS A RUN" ABOVE PASSES WITHOUT THIS: it reads only the page's state, and a redaction
+  // that ran on after the Stop was invisible to it (code review of abc97ce). This watches the
+  // requests instead.
+  const frame = await open(page, REDACTS);
+  await area(page, "0", "0", String(frame.width), String(frame.height));
+  // HOLD THE RENDER WORKER'S FETCH, which `freshReadingHost` makes before the redaction is queued:
+  // the Stop lands inside `await freshRender()`.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let served: () => void = () => {};
+  const continued = new Promise<void>((resolve) => (served = resolve));
+  const bundle = "**/engines/burrow-render-worker.*.js";
+  await page.route(bundle, async (route) => {
+    await held;
+    await route.continue().catch(() => {});
+    served();
+  });
+  const fetching = page.waitForRequest(/burrow-render-worker\.[0-9a-f]{16}\.js/, {
+    timeout: 15_000,
+  });
+  await page.getByTestId("redact-run").click();
+  await fetching;
+  await page.getByTestId("redact-stop").click();
+  await expect(page.getByTestId("redact-stop")).toHaveCount(0);
+
+  // THE MARKER GOES AFTER THE STOP, and the build is let go only then.
+  const marker = `redact-stopped-building:${testInfo.project.name}`;
+  await mark(marker);
+  release();
+  await continued;
+  // THE WITNESS that the window watched the build finishing: the held bundle reached the server.
+  await expect
+    .poll(() => since(marker).filter((entry) => /burrow-render-worker/.test(entry.url)).length, {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+  // Given time to go wrong: a redaction queued after the Stop spawns its worker within moments.
+  await page.waitForTimeout(3_000);
+  const after = since(marker).map((entry) => entry.url);
+  expect(
+    after.filter((url) => /burrow_wasm_redact_bg|pdfium/.test(url)),
+    "a worker started for a run that had been stopped",
+  ).toEqual([]);
+  await expect(page.getByTestId("redact-download")).toHaveCount(0);
+  await expect(page.getByTestId("redact-notice")).toHaveCount(0);
+  await page.unroute(bundle);
+});
+
+test("every redaction reads its page again in a NEW render worker", async ({ page }, testInfo) => {
+  // THE ISLAND'S WIRING, which no unit test reaches (security review L4): a host reused or
+  // memoised across runs would fetch the render worker's bundle once, not once per run.
+  const frame = await open(page, REDACTS);
+  await area(page, "0", "0", String(frame.width), String(frame.height));
+  const marker = `redact-two-readings:${testInfo.project.name}`;
+  await mark(marker);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-stop")).toHaveCount(0, { timeout: 45_000 });
+  await expect(page.getByTestId("redact-notice")).toHaveCount(0);
+  await expect
+    .poll(() => since(marker).filter((entry) => /burrow-render-worker\./.test(entry.url)).length, {
+      timeout: 45_000,
+    })
+    .toBe(2);
+});
+
 test("the two §7 notes appear beside the result exactly when the reply counted them", async ({
   page,
 }) => {
@@ -208,7 +278,8 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   page,
 }, testInfo) => {
   // THE MARKER GOES BEFORE `goto`, so start-up is in the window too: the page must never reach
-  // for the base worker or the render bundle, and a respawn re-fetches only redaction's set.
+  // for the base worker, and a respawn re-fetches only redaction's set and, for the second
+  // reading (#206's web half), the render bundle's three artifacts and nothing else.
   await mark(`redact-page:${testInfo.project.name}`);
   const frame = await open(page, REDACTS);
   await area(page, "0", "0", String(frame.width), String(frame.height));
@@ -223,7 +294,10 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   const site = new URL(page.url()).origin;
   const unexpected = after.filter(
     (entry) =>
-      entry.origin !== site || (!isRedactionArtifact(entry.url) && !isPageAsset(entry.url)),
+      entry.origin !== site ||
+      (!isRedactionArtifact(entry.url) &&
+        !isSecondReadingArtifact(entry.url) &&
+        !isPageAsset(entry.url)),
   );
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
@@ -234,6 +308,12 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
     after.filter((entry) => /burrow_wasm_redact_bg/.test(entry.url)).length,
     "redaction's module was not fetched, so this test watched nothing",
   ).toBeGreaterThan(0);
+  // AND THE SECOND READING'S WITNESS: pdfium.wasm was fetched, so the run took its reading in a
+  // render worker -- the allow-list above admits the render bundle only because this happened.
+  expect(
+    after.filter((entry) => /^\/engines\/pdfium\.[0-9a-f]{16}\.wasm$/.test(entry.url)).length,
+    "pdfium.wasm was not fetched, so no second reading was taken",
+  ).toBeGreaterThan(0);
   expect(
     after.filter((entry) => entry.url === "/redact-pdf/").length,
     "the page itself was not logged, so the allow-list below matched nothing",
@@ -242,6 +322,17 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   const posted = after.filter((entry) => entry.method !== "GET");
   expect(posted.map((entry) => `${entry.method} ${entry.url}`)).toEqual([]);
 });
+
+/**
+ * The render bundle a redaction's second reading fetches (#206's web half), by exact path: the
+ * render worker, its module and pdfium.wasm, which a fresh render worker loads for each reading.
+ */
+function isSecondReadingArtifact(url: string): boolean {
+  return (
+    /^\/engines\/(pdfium|burrow_wasm_render_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
+    /^\/engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/.test(url)
+  );
+}
 
 /**
  * The held page's own static files, by exact shape: the page, its content-hashed Astro chunks and

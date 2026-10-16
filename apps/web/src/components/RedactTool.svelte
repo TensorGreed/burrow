@@ -225,7 +225,9 @@
           password: null,
           limits: LIMITS,
         },
-        { maxDurationMs: LIMITS.maxDurationMs },
+        // `isLive`: A STOP WHILE THE RENDER HOST IS BUILDING ends the run there, before any
+        // worker spawns -- and so does `pagehide`, which invalidates the run the same way.
+        { maxDurationMs: LIMITS.maxDurationMs, isLive: () => run.live() },
       );
       if (!run.live()) return;
       if (!reply.ok) {
@@ -417,7 +419,7 @@
 
   {#if preparing}
     <p class="preparing" role="status">
-      Starting the PDF engine — about 585 KB. Nothing has been sent anywhere.
+      Starting the PDF engines — about 2,590 KB. Nothing has been sent anywhere.
     </p>
   {/if}
 
