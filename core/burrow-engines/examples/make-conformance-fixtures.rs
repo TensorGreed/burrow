@@ -890,11 +890,10 @@ fn main() {
         // `tools/make-chrome-printed-fixture.mjs`, in the shipped OFL face. Every operation is
         // listed, because every one of them is how a visitor meets a Chrome PDF.
         //
-        // SPLIT REFUSES IT TODAY, and that is recorded as what burrow does rather than what it
-        // should: Chrome writes `href="#"` as an empty-name destination (`/Dest /`), and split
-        // refuses an empty name as `[split-name-read-differently]`. Lane 1's empty-name narrowing
-        // (#358, an acceptance change) flips this to `splits_into(2)` and removes the gap;
-        // `split_no_leak.rs` pins the rule id until then.
+        // SPLIT ACCEPTS IT (#358). It refused from v0.1.6 until the empty-name narrowing landed,
+        // because Chrome writes `href="#"` as an empty-name destination (`/Dest /`) and split
+        // refused every empty name. It now splits into two parts, with no known gap;
+        // `split_no_leak.rs` asserts the same.
         Fixture {
             name: "a-chrome-printed-document",
             filename: "chrome-printed.pdf",
@@ -904,18 +903,11 @@ fn main() {
             attempt_recovery: false,
             expect: {
                 let mut every = every_single_document_operation(2, vec![90, 90], vec![0, 0], 2);
-                every.extend(split_refused());
+                every.extend(splits_into(2));
                 every
             },
             platform_expectations: Vec::new(),
-            known_gap: Some(KnownGap {
-                issue: "https://github.com/TensorGreed/burrow/issues/358".to_owned(),
-                reason: "split refuses Chrome's empty-name destination (`/Dest /`, written for \
-                         `href=\"#\"`) as [split-name-read-differently], so it refuses ordinary \
-                         Chrome-printed PDFs"
-                    .to_owned(),
-                milestone: "M2".to_owned(),
-            }),
+            known_gap: None,
         },
         // ---- reorder -----------------------------------------------------------------
         //

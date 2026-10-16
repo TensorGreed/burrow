@@ -688,7 +688,7 @@ impl<'a> Level<'a> {
 
 /// What an empty name is, by where it stands.
 enum EmptyName {
-    /// A value under `/Dest`, followed by white space the measurement admits.
+    /// A value under `/Dest`, followed by LF or by the `>>` closing its dictionary.
     Value,
     /// A key the caller rules on ([`Found::empty_keys`]).
     Key(EmptyKey),
@@ -704,14 +704,16 @@ const EMPTY_VALUE_PARENTS: [&[u8]; 1] = [b"Dest"];
 ///
 /// The empty name was measured in a dictionary, as a key and as a value, before every follower;
 /// the details are in the private measurement. Admitted, and nothing else: a **value** under a key
-/// in [`EMPTY_VALUE_PARENTS`], followed by CR, FF, LF, NUL, space or tab; and, recorded for the
-/// caller to rule on, a **key** of an object's own top-level dictionary, or of a dictionary
-/// written directly as its top-level `/Dests` value, followed by a byte measured to end the name in
-/// the same place. A name that is not empty, an empty name in an array or outside any container, in
+/// in [`EMPTY_VALUE_PARENTS`], followed by LF or by the `>>` closing its dictionary; and, recorded
+/// for the caller to rule on, a **key** of an object's own top-level dictionary, or of a dictionary
+/// written directly as its top-level `/Dests` value, followed by one space. Those are the followers
+/// Chrome writes (owner, 2026-10-16); the other white space and delimiters measured to end the name
+/// alike are refused, because no producer we have seen writes them. A name that is not empty, an empty name in an array or outside any container, in
 /// a dictionary this cannot follow, or under any other key, refuses.
 fn empty_name_position(
     written: &[u8],
     next: Option<u8>,
+    closes_dictionary: bool,
     levels: &[Option<Level<'_>>],
     holder: Option<i32>,
 ) -> EmptyName {
@@ -724,11 +726,10 @@ fn empty_name_position(
     if level.poisoned {
         return EmptyName::Refused;
     }
-    let value_follower = matches!(next, Some(b'\r' | 0x0c | b'\n' | 0 | b' ' | b'\t'));
-    let key_follower = matches!(
-        next,
-        Some(b'\r' | 0x0c | b'[' | b'\n' | b'(' | b'<' | 0 | b'%' | b'/' | b' ' | b'\t')
-    );
+    // THE FOLLOWERS CHROME WRITES, and no others (owner, 2026-10-16): an allowlist. A value is
+    // followed by LF, or by the `>>` that closes its dictionary; a key, by one space.
+    let value_follower = next == Some(b'\n') || (next == Some(b'>') && closes_dictionary);
+    let key_follower = next == Some(b' ');
     if !level.expect_key
         && level.pending == 0
         && !level.in_container
@@ -822,10 +823,11 @@ impl<'c> Scan<'c> {
                     written,
                     alike: false,
                     next,
+                    closes_dictionary,
                 } = token
             {
                 // READ BEFORE THE STEP BELOW: the position is the one this name stands in.
-                match empty_name_position(written, next, &levels, holder) {
+                match empty_name_position(written, next, closes_dictionary, &levels, holder) {
                     EmptyName::Value => {}
                     EmptyName::Key(key) => self.found.empty_keys.push(key),
                     EmptyName::Refused => {
@@ -1125,6 +1127,9 @@ enum Token<'a> {
         alike: bool,
         /// The byte after the name, if any.
         next: Option<u8>,
+        /// Whether the two bytes after the name are `>>`: the name is the last thing written in
+        /// its dictionary. A `>` that is not the first of two is a byte qpdf warns about.
+        closes_dictionary: bool,
     },
     /// A string, a hex string, or a delimiter qpdf would warn about.
     Scalar,
@@ -1200,6 +1205,10 @@ impl<'a> Lexer<'a> {
                     written: name,
                     alike: name_reads_alike(name, self.peek()),
                     next: self.peek(),
+                    closes_dictionary: self
+                        .bytes
+                        .get(self.at..)
+                        .is_some_and(|rest| rest.starts_with(b">>")),
                 }
             }
             b')' | b'>' | b'{' | b'}' => Token::Scalar,
@@ -1293,8 +1302,8 @@ pub const MAX_NAME_WRITTEN: usize = 255;
 /// - one byte at least, and at most [`MAX_NAME_WRITTEN`] as written. The empty name (`/` with
 ///   nothing after it) refuses here; it was measured since (2026-10-15), the details are in the
 ///   private measurement, and it is admitted only in the positions the scan's
-///   `empty_name_position` names -- as a `/Dest` value before white space, and, for the caller to
-///   rule on, as a key of an object's own dictionary.
+///   `empty_name_position` names -- as a `/Dest` value before LF or its dictionary's closing `>>`,
+///   and, for the caller to rule on, as a key of an object's own dictionary before one space.
 ///
 /// A name followed by a vertical tab refuses too. Which reader reads each refused shape how is in
 /// the private measurement, not here. **The edges, measured since** (2026-10-14): as a name's first
@@ -1491,22 +1500,35 @@ mod tests {
         in_direct_dests: false,
     };
 
-    /// THE EMPTY NAME AS A VALUE (owner, 2026-10-15): under `/Dest`, before the six white-space
-    /// bytes measured, and nowhere else.
+    /// THE EMPTY NAME AS A VALUE (owner, 2026-10-15; narrowed 2026-10-16): under `/Dest`, before
+    /// the two followers Chrome writes -- LF (tagged prints) and the `>>` closing the dictionary
+    /// (untagged prints, #358) -- and nowhere else.
     #[test]
-    fn an_empty_name_is_admitted_as_a_dest_value_before_white_space_only() {
-        for follower in [b'\r', 0x0c, b'\n', 0, b' ', b'\t'] {
-            for after in [b">>".as_slice(), b"/Rotate 90 >>"] {
-                let mut body = b"<< /Type /Annot /Dest /".to_vec();
-                body.push(follower);
-                body.extend_from_slice(after);
-                assert_eq!(names(&body), Ok(Vec::new()), "follower {follower:#04x}");
-            }
+    fn an_empty_name_is_admitted_as_a_dest_value_before_chromes_followers_only() {
+        for body in [
+            b"<< /Type /Annot /Dest /\n>>".as_slice(),
+            b"<< /Type /Annot /Dest /\n/Rotate 90 >>",
+            b"<< /Type /Annot /Dest />>",
+            b"<< /Type /Annot /Border [0 0 0]\n/Dest />>",
+        ] {
+            assert_eq!(
+                names(body),
+                Ok(Vec::new()),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
         }
-        // THE TWINS: a follower the measurement did not admit, under the same key.
+        // THE TWINS: a follower Chrome does not write, under the same key -- including the other
+        // white space measured alike on 2026-10-15, and a `>` that does not begin `>>`.
         for body in [
             b"<< /Dest /\x0b>>".as_slice(),
-            b"<< /Dest />>",
+            b"<< /Dest /\r>>",
+            b"<< /Dest /\x0c>>",
+            b"<< /Dest /\0>>",
+            b"<< /Dest / >>",
+            b"<< /Dest /\t>>",
+            b"<< /Dest /> >>",
+            b"<< /Dest />1 >>",
             b"<< /Dest /] >>",
             b"<< /Dest /% x\n>>",
             b"<< /Dest //A >>",
@@ -1522,34 +1544,34 @@ mod tests {
         for key in [
             "K", "Subtype", "S", "Type", "BaseFont", "Filter", "AS", "D#65st", "Dests",
         ] {
-            let body = format!("<< /{key} / >>");
+            let body = format!("<< /{key} />>");
             assert_eq!(
                 names(body.as_bytes()),
                 Err(Irregular::NameReadDifferently),
                 "{body}"
             );
         }
-        assert_eq!(names(b"<< /Dest / >>"), Ok(Vec::new()), "the twin");
+        assert_eq!(names(b"<< /Dest />>"), Ok(Vec::new()), "the twin");
     }
 
     /// WHERE THE VALUE IS, followed exactly: after a reference, after an integer value, and after a
     /// name value that is `Dest`.
     #[test]
     fn the_scan_follows_keys_and_values_to_place_an_empty_name() {
-        assert_eq!(names(b"<< /P 3 0 R /Dest / >>"), Ok(Vec::new()));
-        assert_eq!(names(b"<< /P 3 /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /P 3 0 R /Dest />>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /P 3 /Dest />>"), Ok(Vec::new()));
         assert_eq!(
-            names(b"<< /P 3 0 /Dest / >>"),
+            names(b"<< /P 3 0 /Dest />>"),
             Err(Irregular::NameReadDifferently),
             "two integers and no R: the dictionary is not followed"
         );
-        assert_eq!(names(b"<< /S /Dest /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /S /Dest /Dest />>"), Ok(Vec::new()));
         // `/Dest` AS A VALUE: the empty name after it is a key, recorded and not admitted here.
         assert_eq!(names(b"<< /S /Dest / 1 >>"), Ok(vec![TOP]));
-        assert_eq!(names(b"<< /A [1 2] /Dest / >>"), Ok(Vec::new()));
-        assert_eq!(names(b"<< /A << /B 1 >> /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /A [1 2] /Dest />>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /A << /B 1 >> /Dest />>"), Ok(Vec::new()));
         assert_eq!(
-            names(b"<< /A << /B 1 >> 7 /Dest / >>"),
+            names(b"<< /A << /B 1 >> 7 /Dest />>"),
             Err(Irregular::NameReadDifferently),
             "an integer where a key belongs"
         );
@@ -1564,7 +1586,7 @@ mod tests {
             names(b"<< /Dest 5 / 6 >>"),
             Err(Irregular::NameReadDifferently)
         );
-        assert_eq!(names(b"<< /K 5 /Dest / >>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /K 5 /Dest />>"), Ok(Vec::new()));
     }
 
     /// A `/Dests` WRITTEN DIRECTLY in an object's dictionary: its empty keys are recorded as such,
@@ -1635,15 +1657,10 @@ mod tests {
     }
 
     /// AN EMPTY KEY OF AN OBJECT'S OWN DICTIONARY is recorded, with its holder, for the caller --
-    /// before the followers the measurement found end the name alike, and no others.
+    /// before one space, the follower Chrome writes, and no other (owner, 2026-10-16).
     #[test]
     fn an_empty_top_level_key_is_recorded_not_admitted() {
-        for body in [
-            b"<< / [3 0 R /XYZ 0 690 0] >>".as_slice(),
-            b"<< /[1] >>",
-            b"<< /\n1 >>",
-            b"<< //X >>",
-        ] {
+        for body in [b"<< / [3 0 R /XYZ 0 690 0] >>".as_slice(), b"<< / 1 >>"] {
             assert_eq!(
                 names(body),
                 Ok(vec![TOP]),
@@ -1651,8 +1668,17 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
+        // THE TWINS: every follower but one space, including those measured alike on 2026-10-15
+        // that Chrome does not write (owner, 2026-10-16), and `>` (#358's near-miss).
         for body in [
-            b"<< /] >>".as_slice(),
+            b"<< /[1] >>".as_slice(),
+            b"<< /\n1 >>",
+            b"<< //X >>",
+            b"<< /\t1 >>",
+            b"<< /(x) >>",
+            b"<< />> >>",
+            b"<< /Dest [3 0 R /Fit] />>",
+            b"<< /] >>",
             b"<< /> >>",
             b"<< /{ >>",
             b"<< /) >>",
@@ -1669,7 +1695,7 @@ mod tests {
                 in_direct_dests: false
             }]
         );
-        let found = object_stream(b"5 0 << /Dest / >>", 1, 4);
+        let found = object_stream(b"5 0 << /Dest />>", 1, 4);
         assert_eq!((found.irregular, found.empty_keys), (None, Vec::new()));
     }
 
