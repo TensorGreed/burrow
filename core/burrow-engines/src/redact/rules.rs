@@ -78,6 +78,7 @@ pub const RULE_IDS: &[&str] = &[
     "do-operand-not-a-name",
     "document-poisoned",
     "embedded-nul",
+    "encoding-not-a-dictionary",
     "engine-repaired-input",
     "et-without-bt",
     "ext-gstate-line-unreadable",

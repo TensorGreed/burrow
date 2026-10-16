@@ -162,6 +162,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "font-selected-in-another-scope": "fonts",
   "descendant-fonts": "fonts",
   "differences-anchor": "fonts",
+  "encoding-not-a-dictionary": "fonts",
   "differences-item-unreadable": "fonts",
   "differences-too-long": "fonts",
   "first-char": "fonts",
