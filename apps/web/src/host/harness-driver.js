@@ -240,8 +240,8 @@ async function fetchBundleSource(id) {
 // and a COPY of the worker with a planted violation, to show each spec can fail. All of them act
 // on the integrity-checked text, like the base worker's prologue does.
 
-/** @type {{ prologue: string, source: string | null }} */
-let redactArming = { prologue: "", source: null };
+/** @type {{ prologue: string, source: string | null, readingPrologue: string, readingMutate: { from: string, to: string } | null }} */
+let redactArming = { prologue: "", source: null, readingPrologue: "", readingMutate: null };
 /**
  * Every message redaction's worker posted since the last arming, described, in order.
  *
@@ -481,6 +481,62 @@ function recordRedaction(worker) {
 }
 
 /**
+ * THE SECOND READING'S RENDER WORKER, recorded like redaction's (#206's web half; security review
+ * round 1). It holds the input, the output and the password, so R8's and R9's JavaScript halves
+ * must see it too: every message it posts on its global channel is logged before the host reads
+ * it, its prologue reports what it posts on the port, and its termination is held until the settle
+ * so "nothing after" is observed rather than assumed. One per redaction, since each is fresh.
+ */
+/** @type {import("./harness-api").RedactionMessage[]} */
+let readingLog = [];
+/** @type {{ worker: Worker, send: (message: unknown) => void } | null} */
+let readingRaw = null;
+/** @type {(() => void) | null} */
+let readingPendingTerminate = null;
+
+/**
+ * @param {Worker} worker
+ * @returns {Worker}
+ */
+function recordReading(worker) {
+  /** @type {{ current: ((event: { data: any }) => void) | null }} */
+  const hostHandler = { current: null };
+  Object.defineProperty(worker, "onmessage", {
+    configurable: true,
+    get: () => hostHandler.current,
+    set: (handler) => {
+      hostHandler.current = handler;
+    },
+  });
+  const send = worker.postMessage.bind(worker);
+  worker.postMessage = (/** @type {any} */ message, /** @type {any} */ transfer) => {
+    readingLog.push({
+      sent: String(message?.op ?? message?.type ?? "?"),
+      ...describe(message, Array.isArray(transfer) ? transfer.filter(isPort).length : 0),
+    });
+    return transfer === undefined ? send(message) : send(message, transfer);
+  };
+  readingRaw = { worker, send };
+  readingPendingTerminate?.();
+  readingPendingTerminate = null;
+  const terminate = worker.terminate.bind(worker);
+  worker.terminate = () => {
+    readingPendingTerminate?.();
+    readingPendingTerminate = () => terminate();
+  };
+  worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
+    const data = event.data;
+    readingLog.push({ sent: null, ...describe(data, event.ports.length) });
+    if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed || data?.__burrowSettled) {
+      return;
+    }
+    if (data?.__burrowPortPost) return;
+    hostHandler.current?.(event);
+  });
+  return worker;
+}
+
+/**
  * The settle handshake, installed whenever redaction's worker is armed: a NONCE the page sends
  * around the host, echoed after `ms` on the worker's clock.
  *
@@ -543,7 +599,15 @@ const PORT_RECORDER = `
   const describe = (message, transfer) => {
     const transfers = Array.isArray(transfer) ? transfer.length : 0;
     const unlisted = { shape: "unlisted", input: 0, output: 0, password: 0, transfers };
-    if (!plain(message) || Reflect.ownKeys(message).sort().join(",") !== KEYS) return unlisted;
+    const keys = plain(message) ? Reflect.ownKeys(message).sort().join(",") : "";
+    // THE RENDER WORKER'S TWO REPLIES (#206): an answer -- its length as \`output\` -- or a failure.
+    if (keys === "answer,nonce,type" && message.type === "answer" && typeof message.nonce === "bigint" && length(message.answer) >= 0) {
+      return { shape: "answer", input: 0, output: length(message.answer), password: 0, transfers };
+    }
+    if (keys === "kind,type" && message.type === "failed" && ["Internal", "InvalidArgument"].includes(message.kind)) {
+      return { shape: "failed", input: 0, output: 0, password: 0, transfers };
+    }
+    if (keys !== KEYS) return unlisted;
     const { input, limits, nonce, output, page, password, type } = message;
     const limitsListed =
       plain(limits) &&
@@ -788,8 +852,21 @@ async function buildBundleHost(id, slot = id) {
   const fetched = await fetchBundleSource(id);
   const bundle = fetched.bundle;
   const redaction = id === "redactWorker";
-  const source = redaction && redactArming.source !== null ? redactArming.source : fetched.source;
-  const prologue = redaction ? redactArming.prologue : "";
+  // THE SECOND READING'S WORKER is armed like redaction's: its own prologue, and a copy of the
+  // render bundle with a planted change when a spec asks for one.
+  const reading = slot === "secondReading";
+  let source = fetched.source;
+  if (redaction && redactArming.source !== null) source = redactArming.source;
+  if (reading && redactArming.readingMutate) {
+    const { from, to } = redactArming.readingMutate;
+    const at = source.indexOf(from);
+    // UNIQUE OR NOT AT ALL, as `armRedaction` holds for redaction's copy.
+    if (at === -1 || source.indexOf(from, at + 1) !== -1) {
+      throw new Error("the reading's planted change does not apply");
+    }
+    source = source.slice(0, at) + to + source.slice(at + from.length);
+  }
+  const prologue = redaction ? redactArming.prologue : reading ? redactArming.readingPrologue : "";
   return createWorkerHost({
     spawn: () => {
       const previous = lazyUrls[slot];
@@ -797,7 +874,8 @@ async function buildBundleHost(id, slot = id) {
       const url = URL.createObjectURL(new Blob([prologue, source], { type: "text/javascript" }));
       lazyUrls[slot] = url;
       const worker = new Worker(url);
-      return redaction ? recordRedaction(worker) : worker;
+      if (redaction) return recordRedaction(worker);
+      return reading && redactArming.readingPrologue ? recordReading(worker) : worker;
     },
     release: () => {
       const previous = lazyUrls[slot];
@@ -1339,11 +1417,21 @@ const harness = {
    * `heapCanary` installs the heap canary (#199): every reply is preceded by a scan of every
    * WebAssembly memory in the worker for that text, read back with `redactHeapScans`.
    *
-   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null, heapCanary?: string }} options
+   * `mutateReading` plants ONE replacement in a copy of the RENDER bundle that the second reading's
+   * fresh worker runs (#206's web half), reported as `readingApplied` by the same rule.
+   *
+   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null, heapCanary?: string, mutateReading?: { from: string, to: string } | null }} options
    */
   async armRedaction(options = {}) {
     let source = null;
     let applied = false;
+    let readingApplied = false;
+    if (options.mutateReading) {
+      const { from } = options.mutateReading;
+      const render = (await fetchBundleSource("renderWorker")).source;
+      const at = render.indexOf(from);
+      readingApplied = at !== -1 && render.indexOf(from, at + 1) === -1;
+    }
     if (options.mutate) {
       const { from, to } = options.mutate;
       source = (await fetchBundleSource("redactWorker")).source;
@@ -1366,6 +1454,11 @@ const harness = {
         (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS) +
         (options.heapCanary ? heapScanPrologue(options.heapCanary) : ""),
       source,
+      // THE READING'S WORKER, the same prologue but the heap canary, which is #199's question about
+      // redaction's own heaps.
+      readingPrologue:
+        SETTLE + PORT_RECORDER + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS),
+      readingMutate: readingApplied ? (options.mutateReading ?? null) : null,
     };
     redactHeapScans = [];
     const existing = lazyHosts.redactWorker;
@@ -1374,7 +1467,9 @@ const harness = {
     redactLog = [];
     redactRaw = null;
     redactTerminations = 0;
-    return { applied };
+    readingLog = [];
+    readingRaw = null;
+    return { applied, readingApplied };
   },
 
   /**
@@ -1390,7 +1485,9 @@ const harness = {
       // NOTHING TO SETTLE, but a worker the host already let go is released all the same.
       redactPendingTerminate?.();
       redactPendingTerminate = null;
-      return { settled: false, nonce: 0 };
+      readingPendingTerminate?.();
+      readingPendingTerminate = null;
+      return { settled: false, nonce: 0, readingSettled: null };
     }
     const { worker, send } = redactRaw;
     const nonce = 1 + Math.floor(Math.random() * 2 ** 31);
@@ -1417,10 +1514,36 @@ const harness = {
         setTimeout(resolve, Math.max(0, deadline - performance.now())),
       );
     }
+    // AND THE READING'S WORKER, with the same nonce and inside the same window: it was told to
+    // terminate with the verdict, and that termination is held until here.
+    let readingSettled = null;
+    if (readingRaw !== null) {
+      const reader = readingRaw;
+      readingSettled = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          reader.worker.removeEventListener("message", heard);
+          resolve(false);
+        }, ms + 5_000);
+        /** @param {MessageEvent} event */
+        function heard(event) {
+          if (event.data?.__burrowSettled !== nonce) return;
+          clearTimeout(timer);
+          reader.worker.removeEventListener("message", heard);
+          resolve(true);
+        }
+        reader.worker.addEventListener("message", heard);
+        reader.send({ __burrowSettle: nonce, ms });
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, deadline - performance.now())),
+      );
+    }
     // THE SETTLE IS DONE, so a termination the host asked for in the meantime happens now.
     redactPendingTerminate?.();
     redactPendingTerminate = null;
-    return { settled: Boolean(echoed), nonce };
+    readingPendingTerminate?.();
+    readingPendingTerminate = null;
+    return { settled: Boolean(echoed), nonce, readingSettled };
   },
 
   /**
@@ -1440,6 +1563,11 @@ const harness = {
   /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages() {
     return redactLog.map((entry) => ({ ...entry }));
+  },
+
+  /** The same for the second reading's render worker (#206), since the last arming. */
+  readingMessages() {
+    return readingLog.map((entry) => ({ ...entry }));
   },
 
   /**

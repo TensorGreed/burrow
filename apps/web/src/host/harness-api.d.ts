@@ -260,19 +260,24 @@ export interface BurrowHarness {
     stubSideChannels?: boolean;
     mutate?: { from: string; to: string } | null;
     heapCanary?: string;
-  }): Promise<{ applied: boolean }>;
+    mutateReading?: { from: string; to: string } | null;
+  }): Promise<{ applied: boolean; readingApplied: boolean }>;
   /** What the heap canary saw since the last arming: one scan per reply (#199). */
   redactHeapScans(): HeapScan[];
   /** How many times the host asked to terminate a redaction worker since the last arming. */
   redactTerminations(): number;
   /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages(): RedactionMessage[];
+  /** The second reading's render worker's messages (#206), recorded the same way. */
+  readingMessages(): RedactionMessage[];
   /**
    * Wait until redaction's worker has gone quiet: resolves `ms` after the worker saw the
    * handshake, so anything it deferred by up to `ms` has been recorded. `settled` is false when
    * the marker never came back.
    */
-  settleRedaction(ms?: number): Promise<{ settled: boolean; nonce: number }>;
+  settleRedaction(
+    ms?: number,
+  ): Promise<{ settled: boolean; nonce: number; readingSettled: boolean | null }>;
   /**
    * Redact one region on one page through REDACTION's own worker (#137), staged into harness
    * builds only. Returns the reply and the output's sha256; the bytes stay in the page.

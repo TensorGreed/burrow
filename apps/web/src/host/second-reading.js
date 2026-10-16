@@ -13,6 +13,13 @@
 // The render host's own watchdog bounds the reading (design review L5): the render worker is
 // terminated at its deadline even mid-`FPDFText_LoadPage`, where nothing else can stop it, and the
 // redaction worker, which stopped waiting earlier, has already refused.
+//
+// THE COST OF THAT, STATED (owner's ruling for S5; security review of #206's web half). The
+// redaction worker stops waiting after at most 10 s, and this then disposes the render host --
+// TERMINATING a render worker that may be inside `FPDFText_LoadPage`, in a heap holding the
+// document. That is the #361 class: a worker killed mid-call, whose heap is not wiped on the way
+// out. What bounds it is that the worker is fresh, holds this one document and is never reused, so
+// the heap goes with it; what it does not do is zero that heap first.
 
 /**
  * @typedef {{ run: (message: object, options?: object) => Promise<any>, dispose: () => void }} Host
@@ -32,10 +39,14 @@ export async function redactWithSecondReading(redact, freshRender, message, opti
   const render = await freshRender();
   // STARTED ALONGSIDE THE REDACTION, so the render worker's start-up overlaps it rather than
   // eating the redaction worker's wait. Its answer goes over the port, not here.
-  const reading = render.run(
-    { op: "second_reading_port", port: channel.port2, limits: message.limits },
-    { maxDurationMs: options.maxDurationMs, transfer: [channel.port2] },
-  );
+  // ITS FAILURE IS NOBODY'S TO READ, so it is caught where it is made: the redaction worker's
+  // verdict is the outcome, and a render host that dies first is a reading that never arrives.
+  void render
+    .run(
+      { op: "second_reading_port", port: channel.port2, limits: message.limits },
+      { maxDurationMs: options.maxDurationMs, transfer: [channel.port2] },
+    )
+    .catch(() => {});
   try {
     return await redact.run(
       { ...message, port: channel.port1 },
@@ -45,6 +56,5 @@ export async function redactWithSecondReading(redact, freshRender, message, opti
     // ENDED WITH THE VERDICT, whatever it was (#199). The render worker's own reply carries
     // nothing; it is waited for by nobody.
     render.dispose();
-    reading.catch(() => {});
   }
 }

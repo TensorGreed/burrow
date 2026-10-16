@@ -587,6 +587,61 @@ fn the_pdfium_text_functions_named_are_the_five_permitted() {
     );
 }
 
+/// THE WEB HALF'S THREE SOURCES (#206), which sit outside this crate: the JavaScript bridge that
+/// forwards the PDFium calls, the Rust imports that bind them, and the declarations the render
+/// worker's types are checked against. Each may name only permitted functions, and the bridge must
+/// name all five -- it is the only route by which the web reading reaches PDFium at all.
+///
+/// JavaScript block comments are stripped as well as `//` ones: a line inside `/** ... */` starts
+/// with `*` or `/*` once trimmed, and is prose there exactly as a `//` line is.
+#[test]
+fn the_web_bridge_names_only_the_five_permitted() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let code = |source: &str| -> String {
+        source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with('*') || trimmed.starts_with("/*"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut examined = Vec::new();
+    for (file, must_name_all) in [
+        ("apps/web/src/worker/bridge-pdfium.js", true),
+        ("apps/web/src/worker/globals-render.d.ts", false),
+        ("bindings/burrow-wasm/src/bridge_pdfium.rs", false),
+    ] {
+        let source = std::fs::read_to_string(repo.join(file)).expect("a web source file reads");
+        let names = named(&code(&source));
+        let stray: Vec<&String> = names
+            .iter()
+            .filter(|n| !PERMITTED.contains(&n.as_str()))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "{file} names {stray:?}, outside the five permitted"
+        );
+        if must_name_all {
+            let seen: Vec<&str> = names.iter().map(String::as_str).collect();
+            assert_eq!(
+                seen,
+                PERMITTED.to_vec(),
+                "{file} does not forward exactly the five"
+            );
+        }
+        examined.push(format!("{file}: {}", names.len()));
+    }
+    eprintln!("  web text-function scan: examined 3 of 3: {examined:?}");
+    // AND THE STRIPPING IS SHOWN TO KEEP CODE: a rejected name in a JS call is still seen, and the
+    // same name in a block comment is not.
+    assert!(
+        named(&code("  return Module._FPDFText_GetUnicode(t, i);")).contains("FPDFText_GetUnicode")
+    );
+    assert!(named(&code("/**\n * FPDFText_GetUnicode is never read\n */")).is_empty());
+}
+
 // ---- the nesting ceiling ------------------------------------------------------------------
 
 #[test]
@@ -801,5 +856,31 @@ mod recording {
                 "{what} decoded"
             );
         }
+    }
+
+    /// A recording `count` characters long, every byte of it well formed: the header of an honest
+    /// one, the count, and `count` visible characters at the origin.
+    fn of_length(count: usize) -> Vec<u8> {
+        // The header's fields, then the four-byte count, then 17 bytes a character.
+        let header = 1 + 32 + 32 + 8 * 5;
+        let mut bytes = encode(&honest_recording()).expect("encodes")[..header].to_vec();
+        bytes.extend_from_slice(&u32::try_from(count).expect("fits").to_le_bytes());
+        bytes.resize(bytes.len() + count * (8 + 8 + 1), 0);
+        bytes
+    }
+
+    #[test]
+    fn a_count_past_the_ceiling_is_refused_even_when_the_length_agrees() {
+        // THE CEILING ITSELF, not the length: the case above changes only the count, so its length
+        // no longer matches and the length check refuses it first. Here the buffer is exactly as
+        // long as MAX_CHARS + 1 characters, so only `count > MAX_CHARS` stands between it and an
+        // allocation past the ceiling. KILLS: that comparison removed.
+        assert!(matches!(
+            decode(&of_length(MAX_CHARS + 1)),
+            Err(Error::Malformed(_))
+        ));
+        // THE NEAR MISS: the same shape at the ceiling decodes.
+        let at = decode(&of_length(MAX_CHARS)).expect("a recording at the ceiling decodes");
+        assert_eq!(at.page.chars.len(), MAX_CHARS);
     }
 }

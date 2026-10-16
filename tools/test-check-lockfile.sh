@@ -12,6 +12,9 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 gate="$here/check-lockfile.sh"
+# `target/` MAY NOT EXIST: CI's deny job builds nothing before this runs, and mktemp does not
+# create parents. Made here, so the self-test runs on a clean checkout (round 1: it did not).
+mkdir -p "$repo/target"
 scratch="$(mktemp -d "$repo/target/lockfile-selftest.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -92,11 +95,31 @@ else
   fi
 fi
 
-# 5. THE REAL ONES, with no arguments: both, and the count.
-if out="$("$gate" 2>&1)" && printf '%s' "$out" | grep -q 'examined 2 of 2 lockfiles'; then
-  ok "the repository's own two lockfiles pass, examined 2 of 2"
+# 5. THE REAL ONES, with no arguments: the set is DERIVED from git, so the expected count is too --
+#    every committed lockfile less the exemptions, each exemption printed with its reason.
+committed="$(git -C "$repo" ls-files '*Cargo.lock' | wc -l)"
+exempt="$(grep -c '^  \["' "$gate")"
+expected=$((committed - exempt))
+if out="$("$gate" 2>&1)" && printf '%s' "$out" | grep -q "examined $expected of $expected lockfiles" &&
+  printf '%s' "$out" | grep -q "^  skip spikes/redaction-survival: "; then
+  ok "the repository's lockfiles pass, examined $expected of $expected ($committed committed, $exempt exempt by name)"
 else
-  bad "the repository's lockfiles: $out"
+  bad "the repository's lockfiles (expected $expected of $committed): $out"
+fi
+[ "$expected" -ge 2 ] || bad "fewer than the root and fuzz/ lockfiles were expected: $expected"
+
+# 6. AN EXEMPTION REMOVED -- in a copy beside the original -- examines the spike too, so the count
+#    moves: the count comes from the derivation, not from a list someone keeps.
+unexempt="$here/.check-lockfile.unexempt.sh"
+trap 'rm -rf "$scratch" "$mutant" "$unexempt"' EXIT
+sed '/^  \["spikes\/redaction-survival"\]=/d' "$gate" > "$unexempt"
+chmod +x "$unexempt"
+if grep -q 'spikes/redaction-survival"\]=' "$unexempt" || cmp -s "$gate" "$unexempt"; then
+  bad "the exemption removal did not apply"
+elif out="$("$unexempt" 2>&1)" && printf '%s' "$out" | grep -q "examined $committed of $committed lockfiles"; then
+  ok "without the exemption every committed lockfile is examined, $committed of $committed"
+else
+  bad "the unexempted copy did not examine all $committed: $out"
 fi
 
 echo "$passed passed, $failed failed, of $((passed + failed))"

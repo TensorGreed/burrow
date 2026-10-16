@@ -97,15 +97,10 @@ pub fn redact(
     // RECYCLED AFTER EVERY REDACTION THAT READ THE DOCUMENT, success or refusal alike (#199):
     // qpdf's object cache holds the decoded page content -- the text being removed -- and is
     // freed unwiped. A refusal has read it too. The page-number refusals above opened nothing.
+    // A SECOND READING STILL DUE IS NOT A RESULT (#206's web half), and `ops::redact::page` itself
+    // refuses it by name: this module holds no renderer to take one. `redact_begin` and
+    // `redact_confirm` are the path that releases a redaction.
     match burrow_core::ops::redact::page(&qpdf(), &bytes, index, &indexes, region.0, &options) {
-        // A SECOND READING STILL DUE IS NOT A RESULT (#206's web half): this one-call entry has no
-        // renderer to take it, so it refuses rather than hand out output nobody has read twice.
-        // `redact_begin` and `redact_confirm` are the path that releases a redaction.
-        Ok(done) if done.report.second_reading.is_some() => Reply::failure(&Error::OutputRejected(
-            "redact: the second reading refuses the output -- [second-reading-unavailable] this \
-             entry takes no second reading; use the two-phase path"
-                .to_owned(),
-        )),
         Ok(done) => Reply::redacted(done.document, &done.report),
         Err(error) => Reply::failure(&error),
     }
@@ -131,9 +126,12 @@ pub fn redact(
 // - Either way the slot is wiped and the reply recycles the worker (#199).
 
 /// The reading still to be judged, held in this worker between the two phases.
+///
+/// The input and the output are MOVED in, not copied: they are the only copies this module keeps.
+/// The render worker's copies are made from them one at a time, when it asks (`Begun::take_input`).
 struct Pending {
     nonce: u64,
-    input: Zeroizing<Vec<u8>>,
+    input: Zeroizing<Box<[u8]>>,
     output: Zeroizing<Vec<u8>>,
     report: burrow_core::engines::redact::Report,
     due: burrow_core::engines::redact::SecondReadingDue,
@@ -149,14 +147,79 @@ thread_local! {
     static NEXT_NONCE: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
 }
 
-/// Phase 1's reply: an outcome, and on success the copies the render worker reads.
+// ---- the slot, as a state machine with no JavaScript in it, so it is tested natively ---------
+
+/// Whether a reading is pending.
+fn pending() -> bool {
+    PENDING.with(|slot| slot.borrow().is_some())
+}
+
+/// Hold `pending` under the next nonce, or refuse because a reading is already pending.
+fn hold(make: impl FnOnce(u64) -> Pending) -> Result<u64, Error> {
+    if pending() {
+        return Err(Error::Internal(
+            "redact: a second reading is already pending in this worker".to_owned(),
+        ));
+    }
+    let nonce = NEXT_NONCE.with(|next| {
+        let nonce = next.get();
+        next.set(nonce.saturating_add(1));
+        nonce
+    });
+    PENDING.with(|slot| *slot.borrow_mut() = Some(make(nonce)));
+    Ok(nonce)
+}
+
+/// Take the pending reading for `nonce`, ONCE. Any other nonce leaves the slot as it was.
+fn take_for(nonce: u64) -> Option<Pending> {
+    PENDING.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_ref() {
+            Some(held) if held.nonce == nonce => slot.take(),
+            _ => None,
+        }
+    })
+}
+
+/// A copy of the pending input or output for `nonce`, for the render worker.
+fn copy_of(nonce: u64, output: bool) -> Vec<u8> {
+    PENDING.with(|slot| match slot.borrow().as_ref() {
+        Some(held) if held.nonce == nonce && output => held.output.to_vec(),
+        Some(held) if held.nonce == nonce => held.input.to_vec(),
+        _ => Vec::new(),
+    })
+}
+
+/// The verdict on `answer` for `pending`, in Rust and over this worker's own bytes.
+///
+/// THE OPERATION'S DEADLINE ON ARRIVAL, and again after the answer decodes -- which is before the
+/// digests `agrees_recorded` takes first and the rules after them (design review L2). The digests
+/// themselves are not interrupted: two SHA-256 passes over documents `max_input_bytes` bounds,
+/// cooperative like every other step.
+fn verdict(pending: &Pending, answer: &[u8], clock: &dyn Clock) -> Result<(), Error> {
+    use burrow_core::engines::redact_read_back::recorded::{
+        Answer, Failure, agrees_recorded, decode_answer,
+    };
+
+    pending.deadline.checkpoint(clock)?;
+    let recorded = match decode_answer(answer) {
+        Ok(Answer::Read(recorded)) => recorded,
+        Ok(Answer::Failed(failure)) => return Err(failure.into_error()),
+        // A REPLY THAT DOES NOT DECODE IS NO ANSWER, refused by name.
+        Err(_) => return Err(Failure::NoAnswer.into_error()),
+    };
+    pending.deadline.checkpoint(clock)?;
+    agrees_recorded(recorded, &pending.input, &pending.output, &pending.due.0)
+}
+
+/// Phase 1's reply: an outcome, and on success the nonce the copies are asked for under.
 #[wasm_bindgen]
 pub struct Begun {
     reply: Reply,
     nonce: u64,
-    input: Vec<u8>,
-    output: Vec<u8>,
     remaining_ms: u64,
+    input_taken: bool,
+    output_taken: bool,
 }
 
 #[wasm_bindgen]
@@ -181,16 +244,22 @@ impl Begun {
         self.remaining_ms
     }
 
-    /// A copy of the input for the render worker, moved out once.
+    /// A copy of the input for the render worker, made now and handed out once.
     #[wasm_bindgen(js_name = takeInput)]
     pub fn take_input(&mut self) -> Vec<u8> {
-        core::mem::take(&mut self.input)
+        if core::mem::replace(&mut self.input_taken, true) {
+            return Vec::new();
+        }
+        copy_of(self.nonce, false)
     }
 
-    /// A copy of the output for the render worker, moved out once. Not the result.
+    /// A copy of the output for the render worker, made now and handed out once. Not the result.
     #[wasm_bindgen(js_name = takeOutput)]
     pub fn take_output(&mut self) -> Vec<u8> {
-        core::mem::take(&mut self.output)
+        if core::mem::replace(&mut self.output_taken, true) {
+            return Vec::new();
+        }
+        copy_of(self.nonce, true)
     }
 }
 
@@ -199,9 +268,9 @@ impl Begun {
         Self {
             reply,
             nonce: 0,
-            input: Vec::new(),
-            output: Vec::new(),
             remaining_ms: 0,
+            input_taken: true,
+            output_taken: true,
         }
     }
 }
@@ -229,7 +298,7 @@ pub fn redact_begin(
 
     let refused =
         |error: &Error| Begun::refused(Reply::failure(error).with_lifecycle(&limits).recycled());
-    if PENDING.with(|slot| slot.borrow().is_some()) {
+    if pending() {
         return refused(&Error::Internal(
             "redact: a second reading is already pending in this worker".to_owned(),
         ));
@@ -244,7 +313,7 @@ pub fn redact_begin(
         };
         indexes.insert(covered_index);
     }
-    let done = match burrow_core::ops::redact::page(
+    let done = match burrow_core::ops::redact::page_awaiting_second_reading(
         &qpdf(),
         &bytes,
         index,
@@ -264,34 +333,28 @@ pub fn redact_begin(
             "redact: the web's redaction returned with no second reading due".to_owned(),
         ));
     };
-    let nonce = NEXT_NONCE.with(|next| {
-        let nonce = next.get();
-        next.set(nonce.saturating_add(1));
-        nonce
-    });
-    let input = bytes.to_vec();
-    let output = done.document.clone();
     let remaining_ms = limits
         .max_duration_ms
         .saturating_sub(deadline.elapsed_ms(clock.as_ref()));
-    PENDING.with(|slot| {
-        *slot.borrow_mut() = Some(Pending {
-            nonce,
-            input: Zeroizing::new(bytes.to_vec()),
-            output: Zeroizing::new(done.document),
-            report,
-            due,
-            deadline,
-            limits,
-        });
-    });
-    Begun {
-        // NOT RECYCLED: the worker must hold the pending reading until it is judged.
-        reply: Reply::success(0),
+    let document = done.document;
+    match hold(|nonce| Pending {
         nonce,
-        input,
-        output,
-        remaining_ms,
+        input: bytes,
+        output: Zeroizing::new(document),
+        report,
+        due,
+        deadline,
+        limits,
+    }) {
+        Ok(nonce) => Begun {
+            // NOT RECYCLED: the worker must hold the pending reading until it is judged.
+            reply: Reply::success(0),
+            nonce,
+            remaining_ms,
+            input_taken: false,
+            output_taken: false,
+        },
+        Err(error) => refused(&error),
     }
 }
 
@@ -305,47 +368,20 @@ pub fn max_second_reading_answer() -> u32 {
 
 /// Phase 2: judge the render worker's `answer` for `nonce`, and only then release the output.
 ///
-/// An answer for a nonce that is not the pending one is **dropped**: the pending reading is left
-/// as it was, and the reply is a refusal the worker discards. The pending reading is judged once.
+/// An answer for a nonce that is not the pending one is refused and **recycles the worker**, as
+/// [`redact_abort`] does: the slot is not judged, and the worker holding it is ended. The pending
+/// reading is judged once.
 #[wasm_bindgen(js_name = redactConfirm)]
 #[must_use]
 pub fn redact_confirm(nonce: u64, answer: &[u8]) -> Reply {
-    use burrow_core::engines::redact_read_back::recorded::{
-        Answer, agrees_recorded, decode_answer,
-    };
-
-    let pending = PENDING.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        match slot.as_ref() {
-            Some(held) if held.nonce == nonce => slot.take(),
-            _ => None,
-        }
-    });
-    let Some(pending) = pending else {
+    let Some(pending) = take_for(nonce) else {
         return Reply::failure(&Error::InvalidArgument(
             "redact: an answer for no pending second reading".to_owned(),
-        ));
+        ))
+        .recycled();
     };
-    let clock: Arc<dyn Clock> = Arc::new(WebClock);
     let limits = pending.limits;
-    let verdict = (|| {
-        // THE OPERATION'S DEADLINE ON ARRIVAL, then again before the rules (design review L2).
-        pending.deadline.checkpoint(clock.as_ref())?;
-        let recorded = match decode_answer(answer) {
-            Ok(Answer::Read(recorded)) => recorded,
-            Ok(Answer::Failed(failure)) => return Err(failure.into_error()),
-            // A REPLY THAT DOES NOT DECODE IS NO ANSWER, refused by name.
-            Err(_) => {
-                return Err(
-                    burrow_core::engines::redact_read_back::recorded::Failure::NoAnswer
-                        .into_error(),
-                );
-            }
-        };
-        pending.deadline.checkpoint(clock.as_ref())?;
-        agrees_recorded(recorded, &pending.input, &pending.output, &pending.due.0)
-    })();
-    match verdict {
+    match verdict(&pending, answer, &WebClock) {
         Ok(()) => Reply::redacted(pending.output.to_vec(), &pending.report),
         Err(error) => Reply::failure(&error),
     }
@@ -360,11 +396,7 @@ pub fn redact_confirm(nonce: u64, answer: &[u8]) -> Reply {
 #[wasm_bindgen(js_name = redactAbort)]
 #[must_use]
 pub fn redact_abort(nonce: u64) -> Reply {
-    let ended = PENDING.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        matches!(slot.as_ref(), Some(held) if held.nonce == nonce) && slot.take().is_some()
-    });
-    let error = if ended {
+    let error = if take_for(nonce).is_some() {
         Error::OutputRejected(
             "redact: the second reading refuses the output -- [second-reading-unavailable] the \
              renderer's reading did not arrive"
@@ -458,6 +490,153 @@ fn zero_page() -> Error {
 #[cfg(test)]
 mod tests {
     use super::page_index;
+
+    /// The two-phase slot's state machine, natively: everything but the JavaScript (#206).
+    mod slot {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use burrow_core::engines::pdfsyntax::geometry::Rect;
+        use burrow_core::engines::pdfsyntax::region::{PageFrame, Region};
+        use burrow_core::engines::redact::{Report, SecondReadingDue};
+        use burrow_core::engines::redact_read_back::Agreement;
+        use burrow_core::engines::redact_verify::Walked;
+        use burrow_core::{Clock, Deadline, Error, Limits};
+        use zeroize::Zeroizing;
+
+        use super::super::{Pending, hold, pending, take_for, verdict};
+
+        /// A clock a test moves by hand.
+        struct Hand(AtomicU64);
+        impl Clock for Hand {
+            fn now_ms(&self) -> u64 {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+
+        fn limits() -> Limits {
+            let mut limits = Limits::default();
+            limits.max_duration_ms = 1_000;
+            limits
+        }
+
+        fn make(clock: &Hand) -> impl FnOnce(u64) -> Pending + '_ {
+            move |nonce| Pending {
+                nonce,
+                input: Zeroizing::new(b"input".to_vec().into_boxed_slice()),
+                output: Zeroizing::new(b"output".to_vec()),
+                report: Report {
+                    fonts: Vec::new(),
+                    dropped_carried_text: 0,
+                    second_reading: None,
+                },
+                due: SecondReadingDue(Agreement {
+                    page: 0,
+                    region: Region {
+                        left: 0.0,
+                        top: 0.0,
+                        width: 10.0,
+                        height: 10.0,
+                    },
+                    walked: Walked {
+                        frame: PageFrame {
+                            display_box: Rect {
+                                left: 0.0,
+                                bottom: 0.0,
+                                right: 612.0,
+                                top: 792.0,
+                            },
+                            rotate: 0,
+                            user_unit: 1.0,
+                        },
+                        glyphs: 0,
+                        marked_work: 0,
+                    },
+                    promised_pages: 1,
+                }),
+                deadline: Deadline::start(clock, &limits()),
+                limits: limits(),
+            }
+        }
+
+        /// Empty the slot, so each case starts from a worker with nothing pending.
+        fn clear() {
+            super::super::PENDING.with(|slot| *slot.borrow_mut() = None);
+        }
+
+        #[test]
+        fn begin_is_refused_while_a_reading_is_pending() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            let first = hold(make(&clock)).expect("an empty slot holds");
+            assert!(matches!(hold(make(&clock)), Err(Error::Internal(_))));
+            // AND THE FIRST IS STILL THERE, under its own nonce: the refusal replaced nothing.
+            assert!(take_for(first).is_some());
+            clear();
+        }
+
+        #[test]
+        fn an_unknown_nonce_leaves_the_slot_as_it_was() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            let nonce = hold(make(&clock)).expect("holds");
+            assert!(take_for(nonce + 1).is_none());
+            assert!(take_for(nonce.wrapping_sub(1)).is_none());
+            assert!(pending(), "a foreign nonce emptied the slot");
+            assert!(take_for(nonce).is_some());
+            clear();
+        }
+
+        #[test]
+        fn a_reading_is_judged_once() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            let nonce = hold(make(&clock)).expect("holds");
+            let held = take_for(nonce).expect("taken once");
+            assert!(!pending(), "taking the reading left it pending");
+            assert!(
+                take_for(nonce).is_none(),
+                "the same reading was taken twice"
+            );
+            // A REPLY THAT IS NO ANSWER is refused by name, not passed.
+            match verdict(&held, b"not an answer", &clock) {
+                Err(Error::OutputRejected(message)) => assert!(message.contains('['), "{message}"),
+                other => panic!("expected a named refusal, got {other:?}"),
+            }
+            clear();
+        }
+
+        #[test]
+        fn an_abort_empties_the_slot_and_a_second_finds_nothing() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            let nonce = hold(make(&clock)).expect("holds");
+            // `redact_abort` is `take_for` and a fixed reply; the reply needs the JS heap, the
+            // state change does not.
+            assert!(take_for(nonce).is_some());
+            assert!(!pending());
+            assert!(take_for(nonce).is_none());
+            // AND THE NEXT BEGIN IS ADMITTED, under a NEW nonce.
+            let next = hold(make(&clock)).expect("an emptied slot holds again");
+            assert!(
+                next > nonce,
+                "the nonce is not monotonic: {next} after {nonce}"
+            );
+            clear();
+        }
+
+        #[test]
+        fn a_reading_past_the_deadline_is_refused_on_arrival() {
+            clear();
+            let clock = Hand(AtomicU64::new(0));
+            let nonce = hold(make(&clock)).expect("holds");
+            let held = take_for(nonce).expect("taken");
+            clock.0.store(1_001, Ordering::SeqCst);
+            assert!(matches!(
+                verdict(&held, b"", &clock),
+                Err(Error::LimitExceeded { .. })
+            ));
+        }
+    }
 
     #[test]
     fn page_numbers_are_one_based_and_zero_is_refused() {

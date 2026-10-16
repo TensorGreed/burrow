@@ -42,7 +42,12 @@ use crate::verify;
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Redaction {
-    /// The emitted document, verified.
+    /// The emitted document, verified -- by burrow's walk, and by PDFium's second reading where
+    /// this build takes one in-process (native Linux).
+    ///
+    /// From [`page`] this is a result. From [`page_awaiting_second_reading`] it is **not yet** one
+    /// when [`Report::second_reading`] is `Some`: the second reading is still owed, and the bytes
+    /// must not reach a person until it has been judged.
     pub document: Vec<u8>,
     /// What the operation did beyond the bytes — per font, whether it was cut or retained.
     ///
@@ -52,7 +57,14 @@ pub struct Redaction {
     pub report: Report,
 }
 
-/// Clear `region` on `page`, and return the document only if it reads back as promised.
+/// Clear `region` on `page`, and return the document only if it reads back as promised -- to
+/// burrow's own walk AND to a second reading through PDFium (#206).
+///
+/// FAIL CLOSED WHERE THE SECOND READING CANNOT BE TAKEN HERE. Natively on Linux PDFium reads the
+/// output in-process before this returns. Every other build -- the web's redaction worker, and
+/// native Android, iOS and macOS until they carry the in-process reading -- finishes with the
+/// reading still due, and this refuses rather than return output read once. A caller that can take
+/// the reading elsewhere uses [`page_awaiting_second_reading`].
 ///
 /// `redacted` is the set of pages this operation covers. It decides which fonts may be cut: a
 /// font is cut only when every page using it is in the set, because editing one used elsewhere
@@ -67,7 +79,42 @@ pub struct Redaction {
 ///   page it does not say it covers would cut fonts on the strength of a set that excludes the
 ///   page being edited.
 /// - Whatever opening the input failed with.
+/// - [`Error::OutputRejected`] naming `[second-reading-unavailable]` in a build that takes no
+///   second reading in-process.
 pub fn page<E>(
+    engine: &E,
+    bytes: &[u8],
+    page: usize,
+    redacted: &BTreeSet<usize>,
+    region: Region,
+    options: &OpenOptions<'_>,
+) -> Result<Redaction>
+where
+    E: PageRedactor + OutputReader,
+{
+    let done = page_awaiting_second_reading(engine, bytes, page, redacted, region, options)?;
+    if done.report.second_reading.is_some() {
+        return Err(Error::OutputRejected(
+            "redact: the second reading refuses the output -- [second-reading-unavailable] this \
+             build takes no second reading in-process"
+                .to_owned(),
+        ));
+    }
+    Ok(done)
+}
+
+/// As [`page`], but a second reading still due is returned rather than refused (#206's web half).
+///
+/// For the caller that takes the reading elsewhere and judges it itself -- the web's redaction
+/// worker, whose render worker reads the output, judged by
+/// `burrow_engines::redact_read_back::recorded::agrees_recorded` against
+/// [`Report::second_reading`]. **Output with that set is not a result**; see
+/// [`Redaction::document`].
+///
+/// # Errors
+///
+/// As [`page`], less the `[second-reading-unavailable]` refusal.
+pub fn page_awaiting_second_reading<E>(
     engine: &E,
     bytes: &[u8],
     page: usize,

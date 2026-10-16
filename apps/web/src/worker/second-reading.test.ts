@@ -85,10 +85,15 @@ interface Redaction {
  */
 function redaction(
   source = REDACT_MAIN,
-  { remainingMs = 5_000n, begunOk = true, maxAnswer = 64 } = {},
+  { remainingMs = 5_000n, begunOk = true, maxAnswer = 64, timers = [] as number[] } = {},
 ): Redaction {
   const h = load(source);
   platform(h.scope);
+  // EVERY TIMER THE WORKER SETS, by its delay, so a case can read the wait it chose.
+  h.scope["setTimeout"] = (fn: () => void, ms: number) => {
+    timers.push(ms);
+    return setTimeout(fn, ms);
+  };
   // The scope holds qpdf's start-up open until told; nothing here is about start-up.
   h.releaseQpdf();
   const confirms: Redaction["confirms"] = [];
@@ -202,6 +207,55 @@ describe("the redaction worker's half of the second reading", () => {
     await r.done;
     expect(r.aborts).toEqual([7n]);
     expect(r.confirms).toEqual([]);
+    r.render.close();
+  });
+
+  it("refuses on a nonce-less failure at once, not when the wait runs out", async () => {
+    // A MINUTE OF BUDGET, so the wait is the ten-second cap: an abort that waited for the timer
+    // would take ten seconds, and one that waited for the budget a minute.
+    const r = redaction(REDACT_MAIN, { remainingMs: 60_000n });
+    await next(r.render);
+    const sent = performance.now();
+    r.render.postMessage({ type: "failed", kind: "Internal" });
+    await r.done;
+    expect(performance.now() - sent, "the abort waited for a timer").toBeLessThan(1_000);
+    expect(r.aborts).toEqual([7n]);
+    r.render.close();
+  });
+
+  it("waits at most ten seconds, and less when less of the budget is left", async () => {
+    for (const [remainingMs, wait] of [
+      [60_000n, 10_000],
+      [10_001n, 10_000],
+      [9_999n, 9_999],
+      [30n, 30],
+    ] as const) {
+      const timers: number[] = [];
+      const r = redaction(REDACT_MAIN, { remainingMs, timers });
+      await next(r.render);
+      expect(timers, `the wait chosen for ${remainingMs} ms left`).toContain(wait);
+      expect(
+        timers.every((ms) => ms <= 10_000),
+        `a timer past the cap: ${timers}`,
+      ).toBe(true);
+      r.render.postMessage({ type: "failed", kind: "Internal" });
+      await r.done;
+      r.render.close();
+    }
+  });
+
+  it("SHOWN TO FAIL: without the cap, a minute of budget is a minute's wait", async () => {
+    const source = mutated(
+      REDACT_MAIN,
+      "Math.min(remainingMs, SECOND_READING_WAIT_MS)",
+      "remainingMs",
+    );
+    const timers: number[] = [];
+    const r = redaction(source, { remainingMs: 60_000n, timers });
+    await next(r.render);
+    expect(timers).toContain(60_000);
+    r.render.postMessage({ type: "failed", kind: "Internal" });
+    await r.done;
     r.render.close();
   });
 
@@ -477,5 +531,89 @@ describe("the render worker's half of the second reading", () => {
     sendRead(r.redaction);
     const answer = await next(r.redaction);
     expect(answer.answer.byteLength).toBe(32);
+  });
+});
+
+// ---- the port helpers themselves -------------------------------------------------------------
+
+describe("the port helpers", () => {
+  it("awaitPortReply reads no answer under a policy the guard refused", async () => {
+    const h = load(REDACT_MAIN, false);
+    platform(h.scope);
+    const channel = new MessageChannel();
+    let accepted = 0;
+    const waiting = (
+      h.scope["awaitPortReply"] as (
+        port: MessagePort,
+        accept: (data: unknown) => unknown,
+        ms: number,
+      ) => Promise<unknown>
+    )(
+      channel.port1,
+      () => {
+        accepted += 1;
+        return { taken: true };
+      },
+      1_000,
+    );
+    channel.port2.postMessage({ any: "answer" });
+    expect(await waiting).toBeNull();
+    expect(accepted, "an answer was read with no policy in force").toBe(0);
+    channel.port2.close();
+  });
+
+  it("SHOWN TO FAIL: without the policy check, the answer is read", async () => {
+    const source = mutated(
+      REDACT_MAIN,
+      "        const policy = await POLICED;\n        if (!policy.policed) {\n          settle(null);\n          return;\n        }\n",
+      "",
+    );
+    const h = load(source, false);
+    platform(h.scope);
+    const channel = new MessageChannel();
+    const waiting = (
+      h.scope["awaitPortReply"] as (
+        port: MessagePort,
+        accept: (data: unknown) => unknown,
+        ms: number,
+      ) => Promise<unknown>
+    )(channel.port1, () => ({ taken: true }), 1_000);
+    channel.port2.postMessage({ any: "answer" });
+    expect(await waiting).toEqual({ taken: true });
+    channel.port2.close();
+  });
+
+  /** A port whose post neither transfers nor throws: every buffer stays attached. */
+  const copyingPort = { postMessage: () => {} } as unknown as MessagePort;
+
+  it("postTransferring zeroes a buffer it could not transfer, then refuses", () => {
+    const h = load(REDACT_MAIN);
+    platform(h.scope);
+    const buffer = new Uint8Array([1, 2, 3]).buffer;
+    const post = h.scope["postTransferring"] as (
+      p: MessagePort,
+      m: object,
+      b: ArrayBuffer[],
+    ) => void;
+    expect(() => post(copyingPort, {}, [buffer])).toThrow();
+    expect([...new Uint8Array(buffer)]).toEqual([0, 0, 0]);
+  });
+
+  it("SHOWN TO FAIL: without the wipe, the copy left behind survives", () => {
+    const source = mutated(
+      REDACT_MAIN,
+      "  if (buffers.some((buffer) => buffer.byteLength !== 0)) {\n    wipe();\n",
+      "  if (buffers.some((buffer) => buffer.byteLength !== 0)) {\n",
+    );
+    const h = load(source);
+    platform(h.scope);
+    const buffer = new Uint8Array([1, 2, 3]).buffer;
+    const post = h.scope["postTransferring"] as (
+      p: MessagePort,
+      m: object,
+      b: ArrayBuffer[],
+    ) => void;
+    expect(() => post(copyingPort, {}, [buffer])).toThrow();
+    expect([...new Uint8Array(buffer)]).toEqual([1, 2, 3]);
   });
 });

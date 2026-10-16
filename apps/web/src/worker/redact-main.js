@@ -196,6 +196,10 @@ async function runOperation(request) {
  * longer: TEN SECONDS. Most of it is for a fresh render worker compiling PDFium, which the page
  * starts beside the redaction. On expiry the redaction is refused, and the page terminates the
  * render worker whatever it is doing (design review L5).
+ *
+ * THE COST: that termination can land inside `FPDFText_LoadPage`, in a heap that holds the document
+ * and is not wiped on the way out -- the #361 class. Kept by the owner's ruling for S5; bounded by
+ * the render worker being fresh, one document, never reused. See `host/second-reading.js`.
  */
 const SECOND_READING_WAIT_MS = 10_000;
 

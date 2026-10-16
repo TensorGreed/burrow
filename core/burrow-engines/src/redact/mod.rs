@@ -145,12 +145,15 @@ pub struct Report {
     pub dropped_carried_text: usize,
     /// The second reading the output still owes, where it is not taken here (#206's web half).
     ///
-    /// `None` natively, where PDFium reads the output in-process before the bytes are returned.
-    /// `Some` in a build without the native engines -- the web's redaction worker, which holds no
-    /// PDFium -- where burrow's own check has passed, the nesting ceiling has been asked
-    /// (`redact_read_back::may_load`), and the render worker's reading is still to be judged
-    /// against this agreement (`redact_read_back::recorded::agrees_recorded`). **Output with this
-    /// set is not yet a result**: the caller must not hand it to a person until that verdict is in.
+    /// `None` natively on Linux with the native engines, where PDFium reads the output in-process
+    /// before the bytes are returned. `Some` in every other build -- the web's redaction worker,
+    /// which holds no PDFium, and native Android, iOS and macOS -- where burrow's own check has
+    /// passed, the nesting ceiling has been asked (`redact_read_back::may_load`), and a reading
+    /// taken elsewhere is still to be judged against this agreement
+    /// (`redact_read_back::recorded::agrees_recorded`). **Output with this set is not yet a
+    /// result**: `burrow_ops::redact::page` refuses it, and only
+    /// `burrow_ops::redact::page_awaiting_second_reading` returns it, to a caller that judges the
+    /// reading before handing anything to a person.
     pub second_reading: Option<SecondReadingDue>,
 }
 

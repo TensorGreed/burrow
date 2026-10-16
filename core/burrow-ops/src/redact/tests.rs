@@ -298,3 +298,140 @@ mod frames {
         assert_eq!(run(&Framer(two, Some(2))).expect("counted right").len(), 2);
     }
 }
+
+/// THE FAIL-CLOSED HALF (#206): a build that cannot take the second reading in-process ends with
+/// it still due, and the one-call entry refuses that rather than return output read once.
+mod second_reading_due {
+    use super::*;
+    use burrow_engines::pdfsyntax::geometry::Rect;
+    use burrow_engines::pdfsyntax::region::PageFrame;
+    use burrow_engines::redact::SecondReadingDue;
+    use burrow_engines::redact_read_back::Agreement;
+    use burrow_engines::redact_verify::Walked;
+
+    /// An honest engine whose redaction leaves the second reading due, as the web's does.
+    #[derive(Clone)]
+    struct Owing(Fake);
+
+    fn due() -> SecondReadingDue {
+        SecondReadingDue(Agreement {
+            page: 0,
+            region: band(),
+            walked: Walked {
+                frame: PageFrame {
+                    display_box: Rect {
+                        left: 0.0,
+                        bottom: 0.0,
+                        right: 612.0,
+                        top: 792.0,
+                    },
+                    rotate: 0,
+                    user_unit: 1.0,
+                },
+                glyphs: 0,
+                marked_work: 0,
+            },
+            promised_pages: 1,
+        })
+    }
+
+    impl PageRedactor for Owing {
+        fn name(&self) -> &'static str {
+            "owing"
+        }
+
+        fn redact_page(
+            &self,
+            bytes: &[u8],
+            page: usize,
+            redacted: &BTreeSet<usize>,
+            region: Region,
+            options: &OpenOptions<'_>,
+        ) -> Result<(Vec<u8>, Report)> {
+            let (document, mut report) =
+                self.0.redact_page(bytes, page, redacted, region, options)?;
+            report.second_reading = Some(due());
+            Ok((document, report))
+        }
+
+        fn input_rotations(
+            &self,
+            bytes: &[u8],
+            options: &OpenOptions<'_>,
+            deadline: &Deadline,
+        ) -> Result<Vec<i64>> {
+            self.0.input_rotations(bytes, options, deadline)
+        }
+    }
+
+    impl OutputReader for Owing {
+        type Read = FakeRead;
+
+        fn fresh(&self) -> Self {
+            self.clone()
+        }
+
+        fn open_output(&self, bytes: &[u8], options: &OpenOptions<'_>) -> Result<Self::Read> {
+            self.0.open_output(bytes, options)
+        }
+
+        fn page_count(&self, read: &Self::Read) -> Result<u64> {
+            self.0.page_count(read)
+        }
+
+        fn rotations(
+            &self,
+            read: &Self::Read,
+            options: &OpenOptions<'_>,
+            deadline: &Deadline,
+        ) -> Result<Vec<i64>> {
+            self.0.rotations(read, options, deadline)
+        }
+    }
+
+    fn covered() -> BTreeSet<usize> {
+        BTreeSet::from([0])
+    }
+
+    #[test]
+    fn the_one_call_entry_refuses_a_reading_still_due_by_name() {
+        // KILLS: the `second_reading.is_some()` check in `page` removed -- the document would come
+        // back from a build that read it once.
+        match super::super::page(
+            &Owing(Fake::honest(1)),
+            b"%PDF",
+            0,
+            &covered(),
+            band(),
+            &options(),
+        ) {
+            Err(Error::OutputRejected(message)) => {
+                assert!(
+                    message.contains("[second-reading-unavailable]"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the second-reading refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_two_phase_entry_returns_it_with_the_reading_still_due() {
+        let done = super::super::page_awaiting_second_reading(
+            &Owing(Fake::honest(1)),
+            b"%PDF",
+            0,
+            &covered(),
+            band(),
+            &options(),
+        )
+        .expect("the two-phase entry hands back a reading still due");
+        assert_eq!(done.report.second_reading, Some(due()));
+    }
+
+    #[test]
+    fn the_one_call_entry_passes_a_reading_already_taken() {
+        // THE NEAR MISS: with nothing due, `page` is unchanged.
+        assert!(run(&Fake::honest(1), 0, &[0]).is_ok());
+    }
+}

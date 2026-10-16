@@ -153,13 +153,7 @@ CARVED_TARGETS = (
     "pdfsyntax_geometry",
 )
 
-# `pdfsyntax_cmap_wmode` is NOT carved, and that is the point of the exception.
-#
-# Its grammar is a PostScript CMap program -- `def`, `usecmap`, `begincmap` -- and the corpus
-# holds content streams. A carved content stream handed to it is a seed of the wrong shape, and
-# this script's own `CARVED_TARGETS` comment says what that is worth. So its seeds are written
-# here, one per case the derivation has to get right, and each is a program a real font could
-# carry. The first byte is the target's dictionary-`WMode` parameter.
+
 def _recording(chars: list[tuple[float, float, int]], version: int = 1) -> bytes:
     """A second-reading recording (#206) in `redact_read_back::recorded`'s version-1 layout."""
     import struct
@@ -169,6 +163,13 @@ def _recording(chars: list[tuple[float, float, int]], version: int = 1) -> bytes
     return head + b"".join(struct.pack("<ddB", x, y, g) for x, y, g in chars)
 
 
+# `pdfsyntax_cmap_wmode` is NOT carved, and that is the point of the exception.
+#
+# Its grammar is a PostScript CMap program -- `def`, `usecmap`, `begincmap` -- and the corpus
+# holds content streams. A carved content stream handed to it is a seed of the wrong shape, and
+# this script's own `CARVED_TARGETS` comment says what that is worth. So its seeds are written
+# here, one per case the derivation has to get right, and each is a program a real font could
+# carry. The first byte is the target's dictionary-`WMode` parameter.
 SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
     # #206's web half: whole recordings, as the render worker writes them -- an empty page, an
     # ordinary one, a generated character, a non-finite origin (the rules' question, not the

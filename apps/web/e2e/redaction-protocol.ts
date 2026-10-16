@@ -59,6 +59,13 @@ export const WRITER_FRAMES: { frames: number[]; frameRefusals: string[] } = (() 
 export const WHOLE = { left: 0, top: 0, width: 5000, height: 5000 };
 
 /**
+ * A horizontal band, `redaction_outcomes.rs`' `BAND`: on `WRITER`'s first page it clears some text
+ * and LEAVES some, so the output page still has glyphs -- which a reading claiming no text there
+ * must contradict (R2). `WHOLE` clears every glyph, and against it a no-text reading is honest.
+ */
+export const BAND = { left: 0, top: 300, width: 5000, height: 120 };
+
+/**
  * THE LINE A PLANTED VIOLATION GOES BEFORE: `redact-main.js`'s call into Rust that redacts --
  * phase 1 of the two since #206's web half, with the input in scope as `bytes`. The one-call
  * `redact` is still there, for a request with no port, and is not on any path a spec takes.
@@ -73,6 +80,8 @@ export interface Settled {
   reply: Reply;
   log: RedactionMessage[];
   nonce: number;
+  /** The second reading's render worker's log (#206), settled with the same nonce. */
+  reading: RedactionMessage[];
 }
 
 /**
@@ -81,7 +90,11 @@ export interface Settled {
  * once so far": a copy that posted the document a second time 200 ms later passed that version of
  * this check (review of #137).
  */
-export async function redactAndSettle(page: Page, pageNumber: number): Promise<Settled> {
+export async function redactAndSettle(
+  page: Page,
+  pageNumber: number,
+  area: { left: number; top: number; width: number; height: number } = WHOLE,
+): Promise<Settled> {
   const reply = await page.evaluate(
     ({ bytes, pageNumber, region }) =>
       window.burrowHarness.redactDocument(
@@ -91,7 +104,7 @@ export async function redactAndSettle(page: Page, pageNumber: number): Promise<S
         [pageNumber],
         region,
       ),
-    { bytes: Array.from(WRITER), pageNumber, region: WHOLE },
+    { bytes: Array.from(WRITER), pageNumber, region: area },
   );
   const { settled, nonce } = await page.evaluate(
     (ms) => window.burrowHarness.settleRedaction(ms),
@@ -99,7 +112,8 @@ export async function redactAndSettle(page: Page, pageNumber: number): Promise<S
   );
   if (!settled) throw new Error("redaction's worker never answered the settle handshake");
   const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  return { reply, log, nonce };
+  const reading = await page.evaluate(() => window.burrowHarness.readingMessages());
+  return { reply, log, nonce, reading };
 }
 
 /**
@@ -117,7 +131,8 @@ export async function framesAndSettle(page: Page, bytes: Uint8Array): Promise<Se
   );
   if (!settled) throw new Error("redaction's worker never answered the settle handshake");
   const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  return { reply, log, nonce };
+  const reading = await page.evaluate(() => window.burrowHarness.readingMessages());
+  return { reply, log, nonce, reading };
 }
 
 /**
@@ -431,7 +446,7 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   "defaultLimits.maxPixels": integer(0, Number.MAX_SAFE_INTEGER),
   __burrowSettled: integer(1, 2 ** 31),
   // A PORT POST'S DESCRIPTION: lengths no larger than a buffer can be, and a closed word.
-  "__burrowPortPost.shape": oneOf(["read", "unlisted"]),
+  "__burrowPortPost.shape": oneOf(["read", "answer", "failed", "unlisted"]),
   "__burrowPortPost.input": integer(0, 2 ** 32),
   "__burrowPortPost.output": integer(0, 2 ** 32),
   "__burrowPortPost.password": integer(0, 2 ** 32),
@@ -709,6 +724,48 @@ export function portViolations(
   if (due === false && posts.length > 0)
     found.push("a refusal before the reading posted on a port");
   if (due === true && posts.length === 0) found.push("no second reading was asked for");
+  return found;
+}
+
+/**
+ * R8 FOR THE SECOND READING'S RENDER WORKER (#206's web half; security review round 1). It holds
+ * the input, the output and the password, and the page must get none of them from it:
+ *
+ * - the log holds THIS nonce's settle echo, so "nothing after" was observed;
+ * - NO message it posts to the page carries a byte value or a port -- its terminal reply included;
+ * - on the port, ONE post when it was asked to read (`read`), its answer (`answer`, not empty) or a
+ *   failure (`failed`), and none when it was never asked;
+ * - when it read, its terminal reply for the hand-off is there and is a success.
+ */
+export function readingViolations(all: RedactionMessage[], nonce: number, read: boolean): string[] {
+  const log = all.filter((m) => m.sent === null);
+  const found: string[] = [];
+  if (!log.some((m) => m.settled === nonce)) {
+    found.push("the reading's log was read before its worker went quiet");
+  }
+  log.forEach((m, at) => {
+    if (m.bytes > 0)
+      found.push(`reading message ${at} (keys ${m.keys}) carries ${m.bytes} byte value(s)`);
+    if (m.ports > 0)
+      found.push(`reading message ${at} (keys ${m.keys}) transfers ${m.ports} port(s)`);
+  });
+  const posts = log.filter((m) => m.shape === PORT_POST);
+  if (read && posts.length !== 1)
+    found.push(`the reading posted ${posts.length} times on its port, not once`);
+  if (!read && posts.length > 0) found.push(`the reading posted on its port without being asked`);
+  for (const post of posts) {
+    const shape = post.fields["__burrowPortPost.shape"];
+    if (shape !== "answer" && shape !== "failed") {
+      found.push(`the reading's port post is a ${shape}, not an answer or a failure`);
+    } else if (shape === "answer" && post.fields["__burrowPortPost.output"] === 0) {
+      found.push("the reading's answer is empty");
+    }
+  }
+  const handed = all.filter((m) => m.sent === "second_reading_port").map((m) => m.id);
+  const terminal = log.filter((m) => m.ok !== null && handed.includes(m.id));
+  if (read && (terminal.length !== 1 || terminal[0].ok !== true)) {
+    found.push(`the reading's terminal reply is ${JSON.stringify(terminal.map((m) => m.ok))}`);
+  }
   return found;
 }
 

@@ -63,7 +63,7 @@ compile-time.
 | `thiserror-impl` | MIT OR Apache-2.0 | `thiserror` | Proc-macro implementation |
 | `syn`, `quote`, `proc-macro2` | MIT OR Apache-2.0 | `thiserror-impl`, `wasm-bindgen-macro`, `wasm-bindgen-macro-support` | Proc-macro support; compile-time only |
 | `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2`, `wasm-bindgen-shared` | Unicode identifier tables. Via `wasm-bindgen-shared` this is a **normal** dependency, not only a proc-macro one, so it is in the wasm link graph |
-| `sha2` | MIT OR Apache-2.0 | `burrow-engines` | **Runtime in the redaction wasm module only** (`redaction-digest`, #206): binds the second reading to the exact bytes it was taken of. Build- and dev-only everywhere else, where it verifies the vendored engine checksums. `default-features = false`, pinned in `[workspace.dependencies]` |
+| `sha2` | MIT OR Apache-2.0 | `burrow-engines`; `burrow-ops` (dev) | **Runtime in the redaction wasm module only** (`redaction-digest`, #206): binds the second reading to the exact bytes it was taken of. Build- and dev-only everywhere else, where it verifies the vendored engine checksums. `default-features = false`, pinned in `[workspace.dependencies]` |
 | `digest` | MIT OR Apache-2.0 | `sha2` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
 | `block-buffer` | MIT OR Apache-2.0 | `digest` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
 | `crypto-common` | MIT OR Apache-2.0 | `digest` | With `sha2`: runtime in the redaction wasm module only; build/dev elsewhere |
@@ -127,6 +127,7 @@ by hand from each crate's manifest in `~/.cargo/registry`.
 | `ppv-lite86` | MIT OR Apache-2.0 | `rand_chacha` | Test only |
 | `zerocopy`, `zerocopy-derive` | BSD-2-Clause OR Apache-2.0 OR MIT | `ppv-lite86` | Test only; we take MIT or Apache-2.0 |
 | `getrandom` | MIT OR Apache-2.0 | `rand_core` | Test only |
+| `libc` | MIT OR Apache-2.0 | `getrandom` | Test only (on Unix targets) |
 | `r-efi` | MIT OR Apache-2.0 OR LGPL-2.1-or-later | `getrandom` (UEFI target only) | **Disjunctive**: we take MIT. The LGPL arm is one option among three and is not exercised |
 | `wasip2` | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `getrandom` (`wasm32-wasip2` only) | Test only |
 | `wit-bindgen` | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `wasip2` | Test only |

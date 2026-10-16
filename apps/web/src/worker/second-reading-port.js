@@ -26,15 +26,25 @@ function exactBuffer(view) {
 
 /**
  * Post `message` on `port`, transferring `buffers`, and check each was detached: one that was not
- * is a second copy of a person's document left in this worker, and an internal failure.
+ * is a second copy of a person's document left in this worker, and an internal failure. Whatever
+ * fails, every buffer still attached is ZEROED before the throw (#199).
  *
  * @param {MessagePort} port
  * @param {object} message
  * @param {ArrayBuffer[]} buffers
  */
 function postTransferring(port, message, buffers) {
-  port.postMessage(message, buffers);
+  const wipe = () => {
+    for (const buffer of buffers) if (buffer.byteLength !== 0) new Uint8Array(buffer).fill(0);
+  };
+  try {
+    port.postMessage(message, buffers);
+  } catch (error) {
+    wipe();
+    throw error;
+  }
   if (buffers.some((buffer) => buffer.byteLength !== 0)) {
+    wipe();
     throw new Error("a buffer was not transferred");
   }
 }
@@ -75,6 +85,10 @@ function servePort(port, handle) {
 /**
  * The first message on `port` that `accept` takes, or `null` on a timeout, a refused policy or a
  * throw. Messages `accept` refuses are dropped. The port is closed however it ends.
+ *
+ * THE POLICY CHECK IS BELT AND BRACES: the only caller runs after the global channel's guard
+ * passed, and `POLICED` is settled once. It is kept so a port answer is never read under a policy
+ * the guard refused, whoever calls this; `second-reading.test.ts` drives it.
  *
  * @template T
  * @param {MessagePort} port

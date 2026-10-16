@@ -47,10 +47,16 @@ for (const [outcome, pageNumber] of [
     await page.evaluate(() => window.burrowHarness.armRedaction({ stubSideChannels: true }));
     const marker = `r9-${testInfo.project.name}-${pageNumber}-${Date.now()}`;
     await mark(marker);
-    const { reply, log, nonce } = await redactAndSettle(page, pageNumber);
+    const { reply, log, nonce, reading } = await redactAndSettle(page, pageNumber);
     expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(pageNumber === 1);
     expect(armedStubs(log).length, "no stub installed").toBeGreaterThan(0);
     expect(r9Violations(log, nonce)).toEqual([]);
+    // AND THE SECOND READING'S RENDER WORKER (#206), armed with the same stubs: it holds the input,
+    // the output and the password, and takes no exit either.
+    expect(armedStubs(reading), "no stub installed in the reading's worker").toEqual(
+      armedStubs(log),
+    );
+    expect(r9Violations(reading, nonce)).toEqual([]);
     // AND R8 OVER THE SAME LOG, where the armed list is real: the near-miss for its exemption.
     expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
 

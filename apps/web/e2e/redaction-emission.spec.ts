@@ -25,6 +25,7 @@ import type { RedactionMessage } from "../src/host/harness-api";
 import { openHarness } from "./harness";
 import {
   FIELD_RULES,
+  BAND,
   PORT_POST,
   REFINED,
   REFUSED_BY,
@@ -38,14 +39,23 @@ import {
   portRecord,
   portViolations,
   r8Violations,
+  readingViolations,
   redactAndSettle,
 } from "./redaction-protocol";
 
 test("a successful redaction posts its document once, in the terminal reply", async ({ page }) => {
   await openHarness(page);
   await page.evaluate(() => window.burrowHarness.armRedaction({}));
-  const { reply, log, nonce } = await redactAndSettle(page, 1);
+  const { reply, log, nonce, reading } = await redactAndSettle(page, 1);
   expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(true);
+  // AND THE READING'S WORKER, which holds the input, the output and the password: it posted the
+  // page no byte value and no port, and answered once on its port -- and its recorder SAW the
+  // answer, or this would pass a worker nobody watched.
+  expect(
+    reading.filter((m) => m.shape === PORT_POST),
+    "the reading's recorder saw no answer",
+  ).toHaveLength(1);
+  expect(readingViolations(reading, nonce, true)).toEqual([]);
 
   // THE RECORDER SAW THE DOCUMENT: one that recorded nothing would pass every "no message carries
   // bytes" rule below.
@@ -67,8 +77,10 @@ test("a successful redaction posts its document once, in the terminal reply", as
 test("a refused redaction posts no bytes at all", async ({ page }) => {
   await openHarness(page);
   await page.evaluate(() => window.burrowHarness.armRedaction({}));
-  const { reply, log, nonce } = await redactAndSettle(page, 2); // one past the end
+  const { reply, log, nonce, reading } = await redactAndSettle(page, 2); // one past the end
   expect(reply.ok).toBe(false);
+  // THE READING'S WORKER WAS STARTED and never asked: no port post, and no bytes to the page.
+  expect(readingViolations(reading, nonce, false)).toEqual([]);
 
   expect(
     log.some((m) => m.sent === null && m.ok === false),
@@ -127,6 +139,75 @@ for (const plant of PORT_PLANTS) {
   });
 }
 
+// A READING THAT DISAGREES REFUSES (#206's web half; security review round 1). The render bundle's
+// copy is planted to answer with a recording of OTHER bytes, with a recording that holds no text,
+// and with a failure; each must be refused by name, and no document reach the page. These are what
+// go red when the verdict in Rust is planted to agree with anything (`agrees_recorded` -> `Ok`).
+const READ_DIGEST = '      crypto.subtle.digest("SHA-256", input),';
+const READ_REPLY = "    const reply = exactBuffer(answer);";
+const DISAGREEING: {
+  name: string;
+  from: string;
+  to: string;
+  kind: string;
+  rule: RegExp;
+  region?: typeof BAND;
+}[] = [
+  {
+    name: "a recording of other bytes",
+    from: READ_DIGEST,
+    to: '      crypto.subtle.digest("SHA-256", new Uint8Array([1])),',
+    kind: "OutputRejected",
+    rule: /\[second-reading-other-document\]/,
+  },
+  {
+    name: "a recording with no text",
+    // THE COUNT ZEROED AND THE CHARACTERS CUT: a well-formed recording of a page PDFium found empty.
+    from: READ_REPLY,
+    to: "    answer.fill(0, 105, 109);\n    const reply = exactBuffer(answer.slice(0, 109));",
+    kind: "OutputRejected",
+    // ON THE BAND, which leaves glyphs on the page: under `WHOLE` nothing is left, and a reading
+    // that sees no text AGREES -- measured, that plant was released on the whole page.
+    rule: /\[second-reading-no-text\]/,
+    region: BAND,
+  },
+  {
+    name: "a failure",
+    from: READ_REPLY,
+    to: "    const reply = exactBuffer(new Uint8Array([0x80, 2, 0, 0, ...new Array(16).fill(0)]));",
+    kind: "OutputRejected",
+    rule: /\[second-reading-unavailable\]/,
+  },
+];
+for (const plant of DISAGREEING) {
+  test(`SHOWN TO FAIL: a reading that answers with ${plant.name} is refused by name`, async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const { readingApplied } = await page.evaluate(
+      (mutateReading) => window.burrowHarness.armRedaction({ mutateReading }),
+      { from: plant.from, to: plant.to },
+    );
+    expect(readingApplied, `the planted change did not apply: ${plant.name}`).toBe(true);
+    const { reply, log, nonce, reading } = await redactAndSettle(page, 1, plant.region);
+    expect(reply.ok, "a disagreeing reading released the document").toBe(false);
+    expect(reply.kind).toBe(plant.kind);
+    expect(reply.message).toMatch(plant.rule);
+    expect(reply.outputSha256).toBeNull();
+    // THE PLANT RAN: the reading worker answered on its port, so this is the verdict refusing it.
+    expect(reading.filter((m) => m.shape === PORT_POST)).toHaveLength(1);
+    expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
+  });
+}
+
+test("THE NEAR MISS: the band, read honestly, is released", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.burrowHarness.armRedaction({}));
+  const { reply, reading, nonce } = await redactAndSettle(page, 1, BAND);
+  expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(true);
+  expect(readingViolations(reading, nonce, true)).toEqual([]);
+});
+
 test("a reading that never comes back is refused by name, and the page gets no document", async ({
   page,
 }) => {
@@ -144,6 +225,100 @@ test("a reading that never comes back is refused by name, and the page gets no d
   expect(reply.outputSha256).toBeNull();
   expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
 });
+
+// THE READING WORKER'S RULES, on hand-written logs: a clean one passes, and each case changes one
+// thing in it.
+const readingLog = (): RedactionMessage[] => {
+  const blank = {
+    keys: [] as string[],
+    bytes: 0,
+    fields: {},
+    ports: 0,
+    ok: null,
+    sideChannel: null,
+    armed: null,
+    settled: null,
+  };
+  return [
+    { ...blank, sent: "second_reading_port", id: 3, ports: 1, shape: "request" },
+    {
+      ...portRecord({ "__burrowPortPost.shape": "answer", "__burrowPortPost.output": 400 }),
+    },
+    { ...blank, sent: null, id: 3, ok: true, shape: "reply" },
+    { ...blank, sent: null, id: null, settled: 42, shape: "{__burrowSettled:number}" },
+  ];
+};
+test("the hand-written reading log passes the reading's rules", () => {
+  expect(readingViolations(readingLog(), 42, true)).toEqual([]);
+});
+const READING_HAND: {
+  name: string;
+  log: () => RedactionMessage[];
+  read: boolean;
+  finding: RegExp;
+}[] = [
+  {
+    name: "a reply to the page carrying bytes",
+    log: () => readingLog().map((m, at) => (at === 2 ? { ...m, bytes: 1 } : m)),
+    read: true,
+    finding: /carries 1 byte value/,
+  },
+  {
+    name: "a reply to the page transferring a port",
+    log: () => readingLog().map((m, at) => (at === 2 ? { ...m, ports: 1 } : m)),
+    read: true,
+    finding: /transfers 1 port/,
+  },
+  {
+    name: "two answers on the port",
+    log: () => {
+      const log = readingLog();
+      return [log[0], log[1], log[1], log[2], log[3]];
+    },
+    read: true,
+    finding: /posted 2 times on its port/,
+  },
+  {
+    name: "an answer when it was never asked",
+    log: readingLog,
+    read: false,
+    finding: /posted on its port without being asked/,
+  },
+  {
+    name: "a port post that is the reading's request echoed back",
+    log: () => readingLog().map((m, at) => (at === 1 ? portRecord() : m)),
+    read: true,
+    finding: /is a read, not an answer or a failure/,
+  },
+  {
+    name: "an empty answer",
+    log: () =>
+      readingLog().map((m, at) =>
+        at === 1
+          ? portRecord({ "__burrowPortPost.shape": "answer", "__burrowPortPost.output": 0 })
+          : m,
+      ),
+    read: true,
+    finding: /answer is empty/,
+  },
+  {
+    name: "no terminal reply",
+    log: () => readingLog().filter((_, at) => at !== 2),
+    read: true,
+    finding: /terminal reply is \[\]/,
+  },
+  {
+    name: "a log read before the worker went quiet",
+    log: () => readingLog().slice(0, 3),
+    read: true,
+    finding: /before its worker went quiet/,
+  },
+];
+for (const hand of READING_HAND) {
+  test(`SHOWN TO FAIL, by hand: a reading log with ${hand.name}`, () => {
+    expect(readingViolations(hand.log(), 42, hand.read).join("\n")).toMatch(hand.finding);
+  });
+}
 
 // THE PORT RULES, on hand-written logs: the clean one with its port record passes both checks, and
 // each case changes one thing in it.

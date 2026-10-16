@@ -12,22 +12,45 @@
 # drift for every cargo command after it in the same checkout. The `--locked` flags elsewhere
 # in ci.yml and the payload action are belt and braces.
 #
-# WHAT IT EXAMINES, AND SAYS SO. Every workspace with its own lockfile: the root and `fuzz/`,
-# which is its own workspace. It reports "examined N of N lockfiles", and refuses naming the
-# workspace and cargo's reason.
+# WHAT IT EXAMINES, AND SAYS SO. Every committed lockfile, from `git ls-files '*Cargo.lock'`, so a
+# workspace added later is examined without anyone remembering to list it -- less the exemptions
+# below, each named with its reason and printed on every run. It reports "examined N of N
+# lockfiles" against that derived count, and refuses naming the workspace and cargo's reason.
 #
 # Usage: check-lockfile.sh [workspace-dir ...]
-# With no arguments, checks the root workspace and fuzz/. Directories may be given for testing.
+# With no arguments, checks every committed lockfile's workspace. Directories may be given for
+# testing, and then exactly those are examined.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 
+# EXEMPT BY NAME, with the reason. Nothing CI or the payload builds compiles them, so drift there
+# cannot change what ships; a gate over them would fail on a spike nobody runs.
+declare -A EXEMPT=(
+  ["spikes/redaction-survival"]="spike 0006's throwaway measurement harness: its README says nothing links, ships or depends on it, and no CI job builds it"
+)
+
 if [ "$#" -gt 0 ]; then
   workspaces=("$@")
 else
-  workspaces=("$repo" "$repo/fuzz")
+  workspaces=()
+  committed=0
+  while IFS= read -r lock; do
+    committed=$((committed + 1))
+    rel="$(dirname "$lock")"
+    if [ -n "${EXEMPT[$rel]+set}" ]; then
+      echo "  skip $rel: ${EXEMPT[$rel]}"
+      continue
+    fi
+    if [ "$rel" = "." ]; then workspaces+=("$repo"); else workspaces+=("$repo/$rel"); fi
+  done < <(git -C "$repo" ls-files '*Cargo.lock')
+  if [ "$committed" -eq 0 ]; then
+    echo "check-lockfile: git ls-files found no committed Cargo.lock -- refusing to report nothing examined as a pass" >&2
+    exit 1
+  fi
+  echo "check-lockfile: $committed committed lockfile(s), ${#EXEMPT[@]} exempt by name"
 fi
 
 failed=0
