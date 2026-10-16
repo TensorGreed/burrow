@@ -252,6 +252,15 @@ tests/redaction/fixtures/producer-vertical-writing.pdf	compress	ok smaller: outp
 tests/redaction/fixtures/producer-vertical-writing.pdf	merge	ok two copies: output 2 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	redact	refused unsupported: pdf redaction [structure-tree]: the document carries a structure tree, whose alternate and actual text can describe what a redaction removes, from off the page -- so the whole document is refused
 tests/redaction/fixtures/producer-vertical-writing.pdf	render	ok [1] into 200x200: page 1 at 141x200
+tests/redaction/fixtures/producer-writer-untagged.pdf	open	ok 1 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	rotate	ok every page by 90: output rotations [90] sizes ["842x595"]
+tests/redaction/fixtures/producer-writer-untagged.pdf	reorder	ok reversed: input rotations [0] sizes ["595x842"] output rotations [0] sizes ["595x842"]
+tests/redaction/fixtures/producer-writer-untagged.pdf	split	ok cuts []: parts 1 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	compress	ok smaller: output 1 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	merge	ok two copies: output 2 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 2 of 2, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-writer-untagged.pdf	render	ok [1] into 200x200: page 1 at 141x200
 tests/redaction/fixtures/producer-writer.pdf	open	ok 1 page(s)
 tests/redaction/fixtures/producer-writer.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
 tests/redaction/fixtures/producer-writer.pdf	rotate	ok every page by 90: output rotations [90] sizes ["842x595"]
