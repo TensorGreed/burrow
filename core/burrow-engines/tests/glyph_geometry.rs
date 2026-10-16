@@ -1523,6 +1523,7 @@ fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
 fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
     for name in [
         "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         "producer-latex.pdf",
         "producer-vertical-writing.pdf",
     ] {
@@ -1604,6 +1605,7 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     let mut refused_as_decided = 0usize;
     for name in [
         "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         "producer-latex.pdf",
         "producer-vertical-writing.pdf",
     ] {
@@ -1651,15 +1653,18 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
                 eprintln!("  {name:<34} refused: {text}");
                 // TWO KNOWN REFUSALS, each by its own rule: producer-latex's bitmap glyphs, and
                 // LibreOffice's vertical widths -- #292's accepted cost, #294 to narrow.
+                // AND SINCE #125 SLICE 3, every document with a structure tree refuses
+                // `[structure-tree]`, before any page rule: both LibreOffice exports are tagged, so
+                // producer-vertical-writing's #292 refusal is now behind this one.
                 let expected = match name {
                     "producer-latex.pdf" => "[type-three-image-cut]",
-                    "producer-vertical-writing.pdf" => "[width-out-of-range]",
+                    "producer-vertical-writing.pdf" | "producer-writer.pdf" => "[structure-tree]",
                     _ => "",
                 };
                 assert!(
                     !expected.is_empty() && text.contains(expected),
-                    "{name}: only producer-latex [type-three-image-cut] and \
-                     producer-vertical-writing [width-out-of-range] refuse: {text}"
+                    "{name}: only producer-latex [type-three-image-cut], and producer-vertical-writing \
+                     and producer-writer [structure-tree], refuse: {text}"
                 );
                 refused_as_decided += 1;
                 continue;
@@ -1743,14 +1748,17 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
     }
 
-    // ONE NOW, NOT TWO: #292's accepted cost moves producer-vertical-writing from the redacted
-    // count to the decided refusals, and this test with it loses its vertical document until #294.
+    // ONE, AND IT IS DERIVED. #292's accepted cost moved producer-vertical-writing to the decided
+    // refusals; #125 slice 3 (2026-10-15) moves producer-writer, which is tagged, to them too. What
+    // redacts here is `producer-writer-untagged.pdf`: the same LibreOffice export with its tagging
+    // taken off by `tools/make-untagged-writer.py`, so a real producer's fonts and layout, but not
+    // a file a producer wrote. Interim coverage for #359, which asks for a real untagged export.
     assert_eq!(
         (redacted_documents, refused_as_decided),
-        (1, 2),
-        "producer-writer must redact, and producer-latex and producer-vertical-writing must \
-         refuse as decided; a refusal that covered them all would leave every assertion above \
-         unexecuted and this test still green"
+        (1, 3),
+        "producer-writer-untagged must redact, and producer-latex, producer-vertical-writing and \
+         producer-writer must each refuse as decided; a refusal that covered them all would leave \
+         every assertion above unexecuted and this test still green"
     );
 }
 

@@ -204,7 +204,11 @@ for (const document of PLAN) {
 // A THIRD, with #218: `oh_set_array_item` doing nothing, which turns off the `/Differences` and
 // `/Widths` narrowing. Verification must refuse it; against the core before #218 it was silent too.
 
-const WRITER = DOCUMENTS.find((d) => d.name === "tests/redaction/fixtures/producer-writer.pdf");
+// The untagged LibreOffice export: #125 slice 3 refuses the tagged original `[structure-tree]`,
+// and every planted case below needs a document that redacts.
+const WRITER = DOCUMENTS.find(
+  (d) => d.name === "tests/redaction/fixtures/producer-writer-untagged.pdf",
+);
 const BOMB = DOCUMENTS.find((d) => d.cases.some((c) => classOf(c.outcome) === "limit"));
 const DIFFERENCES = DOCUMENTS.find((d) =>
   d.name.endsWith("/generated/04-differences-encoding.pdf"),

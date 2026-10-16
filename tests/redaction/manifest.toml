@@ -73,6 +73,85 @@ content stream — measured: zero literal occurrences in the qdf expansion.
   [[fixture.placement]]
   channel = "page text, subset font"
   canary = "BURROW-SECRET-WRITER"
+  # REFUSED since #125 slice 3 (2026-10-15): this document is tagged, so it refuses
+  # [structure-tree] as a whole. What this placement measured returns when the post-launch
+  # structure-tree narrowing lands.
+  verdict = "refuse"
+  adr = "§1, §3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+
+  [[fixture.placement]]
+  channel = "font /ToUnicode for the removed run"
+  canary = "BURROW-SECRET-WRITER"
+  # REFUSED since #125 slice 3 (2026-10-15): this document is tagged, so it refuses
+  # [structure-tree] as a whole. What this placement measured returns when the post-launch
+  # structure-tree narrowing lands.
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "font-mapping"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Channel 23. The bfchar entries for codes the output no longer draws go with the text."
+
+  [[fixture.placement]]
+  channel = "document /Info /Title and /Keywords"
+  canary = "BURROW-SECRET-WRITER"
+  # REFUSED since #125 slice 3 (2026-10-15): this document is tagged, so it refuses
+  # [structure-tree] as a whole. What this placement measured returns when the post-launch
+  # structure-tree narrowing lands.
+  verdict = "refuse"
+  adr = "§7"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+DELIBERATELY NOT REMOVED. /Info is on the trailer and unreachable behind qpdf_get_trailer
+(ADR 0013's caller rule), so §7 discloses it and names File -> Properties as the place to look.
+This placement is why that disclosure is concrete rather than hypothetical: a real word
+processor put the document title in the metadata without being asked.
+"""
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "structure-tree-present"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  # Refused since #125 slice 3 (2026-10-15): [structure-tree], for any document with a structure tree.
+  notes = """
+The document carries a structure tree, so §3 refuses it outright. The refusal's page-side
+signal is one of the three #125 marks OWED — the page's /StructParents is a proposal, not a
+measured trigger. This fixture is therefore also a #125 case: it is a REAL document that the
+proposed signal must be shown to catch.
+"""
+
+
+[[fixture]]
+name = "producer-writer-untagged"
+# THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
+# coordinates. Measured once against this committed file, which does not change.
+region = [174, 96, 154, 13]
+file = "fixtures/producer-writer-untagged.pdf"
+kind = "producer"
+producer = "LibreOffice Writer 24.2.7.2, untagged by tools/make-untagged-writer.py"
+pages = 1
+notes = """
+`producer-writer.pdf` with its tagging taken off and nothing else changed (#125 slice 3): the
+catalogue's /StructTreeRoot and /MarkInfo, the page's /StructParents and the three /MCID
+property lists, derived deterministically by tools/make-untagged-writer.py and held to it by
+tools/check-redaction-corpus.sh. The same fonts, subsets, /ToUnicode, /Info and layout, so the
+same region. Slice 3 refuses the tagged original [structure-tree]; this is its near-miss twin,
+and the real producer document the redaction tests redact. Interim coverage for #359, which asks
+for a real untagged export made by the producer itself.
+"""
+
+  [[fixture.placement]]
+  channel = "page text, subset font"
+  canary = "BURROW-SECRET-WRITER"
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
@@ -103,23 +182,6 @@ DELIBERATELY NOT REMOVED. /Info is on the trailer and unreachable behind qpdf_ge
 This placement is why that disclosure is concrete rather than hypothetical: a real word
 processor put the document title in the metadata without being asked.
 """
-
-  [[fixture.placement]]
-  channel = "/StructTreeRoot"
-  canary = "BURROW-SECRET-WRITER"
-  verdict = "refuse"
-  adr = "§3, §5"
-  witness_before = "structure-tree-present"
-  witness_observes = "carrier"
-  expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
-  notes = """
-The document carries a structure tree, so §3 refuses it outright. The refusal's page-side
-signal is one of the three #125 marks OWED — the page's /StructParents is a proposal, not a
-measured trigger. This fixture is therefore also a #125 case: it is a REAL document that the
-proposed signal must be shown to catch.
-"""
-
 [[fixture]]
 name = "producer-latex"
 # THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
@@ -474,7 +536,7 @@ pages = 1
   witness_before = "structure-tree-present"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
+  # Refused since #125 slice 3 (2026-10-15): [structure-tree], for any document with a structure tree.
   notes = "The page-side signal for this refusal is one of the three #125 marks OWED."
 
 [[fixture]]
@@ -1251,7 +1313,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
+  # Refused since #125 slice 3 (2026-10-15): [structure-tree], for any document with a structure tree.
   notes = "The element points at the page through `/Pg`; the page has nothing pointing back."
 
 [[fixture]]
@@ -1264,12 +1326,12 @@ pages = 1
   [[fixture.placement]]
   channel = "/StructTreeRoot — near-miss twin"
   canary = "BURROW-EVADE-STRUCT-NEARMISS"
-  verdict = "handle"
+  verdict = "refuse"
   adr = "§5"
   witness_before = "pdfium-text"
   witness_observes = "canary"
-  expect_after = "gone"
-  notes = "MUST NOT be refused. Nearly every accessible PDF is tagged."
+  expect_after = "refused"
+  notes = "Refused since #125 slice 3 (2026-10-15): no page-side signal survives its evasion, so every document with a structure tree refuses [structure-tree], this near-miss of the page-side proxy included. A deliberate over-refusal: nearly every accessible PDF is tagged, and the narrowing is post-launch."
 
 [[fixture]]
 name = "evade-oc-two-levels-down"

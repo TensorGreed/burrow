@@ -25,8 +25,11 @@ const fixtures = resolve(here, "../../../tests/redaction/fixtures");
 const conformance = resolve(here, "../../../tests/conformance/fixtures");
 const generated = resolve(here, "../../../tests/redaction/generated");
 
-/** A committed fixture whose whole first page redacts (`outcomes.tsv`: `whole OK`). */
-const REDACTS = "producer-writer.pdf";
+/**
+ * A committed fixture whose whole first page redacts (`outcomes.tsv`: `whole OK`). The untagged
+ * LibreOffice export: #125 slice 3 refuses the tagged original `[structure-tree]`.
+ */
+const REDACTS = "producer-writer-untagged.pdf";
 /** A committed fixture whose whole first page reaches a picture (`[image-in-region]`). */
 const PICTURE = "producer-ocr-scan.pdf";
 
@@ -61,7 +64,7 @@ test("a whole page redacts, and the new file is handed over only when asked for"
   await page.getByTestId("redact-run").click();
   const link = page.getByTestId("redact-download");
   await expect(link).toBeVisible({ timeout: 45_000 });
-  await expect(link).toHaveText(/producer-writer-redacted\.pdf/);
+  await expect(link).toHaveText(/producer-writer-untagged-redacted\.pdf/);
 
   const download = page.waitForEvent("download");
   await link.click();

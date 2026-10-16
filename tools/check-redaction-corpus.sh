@@ -43,6 +43,10 @@ rm -f "$out"/*.pdf
 python3 "$root/tools/make-redaction-fixtures.py" "$out" >/dev/null
 python3 "$root/tools/make-evasion-fixtures.py" "$out" >/dev/null
 
+# THE DERIVED PRODUCER FIXTURE (#125 slice 3): committed beside the producer exports, and held to
+# the generator that derives it, byte for byte.
+python3 "$root/tools/make-untagged-writer.py" --check
+
 generated=$(find "$out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 committed=$(find "$root/tests/redaction/fixtures" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 

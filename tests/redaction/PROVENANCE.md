@@ -22,6 +22,7 @@ by `tools/make-redaction-fixtures.py`, and not committed.
 | file | what it is |
 |---|---|
 | `fixtures/producer-writer.pdf` | LibreOffice Writer export, 20,406 bytes |
+| `fixtures/producer-writer-untagged.pdf` | the same export with its tagging taken off, 19,528 bytes, **derived** by `tools/make-untagged-writer.py` and held to it by `tools/check-redaction-corpus.sh` (#125 slice 3; interim coverage for #359) |
 | `fixtures/producer-latex.pdf` | pdfTeX / LaTeX, 17,097 bytes |
 | `fixtures/producer-ocr-scan.pdf` | scanner + tesseract OCR, 37,536 bytes |
 | `fixtures/producer-vertical-writing.pdf` | LibreOffice Writer, vertical `tb-rl` Japanese, 6,261 bytes — **the one file here with third-party content in it**, see below |
@@ -39,6 +40,7 @@ Measured by reading the embedded name tables, not by reading the producers' webs
 | file | embedded font | licence | name IDs 0/13/14 present? |
 |---|---|---|---|
 | `producer-writer.pdf` | Liberation Serif 2.1.5, Liberation Sans 2.1.5 | OFL-1.1 | **Yes** — clause 2 satisfied literally |
+| `producer-writer-untagged.pdf` | the same two subsets, byte for byte (only the tagging is removed) | OFL-1.1 | **Yes** — as above |
 | `producer-vertical-writing.pdf` | Noto Serif CJK SC 2.002, six-glyph Type 1 subset | OFL-1.1 | **No** — see below |
 | `producer-ocr-scan.pdf` | `GlyphLessFont` 1.0, tesseract's invisible OCR face | Apache-2.0 — established by byte identity, see below | No — and it does not need them |
 | `producer-latex.pdf` | none — no `/BaseFont` and no `/FontFile` at all | n.a. | n.a. |

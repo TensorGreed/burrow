@@ -629,9 +629,10 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
         against_the_golden.join("\n")
     );
     // THE COUNTS THE GOLDEN SAYS, so a narrower run cannot read as the whole one. 184 since the
-    // Chrome-printed conformance fixture joined the redaction corpus (#358).
+    // Chrome-printed conformance fixture joined the redaction corpus (#358); 185 since #125
+    // slice 3 added `producer-writer-untagged.pdf` (2026-10-16).
     let recorded_cases: usize = cases.values().map(Vec::len).sum();
-    assert_eq!(documents.len(), 184, "the golden's documents");
+    assert_eq!(documents.len(), 185, "the golden's documents");
     assert_eq!(held_to_the_golden, recorded_cases);
 
     // THE PAGE-FRAMES GOLDEN, diffed on every run and re-blessed only on request.

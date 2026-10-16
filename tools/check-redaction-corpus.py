@@ -512,7 +512,7 @@ BYTE_WITNESSES = {
 # Both are floors rather than equalities: a new fixture adds assertions and must not fail the
 # gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
 # raise them to is in the output.
-PLACEMENT_FLOOR = 166
+PLACEMENT_FLOOR = 169
 MAX_SILENT_FIXTURES = 2
 
 
@@ -1077,21 +1077,20 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 # evade placements (`evade-widget-on-another-page`, `evade-field-with-no-widget`) stopped being owed.
 # #125 dropped from 4 to 3 on 2026-10-08, when `evade-paths-in-type3-glyph` began refusing
 # `[type-three-procedure-paints]`.
-OWED_EXPECTED = {125: 3, 131: 1}
+# #125 dropped from 3 to 0 on 2026-10-15, when slice 3 began refusing every document with a
+# structure tree `[structure-tree]`.
+OWED_EXPECTED = {131: 1}
 # The fixtures whose owed placements still disclose their canary or carrier after a redaction
 # that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
 # `acroform-field` and the two `/AcroForm` evades left it in #125: all three now refuse by
 # `[acroform-field]` (a form field anywhere in the document), so none redacts Ok over a canary.
 # `evade-inline-image` left it in #228: its inline image is filtered, which redaction now refuses.
-OWED_LEAKS_EXPECTED = {
-    # Image/vector/shading now refuse in-region (#125, slice 2): evade-image-in-form,
-    # evade-paths-in-form, image-pixels, producer-ocr-scan and vector-outlines left this set.
-    # Type-3-glyph paths left it on 2026-10-08 ([type-three-procedure-paints]); the
-    # /StructTreeRoot channels remain owed.
-    "evade-struct-without-structparents",
-    "producer-writer",
-    "structure-tree",
-}
+# Image/vector/shading now refuse in-region (#125, slice 2): evade-image-in-form,
+# evade-paths-in-form, image-pixels, producer-ocr-scan and vector-outlines left this set.
+# Type-3-glyph paths left it on 2026-10-08 ([type-three-procedure-paints]); the /StructTreeRoot
+# channels left it on 2026-10-15 (#125 slice 3, [structure-tree]):
+# evade-struct-without-structparents, producer-writer and structure-tree. Empty now.
+OWED_LEAKS_EXPECTED: set[str] = set()
 
 
 def see(placement: dict, output: Path, data: bytes, cache: dict[Path, str]) -> bool:

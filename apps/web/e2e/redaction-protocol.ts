@@ -19,8 +19,14 @@ import type { LogEntry } from "./request-log";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 
-/** A committed fixture a whole-page redaction succeeds on, pinned in `outcomes.tsv`. */
-export const WRITER = readFileSync(join(repo, "tests/redaction/fixtures/producer-writer.pdf"));
+/**
+ * A committed fixture a whole-page redaction succeeds on, pinned in `outcomes.tsv`: LibreOffice's
+ * export with its tagging taken off (`tools/make-untagged-writer.py`), since #125 slice 3 refuses
+ * the tagged original `[structure-tree]`. A real producer's fonts and layout, derived.
+ */
+export const WRITER = readFileSync(
+  join(repo, "tests/redaction/fixtures/producer-writer-untagged.pdf"),
+);
 
 /**
  * `WRITER`'s pinned page frames, read from the committed golden file `page_frames_tests.rs`
@@ -36,7 +42,8 @@ export const WRITER_FRAMES: { frames: number[]; frameRefusals: string[] } = (() 
   const golden = readFileSync(join(repo, "tests/redaction/page-frames.tsv"), "utf8");
   for (const line of golden.split("\n")) {
     const [kind, path, , what, ...rest] = line.split("\t");
-    if (kind !== "PAGE" || path !== "tests/redaction/fixtures/producer-writer.pdf") continue;
+    if (kind !== "PAGE" || path !== "tests/redaction/fixtures/producer-writer-untagged.pdf")
+      continue;
     const [tag, ...values] = [what, ...rest].join(" ").split(" ");
     if (tag === "FRAME") {
       frames.push(Number(values[0]), Number(values[1]));
@@ -74,7 +81,7 @@ export async function redactAndSettle(page: Page, pageNumber: number): Promise<S
   const reply = await page.evaluate(
     ({ bytes, pageNumber, region }) =>
       window.burrowHarness.redactDocument(
-        "producer-writer.pdf",
+        "producer-writer-untagged.pdf",
         new Uint8Array(bytes),
         pageNumber,
         [pageNumber],
@@ -432,7 +439,7 @@ const NUMERIC = new Set([
  * there, and every loosening of these -- a leading zero, 2^64, `-0`, a pinned size, a 65th font, a
  * font identity past 48 bits -- stayed green against it (review of #137).
  */
-const FONT_OK = "FontOutcome { font: 851968, cut: true, also_used_by: 0 }";
+const FONT_OK = "FontOutcome { font: 720896, cut: true, also_used_by: 0 }";
 const report = (fonts: string[], dropped = "0") =>
   `Report { fonts: [${fonts.join(", ")}], dropped_carried_text: ${dropped} }`;
 export const REFINED: [string, string | number, string][] = [
@@ -442,13 +449,13 @@ export const REFINED: [string, string | number, string][] = [
   ["originalBytes", "1", "a size only compress fills"],
   ["producedBytes", "1", "a size only compress fills"],
   ["report", report(Array.from({ length: FONTS_MAX + 1 }, () => FONT_OK)), "a 65th font"],
-  ["report", report([FONT_OK.replace("851968", "281474976710656")]), "a font identity of 2^48"],
+  ["report", report([FONT_OK.replace("720896", "281474976710656")]), "a font identity of 2^48"],
   [
     "report",
     report([FONT_OK.replace("also_used_by: 0", "also_used_by: 4294967296")]),
     "a count of 2^32",
   ],
-  ["report", report([FONT_OK.replace("851968", "0851968")]), "a font identity with a leading zero"],
+  ["report", report([FONT_OK.replace("720896", "0720896")]), "a font identity with a leading zero"],
   ["report", report([FONT_OK], "4294967296"), "a dropped count of 2^32"],
   ["frames[]", "612", "an odd count of sizes"],
   ["frames[]", "612,0792", "a size with a leading zero"],
@@ -773,7 +780,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       ok: true,
       shape: success,
       // A SUCCESS AS THE REAL WORKER SENDS ONE, field for field -- `report` as measured on
-      // `producer-writer.pdf` -- so a case that changes one field provokes that field's rule alone.
+      // `producer-writer-untagged.pdf` -- so a case that changes one field provokes that field's rule alone.
       fields: {
         id,
         ok: true,
@@ -800,7 +807,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
         "frameRefusals[]": "",
         "frameRefusals[].length": 0,
         report:
-          "Report { fonts: [FontOutcome { font: 1179648, cut: true, also_used_by: 0 }, FontOutcome { font: 851968, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
+          "Report { fonts: [FontOutcome { font: 655360, cut: true, also_used_by: 0 }, FontOutcome { font: 720896, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
         "output.type": "application/pdf",
       },
     },
