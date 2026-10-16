@@ -87,8 +87,9 @@ one is decided in an issue, with the same three parts.
     post-merge `push` run: a non-success there is treated as this rule says, investigated and
     resolved before the next merge. **`ci-ok`, once the ruleset requires it in place of `ci`,
     closes the job-level half of that gap and not the rest.** It needs every other job directly
-    and fails unless each one's result is `success`, so a skipped or cancelled job -- which `ci`
-    counted as passing -- can no longer yield a green required check, and `tools/check-ci-ok.py`
+    and fails unless each one's result is `success`, so a skipped job -- which `ci` counted as
+    passing; it already failed on a cancelled one -- can no longer yield a green required check, and
+    `tools/check-ci-ok.py`
     fails CI if a job is added without being added to it. It cannot see #275's own shape, a
     run-level `failure` with every job `success`: every result it reads is then `success`. That
     shape is still read from the post-merge push run as above. *Decided:* owner, 2026-10-16,

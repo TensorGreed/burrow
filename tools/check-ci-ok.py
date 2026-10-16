@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """The `ci-ok` gate: one required check that is green only when EVERY other CI job succeeded.
 
-WHY (owner, 2026-10-16). The merge queue enforces a required check-run, not the run-level
-conclusion DECISIONS rule 11 is about, so a #275-shaped run -- a run-level `failure` with every job
-green -- would merge. And the old aggregate `ci` job failed only on `failure` or `cancelled`: a
-SKIPPED job read as passing. `ci-ok` closes both, once the ruleset requires it in place of `ci`:
+WHY (owner, 2026-10-16). The old aggregate `ci` job failed only on `failure` or `cancelled`, so a
+SKIPPED job read as passing. `ci-ok`, once the ruleset requires it in place of `ci`, closes that:
 it `needs:` every other job directly and fails on any result that is not `success`.
+
+WHAT IT DOES NOT CLOSE, stated: the merge queue enforces a required check-run, not the run-level
+conclusion DECISIONS rule 11 is about, and #275's shape -- a run-level `failure` with every job
+`success` -- gives this gate nothing but `success` results to read, so it passes. That shape is
+still read from `main`'s post-merge push run, as rule 11's 2026-10-16 amendment says.
 
 Two modes, because the gate has two halves and each needs a check:
 
@@ -31,8 +34,6 @@ import os
 import pathlib
 import sys
 
-import yaml
-
 REPO = pathlib.Path(__file__).resolve().parent.parent
 GATE = "ci-ok"
 
@@ -43,6 +44,10 @@ def fail(message: str) -> int:
 
 
 def check_needs(path: pathlib.Path) -> int:
+    # LAZILY: the `results` mode is the required check, and it should depend on nothing but the
+    # standard library.
+    import yaml
+
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
     jobs = workflow.get("jobs") or {}
     if not jobs:
@@ -89,11 +94,18 @@ def check_results(raw: str | None) -> int:
         needs = json.loads(raw)
     except json.JSONDecodeError as error:
         return fail(f"$NEEDS is not JSON ({error})")
-    if not isinstance(needs, dict) or not needs:
+    if not isinstance(needs, dict):
+        return fail(f"$NEEDS is not a JSON object of jobs (it is a {type(needs).__name__})")
+    if not needs:
         return fail("$NEEDS names no jobs; a gate that saw no jobs checked none")
     not_ok = []
     for name in sorted(needs):
-        result = (needs[name] or {}).get("result")
+        entry = needs[name]
+        if not isinstance(entry, dict):
+            print(f"  {name}: not a job record ({type(entry).__name__})")
+            not_ok.append(f"{name} (no result: not a job record)")
+            continue
+        result = entry.get("result")
         print(f"  {name}: {result}")
         if result != "success":
             not_ok.append(f"{name} ({result})")

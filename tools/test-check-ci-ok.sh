@@ -11,11 +11,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"; rm -f "$copy"' EXIT
 pass=0
 fail=0
-expected=10
+expected=16
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
-# A probe workflow: two jobs, and a gate needing both.
+# A probe workflow: two jobs, and a gate needing $1 under `if: $2`, whose step runs $3.
 probe() {
   cat > "$work/w.yml" <<YML
 jobs:
@@ -25,7 +25,7 @@ jobs:
     runs-on: x
     if: $2
     needs: [$1]
-    steps: [{run: "python3 tools/check-ci-ok.py results"}]
+    steps: [{run: "${3:-python3 tools/check-ci-ok.py results}"}]
 YML
 }
 
@@ -47,6 +47,18 @@ status=0; out="$(python3 "$check" needs "$work/w.yml" 2>&1)" || status=$?
 if [ "$status" -eq 1 ] && grep -q "if: always()" <<<"$out"; then ok "a gate not under always() is refused"
 else bad "a gate without always() was not refused (status $status): $out"; fi
 
+# 3a. A GATE WITH NO STEP RUNNING THE RESULTS CHECK IS REFUSED: it would pass on anything.
+probe "build, test" "always()" "true"
+status=0; out="$(python3 "$check" needs "$work/w.yml" 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "no step running" <<<"$out"; then ok "a gate with no results step is refused"
+else bad "a gate with no results step was not refused (status $status): $out"; fi
+
+# 3b. A GATE NEEDING A JOB THE WORKFLOW LACKS IS REFUSED, by name.
+probe "build, test, nope" "always()"
+status=0; out="$(python3 "$check" needs "$work/w.yml" 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "does not have: nope" <<<"$out"; then ok "a gate needing an absent job is refused, named"
+else bad "a gate needing an absent job was not refused by name (status $status): $out"; fi
+
 # 4-8. THE RESULTS MODE: every non-success value fails, named; all success passes; none fails.
 for result in failure cancelled skipped; do
   status=0; out="$(NEEDS="{\"build\":{\"result\":\"success\"},\"test\":{\"result\":\"$result\"}}" python3 "$check" results 2>&1)" || status=$?
@@ -59,6 +71,20 @@ else bad "all-success did not pass (status $status): $out"; fi
 status=0; out="$(NEEDS='{}' python3 "$check" results 2>&1)" || status=$?
 if [ "$status" -eq 1 ] && grep -q "names no jobs" <<<"$out"; then ok "a gate that saw no jobs fails"
 else bad "an empty needs did not fail (status $status): $out"; fi
+
+# 8a-8d. MALFORMED $NEEDS FAILS, each with its own reason rather than a traceback.
+status=0; out="$(NEEDS='' python3 "$check" results 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "NEEDS is empty" <<<"$out"; then ok "an empty \$NEEDS fails, named"
+else bad "an empty \$NEEDS did not fail by name (status $status): $out"; fi
+status=0; out="$(NEEDS='{"build":' python3 "$check" results 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "is not JSON" <<<"$out"; then ok "a garbled \$NEEDS fails, named"
+else bad "a garbled \$NEEDS did not fail by name (status $status): $out"; fi
+status=0; out="$(NEEDS='["build"]' python3 "$check" results 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "not a JSON object of jobs (it is a list)" <<<"$out"; then ok "a non-object \$NEEDS fails, named"
+else bad "a non-object \$NEEDS did not fail by name (status $status): $out"; fi
+status=0; out="$(NEEDS='{"build":{"result":"success"},"test":"success"}' python3 "$check" results 2>&1)" || status=$?
+if [ "$status" -eq 1 ] && grep -q "test (no result: not a job record)" <<<"$out"; then ok "a job entry that is not a record fails, named"
+else bad "a non-record job entry did not fail by name (status $status): $out"; fi
 
 # 9. THE REAL ci.yml PASSES.
 status=0; out="$(python3 "$check" needs "$real" 2>&1)" || status=$?

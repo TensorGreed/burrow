@@ -777,6 +777,12 @@ jobs:
       - name: The force-push hook still refuses the property, and still allows the near-misses
         run: .claude/hooks/test-refuse-force-push-to-main.sh
 
+      # `ci-ok` NEEDS EVERY JOB. In `deny`, which fetches nothing: it reads only ci.yml.
+      - name: The ci-ok gate needs every job
+        run: |
+          python3 tools/check-ci-ok.py needs
+          tools/test-check-ci-ok.sh
+
       # THE DEPLOY WORKFLOW'S TRIGGERS ARE A SECURITY BOUNDARY, and a trigger is one line.
       # `deploy.yml` holds a credential that can write to the live site; adding
       # `pull_request:` to "test it on a branch" would hand that credential to a workflow any
@@ -784,12 +790,6 @@ jobs:
       #
       # In `deny`, which fetches nothing: it reads two committed files and needs no vendor
       # tree, so it still runs on a clean checkout.
-      # `ci-ok` NEEDS EVERY JOB. In `deny`, which fetches nothing: it reads only ci.yml.
-      - name: The ci-ok gate needs every job
-        run: |
-          python3 tools/check-ci-ok.py needs
-          tools/test-check-ci-ok.sh
-
       - name: The deploy workflow's gates still hold
         run: |
           python3 tools/check-deploy-workflow.py
@@ -1163,9 +1163,10 @@ jobs:
 
   # THE ONE REQUIRED CHECK, once the ruleset names it in place of `ci` (owner, 2026-10-16). It
   # needs EVERY other job directly -- `needs.*.result` lists only direct needs -- and fails on any
-  # result that is not `success`: `failure`, `cancelled` and `skipped` alike. `ci` above treats a
-  # skipped job as passing, and the merge queue enforces a required check-run rather than the
-  # run-level conclusion (DECISIONS rule 11's amendment), so this is what closes #275's gap.
+  # result that is not `success`: `failure`, `cancelled` and `skipped` alike. That closes the
+  # skipped-job half: `ci` above treats a skipped job as passing. It does not close #275's
+  # run-level shape (a run `failure` with every job `success`), which still is read from `main`'s
+  # post-merge push run, as DECISIONS rule 11's amendment says.
   # `ci` stays until the ruleset is switched: removing it first would leave the required check it
   # names unreported, and nothing could merge. `tools/check-ci-ok.py needs`, in the `deny` job,
   # fails if a job is ever added without being added here.
