@@ -11,6 +11,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # THE MERGE QUEUE (owner, 2026-10-16). With "Require merge queue" on `main`, a PR merges only
+  # after this workflow passes on the queue's merge commit, so every required check must run on
+  # this event too. Every job here does: none is gated on the event, on `github.head_ref` or on a
+  # path filter, the aggregate `ci` job runs under `always()`, and the concurrency group below keys
+  # on `github.ref`, which is unique per merge group. Not added to `deploy.yml`, whose triggers
+  # `tools/check-deploy-workflow.py` holds to exactly `push` and `workflow_dispatch`.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:

@@ -79,6 +79,14 @@ one is decided in an issue, with the same three parts.
     the `push` run on the identical merged tree concluded `success`. *Does not cover:* a run whose
     non-success is a real job/step failure — that is an ordinary red, fix it.
 
+    **Amended 2026-10-16: through the merge queue.** Once the owner enables "Require merge queue"
+    on `main`, a PR merges with `gh pr merge --auto`, and the run this rule reads is the
+    **merge-group run** on the queue's merge commit, which must conclude `success`; a PR run's
+    green is not the merge gate. *Decided:* owner, 2026-10-16, choosing the merge queue over
+    "require branches to be up to date" after two merges raced and turned `main` red. *Does not
+    cover:* the time before the setting is enabled, when the PR run on the exact head stays the
+    gate as written above.
+
 12. **Never hand-merge `tests/redaction/outcomes.tsv`; regenerate it from the merged tree.** It is
     the golden the native and web differentials replay, and the only file #125 and #137 both
     touch. On every rebase onto `main`, regenerate it from the merged tree
@@ -214,6 +222,15 @@ one is decided in an issue, with the same three parts.
     *Does not cover:* the load's other costs (its total time, and memory that does not grow with
     nesting), which this constant does not cap: time is cooperative and memory is detected (ADR
     0007); and the same engine's loads elsewhere (render, previews), which it does not cap at all.
+
+22. **Redaction-only code may grow a bundle a live tool loads only if the growth is under 0.5% of
+    that page's total download.** The batch summary shows both: the line's own growth, and that
+    growth as a share of the page's total. Anything at or above 0.5% stops for the owner, and the
+    remedy to propose is a separate bundle -- a wasm and a worker entry -- that only `/redact-pdf`
+    loads, held under rule 18's extension. *Decided:* owner, 2026-10-16, for #206's web half,
+    which grew the render lines about 6 KB, about 0.24% of the render total. *Does not cover:*
+    code every tool needs, which is budgeted as rule 6 says; and the per-line budgets themselves,
+    which still apply.
 
 ## Spec review first (the practice that uses rule 10)
 
