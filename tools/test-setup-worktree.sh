@@ -26,7 +26,7 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
-expected=11
+expected=15
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -125,6 +125,47 @@ else
   if [ "$status" -ne 0 ] && grep -q "pins.sh" <<<"$out"; then ok "a stamp built from another tree's pins refuses, naming pins.sh"
   else bad "a stamp from another tree's pins was not refused by name (status $status): $out"; fi
 fi
+
+# 12-15. NODE AND PNPM DISCOVERY, in a fake HOME under `env -i` with a bare PATH, so nothing real leaks in.
+# The script runs from a copy at $nv/tools so the `.nvmrc` beside it is the one each case plants. `$SCRIPT_UNDER_TEST`
+# lets the break-copy check below point the same cases at a deliberately broken copy.
+script_under_test="${SCRIPT_UNDER_TEST:-$script}"
+nv="$work/nv"; mkdir -p "$nv/tools"
+discover() { # <home> <args...>: run with a bare environment; the target is absent, which is refused only after discovery
+  local h="$1"; shift
+  env -i HOME="$h" PATH=/usr/bin:/bin NVM_DIR="$h/.nvm" PNPM_HOME="$h/pnpm" bash "$nv/tools/setup-worktree.sh" "$work/absent" "$@" 2>&1
+}
+fake_node() { mkdir -p "$1/.nvm/versions/node/v$2/bin"; printf '#!/bin/sh\n' > "$1/.nvm/versions/node/v$2/bin/node"; chmod +x "$1/.nvm/versions/node/v$2/bin/node"; }
+cp "$script_under_test" "$nv/tools/setup-worktree.sh"
+
+# 12. A node under $NVM_DIR and a pnpm under $PNPM_HOME are found; the bin dirs are named and the export line printed.
+# No .nvmrc exists here, which must not print a stray redirect error either.
+h="$work/h12"; fake_node "$h" 22.1.0; mkdir -p "$h/pnpm"; printf '#!/bin/sh\n' > "$h/pnpm/pnpm"; chmod +x "$h/pnpm/pnpm"
+rm -f "$nv/.nvmrc"
+status=0; out="$(discover "$h" --no-build)" || status=$?
+if grep -q "using $h/pnpm $h/.nvm/versions/node/v22.1.0/bin\|using $h/.nvm/versions/node/v22.1.0/bin $h/pnpm" <<<"$out" \
+   && grep -q "export PATH=\"$h/.nvm/versions/node/v22.1.0/bin:$h/pnpm:\$PATH\"" <<<"$out" \
+   && ! grep -q "nvmrc: No such file or directory" <<<"$out"; then
+  ok "node and pnpm are found outside PATH, named, and the export line printed (no stray .nvmrc error)"
+else bad "node/pnpm discovery output wrong or a stray .nvmrc error appeared (status $status): $out"; fi
+
+# 13. NO NODE ANYWHERE, build requested: refused by name with status 2.
+h="$work/h13"; mkdir -p "$h"
+status=0; out="$(discover "$h")" || status=$?
+if [ "$status" -eq 2 ] && grep -q "node not found" <<<"$out"; then ok "no node anywhere, with a build requested, is refused by name"
+else bad "a missing node was not refused by name (status $status): $out"; fi
+
+# 14. A .nvmrc NAMING AN ABSENT VERSION falls back to the newest installed.
+h="$work/h14"; fake_node "$h" 1.0.0; fake_node "$h" 2.0.0; printf '99\n' > "$nv/.nvmrc"
+status=0; out="$(discover "$h" --no-build)" || status=$?
+if grep -q "versions/node/v2.0.0/bin" <<<"$out" && ! grep -q "versions/node/v1.0.0/bin" <<<"$out"; then ok "a .nvmrc naming an absent version falls back to the newest"
+else bad "no fallback to the newest (status $status): $out"; fi
+
+# 15. A .nvmrc NAMING A PRESENT VERSION is preferred over a newer one.
+h="$work/h15"; fake_node "$h" 1.0.0; fake_node "$h" 2.0.0; printf 'v1\n' > "$nv/.nvmrc"
+status=0; out="$(discover "$h" --no-build)" || status=$?
+if grep -q "versions/node/v1.0.0/bin" <<<"$out" && ! grep -q "versions/node/v2.0.0/bin" <<<"$out"; then ok "a .nvmrc naming a present version is preferred over a newer one"
+else bad ".nvmrc was not preferred (status $status): $out"; fi
 
 echo
 if [ "$fail" -ne 0 ] || [ "$pass" -ne "$expected" ]; then
