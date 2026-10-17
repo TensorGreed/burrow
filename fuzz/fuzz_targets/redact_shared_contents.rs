@@ -96,7 +96,13 @@ impl Shape {
         if !first.contains(&0) {
             return None;
         }
-        Some(self.pages.iter().flatten().filter(|slot| **slot == 0).count())
+        Some(
+            self.pages
+                .iter()
+                .flatten()
+                .filter(|slot| **slot == 0)
+                .count(),
+        )
     }
 
     /// The document, byte-exact.
@@ -187,7 +193,8 @@ fuzz_target!(|data: &[u8]| {
     // fuzz workspace stopped compiling -- which `cargo fuzz run <one target>` does not show,
     // because it builds one binary. `cargo +nightly check --bins` from `fuzz/` does.
     let options = OpenOptions::new(Limits::default(), std::sync::Arc::new(SystemClock::new()));
-    let Ok((out, _)) = burrow_engines::qpdf::Qpdf.redact_page(&document, 0, &redacted, region, &options)
+    let Ok((out, _)) =
+        burrow_engines::qpdf::Qpdf.redact_page(&document, 0, &redacted, region, &options)
     else {
         // A refusal is an outcome. Which refusal is the unit suite's question, because a
         // fixture there can be built to be certain what the region reaches.

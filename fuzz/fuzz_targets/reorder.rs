@@ -216,10 +216,7 @@ fuzz_target!(|data: &[u8]| {
                     &engine,
                     document.to_vec().into_boxed_slice(),
                     &identity,
-                    &OpenOptions::new(
-                        limits(),
-                        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
-                    ),
+                    &OpenOptions::new(limits(), Arc::new(ManualClock::new(0)) as Arc<dyn Clock>),
                 )
                 .ok()
                 .and_then(|plain| page_count(&engine, &plain));

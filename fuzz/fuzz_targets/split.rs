@@ -137,7 +137,9 @@ fuzz_target!(|data: &[u8]| {
                     // the operation.
                     continue;
                 };
-                let pages = engine.pages(&source).expect("a reopened output has a page count");
+                let pages = engine
+                    .pages(&source)
+                    .expect("a reopened output has a page count");
                 assert!(
                     pages <= limits().max_pages,
                     "an output has more pages than the ceiling allows"
@@ -154,7 +156,8 @@ fuzz_target!(|data: &[u8]| {
             if let Ok(source) = engine.open(document.to_vec().into_boxed_slice(), &options) {
                 if let Ok(expected) = engine.pages(&source) {
                     assert_eq!(
-                        total, expected,
+                        total,
+                        expected,
                         "the outputs do not partition the document: {total} pages across \
                          {} outputs, from a {expected}-page source",
                         outputs.len()

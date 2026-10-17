@@ -36,8 +36,9 @@
 #![no_main]
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, ExtGStateLine, Form, Glyph, GlyphMetrics, LineParameter, MAX_GLYPHS,
-    check_type_three_image_inside, check_type_three_procedure, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
+    Encoding, ExtGStateLine, Form, Glyph, GlyphMetrics, LineParameter, MAX_GLYPHS, Matrix, Rect,
+    Refusal, Resources, Watch, check_type_three_image_inside, check_type_three_procedure,
+    glyphs_in,
 };
 use burrow_types::{Deadline, Error, Limits, ManualClock, Result};
 use libfuzzer_sys::fuzz_target;

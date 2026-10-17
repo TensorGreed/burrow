@@ -102,9 +102,9 @@ fuzz_target!(|data: &[u8]| {
     // target 15x its sibling's executions per second for the same evidence: the interesting
     // offsets are the boundaries, and the stride keeps the interior honest.
     let stride = 1 + joined.len() / 512;
-    let edges = starts.iter().flat_map(|&(start, end)| {
-        [start, end.saturating_sub(1), end, end + 1].into_iter()
-    });
+    let edges = starts
+        .iter()
+        .flat_map(|&(start, end)| [start, end.saturating_sub(1), end, end + 1].into_iter());
     for offset in edges.chain((0..joined.len()).step_by(stride)) {
         let Some(&byte) = joined.get(offset) else {
             continue;
