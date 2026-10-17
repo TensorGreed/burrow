@@ -12,9 +12,9 @@ on:
   pull_request:
     branches: [main]
   # THE MERGE QUEUE (owner, 2026-10-16). With "Require merge queue" on `main`, the queue merges
-  # a PR only once the required `ci` check-run passes on the queue's merge commit, so every check
+  # a PR only once the required `ci-ok` check-run passes on the queue's merge commit, so every check
   # that feeds it must run on this event too. Every job here does: none is gated on the event, on
-  # `github.head_ref` or on a path filter, the aggregate `ci` job runs under `always()`, and the
+  # `github.head_ref` or on a path filter, the `ci-ok` job runs under `always()`, and the
   # concurrency group below keys on `github.ref`, which is unique per merge group. Not added to
   # `deploy.yml`, whose triggers `tools/check-deploy-workflow.py` holds to exactly `push` and
   # `workflow_dispatch`.
@@ -490,7 +490,7 @@ jobs:
         run: engines/fetch.sh
 
       # cargo-fuzz takes a couple of minutes to build and this job is in the required
-      # `ci` gate, so every PR would pay for it. Keyed on the version, so a bump
+      # `ci-ok` gate, so every PR would pay for it. Keyed on the version, so a bump
       # invalidates the cache rather than silently keeping the old binary.
       - name: Cache cargo-fuzz
         id: cargo-fuzz-cache
@@ -1146,35 +1146,18 @@ jobs:
           path: apps/web/playwright-report/
           retention-days: 7
 
-  # A single required status check, so branch protection does not need updating every
-  # time a job is added.
-  ci:
-    name: ci
-    runs-on: ubuntu-latest
-    if: always()
-    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web]
-    steps:
-      - name: Fail if any job failed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: |
-          echo "One or more CI jobs failed." >&2
-          exit 1
-      - run: echo "All CI jobs passed."
-
-  # THE ONE REQUIRED CHECK, once the ruleset names it in place of `ci` (owner, 2026-10-16). It
-  # needs EVERY other job directly -- `needs.*.result` lists only direct needs -- and fails on any
-  # result that is not `success`: `failure`, `cancelled` and `skipped` alike. That closes the
-  # skipped-job half: `ci` above treats a skipped job as passing. It does not close #275's
-  # run-level shape (a run `failure` with every job `success`), which still is read from `main`'s
+  # THE ONE REQUIRED CHECK (the ruleset names it; owner, 2026-10-16). It needs EVERY other job
+  # directly -- `needs.*.result` lists only direct needs -- and fails on any result that is not
+  # `success`: `failure`, `cancelled` and `skipped` alike. It does not close #275's run-level
+  # shape (a run `failure` with every job `success`), which still is read from `main`'s
   # post-merge push run, as DECISIONS rule 11's amendment says.
-  # `ci` stays until the ruleset is switched: removing it first would leave the required check it
-  # names unreported, and nothing could merge. `tools/check-ci-ok.py needs`, in the `deny` job,
-  # fails if a job is ever added without being added here.
+  # `tools/check-ci-ok.py needs`, in the `deny` job, fails if a job is ever added without being
+  # added here.
   ci-ok:
     name: ci-ok
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web, ci]
+    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Every job succeeded

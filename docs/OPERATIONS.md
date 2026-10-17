@@ -130,7 +130,8 @@ credential boundary rests on them. Confirm each when setting this up, and after 
    not repository secrets.** As environment secrets they are reachable only by a job that names
    `environment: production` (the `publish` job), and the environment's branch/tag policy then
    governs when that is. As repo secrets they would be reachable from any job.
-3. **The branch ruleset on `main` must require `ci` to pass.** The preconditions lean on "a green
+3. **The branch ruleset on `main` must require `ci-ok` to pass** (in place of the old `ci` job,
+   removed 2026-10-17). The preconditions lean on "a green
    `ci` push-run on `main` means the commit passed CI"; that meaning comes from the branch
    ruleset, not from the deploy workflow.
 

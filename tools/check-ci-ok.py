@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The `ci-ok` gate: one required check that is green only when EVERY other CI job succeeded.
 
-WHY (owner, 2026-10-16). The old aggregate `ci` job failed only on `failure` or `cancelled`, so a
-SKIPPED job read as passing. `ci-ok`, once the ruleset requires it in place of `ci`, closes that:
+WHY (owner, 2026-10-16). The old aggregate `ci` job (removed 2026-10-17) failed only on `failure`
+or `cancelled`, so a SKIPPED job read as passing. `ci-ok`, which the ruleset has required in its
+place since 2026-10-16, closes that:
 it `needs:` every other job directly and fails on any result that is not `success`.
 
 WHAT IT DOES NOT CLOSE, stated: the merge queue enforces a required check-run, not the run-level
