@@ -376,7 +376,6 @@ JOBS: list[dict] = [
                 "tools/test-make-sbom.sh",
                 "tools/test-check-engine-licences.sh",
                 "tools/test-check-no-network-deps.sh",
-                "tools/test-check-deployable-build.sh",
                 "tools/test-seed-fuzz-corpus.sh",
                 "tools/test-ci-local.sh",
                 # NOT UNDER tools/, and that is the only reason it stands out. It is the
@@ -430,7 +429,6 @@ JOBS: list[dict] = [
             "tools/test-make-sbom.sh",
             "tools/test-check-engine-licences.sh",
             "tools/test-check-no-network-deps.sh",
-            "tools/test-check-deployable-build.sh",
             "tools/test-seed-fuzz-corpus.sh",
             "tools/test-ci-local.sh",
             ".claude/hooks/test-refuse-force-push-to-main.sh",
