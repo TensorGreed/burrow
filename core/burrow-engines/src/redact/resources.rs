@@ -1017,7 +1017,7 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
         object_type::NAME => match encoding.name() {
             // `Encoding::Predefined` wants the registry name WITHOUT its slash, which is how
             // `predefined_writing_mode` matches the `-H`/`-V` convention.
-            Ok(name) => Encoding::Predefined(name.plain().to_vec()),
+            Ok(name) => Encoding::Predefined(name.plain().into()),
             Err(_) => Encoding::UnreadableCMap,
         },
         object_type::STREAM => {
@@ -1031,7 +1031,7 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
             match encoding.stream_data()? {
                 Some(program) => Encoding::Embedded {
                     dictionary_wmode: wmode,
-                    program,
+                    program: program.into(),
                 },
                 // THE RESOLVER COULD NOT READ IT, and says so rather than defaulting. See
                 // `Encoding::UnreadableCMap`: horizontal-by-omission is the leak direction.

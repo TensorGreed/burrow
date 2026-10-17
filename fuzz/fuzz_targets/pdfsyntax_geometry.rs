@@ -148,11 +148,11 @@ fuzz_target!(|data: &[u8]| {
         // leave the derivation -- and the two refusals hanging off it -- unexplored.
         encoding: match control[5] % 4 {
             0 => Encoding::Simple,
-            1 => Encoding::Predefined(body.to_vec()),
+            1 => Encoding::Predefined(body.into()),
             2 => Encoding::UnreadableCMap,
             _ => Encoding::Embedded {
                 dictionary_wmode: (control[4] % 3 != 0).then(|| i64::from(control[4] % 3) - 1),
-                program: body.to_vec(),
+                program: body.into(),
             },
         },
         // THE FORM TABLE IS WIRED FROM THE SAME BYTES, so a cycle or a sixteen-deep nest is a
