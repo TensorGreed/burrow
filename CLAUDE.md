@@ -377,8 +377,10 @@ those at full candour is working and is not what "summarise" is asking you to sh
   merge-group run, entered with `gh pr merge --auto`; until then it is GitHub CI, green on the PR's
   exact head commit.** Until then, read the verdict per job with
   `gh run view <id> --json conclusion,jobs,headSha`, and check that `headSha` is the PR's head.
-  The queue enforces the required `ci` check-run rather than the run-level conclusion, so after a
-  queued merge, `main`'s post-merge push run is read as DECISIONS rule 11's amendment says.
+  The queue enforces a required check-run rather than the run-level conclusion. Once the ruleset
+  requires `ci-ok`, which needs every job and fails on any result but `success`, a skipped job can
+  no longer pass; a run-level failure with every job green still can, so after a queued merge
+  `main`'s post-merge push run is read as DECISIONS rule 11's amendment says.
   That is two changes from "run everything before every push".
 
   **The first, in M2: the pre-push gate became `--changed`.** The old rule had stopped being
