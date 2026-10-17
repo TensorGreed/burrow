@@ -258,6 +258,10 @@ one is decided in an issue, with the same three parts.
     the render total. *Does not cover:* code every tool needs, which is budgeted as rule 6 says;
     and the per-line budgets themselves, which still apply.
 
+23. **Every merge names the review(s) it satisfied under rule 17; a merge with no named review is a
+    stop.** *Decided:* owner, 2026-10-16. *Does not cover:* what a review must find, which rule 17
+    and rule 15 set; this rule only makes the review visible at the merge.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new acceptance rule from here (rule 17): **before writing code**, give the
