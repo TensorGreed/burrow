@@ -168,7 +168,7 @@ jobs:
           node tools/report-size-budget.mjs apps/web/dist >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the payload for the publish job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: production-dist
           path: apps/web/dist
@@ -507,7 +507,7 @@ jobs:
       # `sign` consumes comes from here -- exactly what was deployed, after every gate. `sign`
       # re-verifies it, so a tampered re-upload is caught there too.
       - name: Hand the deployed payload to the signing job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: production-dist
           path: apps/web/dist
