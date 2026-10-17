@@ -261,6 +261,14 @@ one is decided in an issue, with the same three parts.
     stop.** *Decided:* owner, 2026-10-16. *Does not cover:* what a review must find, which rule 17
     and rule 15 set; this rule only makes the review visible at the merge.
 
+24. **Launch scope: slice 2b and two narrowings move to post-launch.** Slice 2b (refuse ink removal
+    on pages with `/StructParents` or an `/MCID`; the ADR 0029 amendment, lane 1d), the `/Link`
+    narrowing and the iOS offset-0 narrowing (lane 1e) are post-launch. Lane 1's queue after the
+    Chrome split fix (1a) is #344 (1b), then the core ink half of #206 (1c), and nothing else.
+    This is the launch plan of rule 17, narrowed. *Decided:* owner, 2026-10-17. *Does not cover:*
+    the final spec review, which still hunts the whole class, or whether any of the three comes
+    back before a later milestone.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new acceptance rule from here (rule 17): **before writing code**, give the
