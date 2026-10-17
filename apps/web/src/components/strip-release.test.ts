@@ -10,8 +10,16 @@ function tile(state: ReleasableTile["state"], pixels: number[] | null): Releasab
 const zero = (a: Uint8ClampedArray) => [...a].every((b) => b === 0);
 
 describe("a tile's pixels are zeroed when the strip lets go of them (#199, D4)", () => {
+  // Each reason's states, with `evictedState` passed every time: a `releaseTiles` that applied it
+  // whatever the reason, or ignored the reason altogether, gives one of these the wrong states.
+  const statesAfter = {
+    evict: ["released", "released", "released"],
+    document: ["drawn", "drawn", "waiting"],
+    pagehide: ["waiting", "waiting", "waiting"],
+    unmount: ["drawn", "drawn", "waiting"],
+  } as const;
   for (const reason of ["evict", "document", "pagehide", "unmount"] as const) {
-    it(`zeroes every tile's pixels on ${reason}, and drops them`, () => {
+    it(`zeroes every tile's pixels on ${reason}, drops them, and gives each tile ${reason}'s state`, () => {
       const tiles = [
         tile("drawn", [9, 8, 7, 6]),
         tile("drawn", [5, 4, 3, 2]),
@@ -22,7 +30,7 @@ describe("a tile's pixels are zeroed when the strip lets go of them (#199, D4)",
       for (const pixels of held)
         if (pixels) expect(zero(pixels), `${reason} kept a picture`).toBe(true);
       expect(out.every((t) => t.data === null)).toBe(true);
-      expect(out).toHaveLength(3);
+      expect(out.map((t) => t.state)).toEqual(statesAfter[reason]);
     });
   }
 
@@ -36,10 +44,16 @@ describe("a tile's pixels are zeroed when the strip lets go of them (#199, D4)",
     expect(out.map((t) => t.state)).toEqual(["waiting", "refused"]);
   });
 
-  it("keeps each state on a document change and an unmount", () => {
-    const out = releaseTiles([tile("drawn", [1])], "document");
-    expect(out[0]!.state).toBe("drawn");
-  });
+  for (const reason of ["document", "unmount"] as const) {
+    it(`keeps each state on ${reason}, even with an evicted state passed`, () => {
+      const out = releaseTiles(
+        [tile("drawn", [1]), tile("refused", null), tile("waiting", null)],
+        reason,
+        "released",
+      );
+      expect(out.map((t) => t.state)).toEqual(["drawn", "refused", "waiting"]);
+    });
+  }
 });
 
 describe("pixels with nowhere to go are zeroed", () => {

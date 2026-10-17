@@ -341,8 +341,10 @@ test("a document chosen while a render is in flight is drawn once it settles, an
   // The new document's tiles, not yet drawn: the held render is still in flight.
   await expect(page.locator(".strip__tile")).toHaveCount(4);
   await expect(page.locator(".strip__canvas")).toHaveCount(0);
-  // RELEASED SHORT OF `END_DEADLINE_MS`, and the old worker still alive: so the end this test
-  // reaches is the one that waits for the render to settle, not the deadline's.
+  // RELEASED SHORT OF `END_DEADLINE_MS`, with the old worker still alive: so the end was not
+  // taken while the render was held. Nothing here times the close itself; what this test
+  // distinguishes is that no old page is painted and that the new document is drawn by a worker
+  // of its own (the re-pump), below.
   await page.waitForTimeout(300);
   expect(ended.closedYet(), "the old worker ended before its render settled").toBe(false);
   expect(Date.now() - changed, "the hold ran into the end deadline").toBeLessThan(END_DEADLINE_MS);
