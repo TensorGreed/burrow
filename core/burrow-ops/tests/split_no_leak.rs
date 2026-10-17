@@ -1458,3 +1458,106 @@ fn a_chrome_printed_document_splits() {
         Err(error) => panic!("a Chrome-printed document must split (#358); refused: {error}"),
     }
 }
+
+/// The empty names in `pdf`'s object text, stream bodies cut out: a `/` followed by white space or
+/// a delimiter, which is an empty name wherever it stands in a key or a value. Stream bodies are
+/// binary, and a `/ ` can occur in them by chance, so they are not read; a part that wrote an
+/// object stream would hide its members from this, so one is reported as well.
+fn empty_names(pdf: &[u8]) -> usize {
+    fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        haystack
+            .get(from..)?
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|at| at + from)
+    }
+    let mut text = Vec::new();
+    let mut at = 0;
+    let mut from = 0;
+    while let Some(start) = find(pdf, b"stream", from) {
+        let body = start + b"stream".len();
+        from = body;
+        if start >= 3 && &pdf[start - 3..start] == b"end" {
+            continue;
+        }
+        text.extend_from_slice(&pdf[at..body]);
+        match find(pdf, b"endstream", body) {
+            Some(end) => {
+                at = end;
+                from = end;
+            }
+            None => {
+                at = pdf.len();
+                break;
+            }
+        }
+    }
+    text.extend_from_slice(&pdf[at.min(pdf.len())..]);
+    let delimiter = |byte: u8| b" \t\r\n\x0c\0()<>[]{}/%".contains(&byte);
+    let objstm = usize::from(find(&text, b"/ObjStm", 0).is_some());
+    objstm
+        + text
+            .iter()
+            .enumerate()
+            .filter(|&(i, &byte)| {
+                byte == b'/' && text.get(i + 1).is_none_or(|&next| delimiter(next))
+            })
+            .count()
+}
+
+/// THE PROBE FOR `empty_names`, so a count of zero below is a measurement: it finds the empty key
+/// and both empty values, and passes the near-miss twins, a one-byte name in each place.
+#[test]
+fn the_empty_name_finder_finds_each_shape_and_passes_its_twin() {
+    for (what, found, twin) in [
+        (
+            "an empty key",
+            "<</ [1 0 R /XYZ 0 0 0]>>",
+            "<</A [1 0 R /XYZ 0 0 0]>>",
+        ),
+        (
+            "a value before LF",
+            "<</Dest /\n/F 4>>",
+            "<</Dest /A\n/F 4>>",
+        ),
+        ("a value before >>", "<</F 4 /Dest />>", "<</F 4 /Dest /A>>"),
+    ] {
+        assert_eq!(empty_names(found.as_bytes()), 1, "{what}");
+        assert_eq!(empty_names(twin.as_bytes()), 0, "{what}: twin");
+    }
+    assert_eq!(
+        empty_names(b"stream\n/ / /\nendstream <</A 1>>"),
+        0,
+        "a stream body is not read"
+    );
+}
+
+/// EACH PART OF A CHROME-PRINTED SPLIT carries no empty name: neither the empty `/Dests` key nor an
+/// empty `/Dest` value, in the untagged print (the value closes its dictionary) and the tagged one
+/// (the value is followed by a line break), on top of the part count. The source holds them, so the
+/// finder is shown to see them before it is asked to find none.
+#[test]
+fn the_parts_of_a_chrome_printed_split_carry_no_empty_name() {
+    for name in ["chrome-printed.pdf", "chrome-printed-tagged.pdf"] {
+        let pdf = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/conformance/fixtures")
+                .join(name),
+        )
+        .expect("the committed Chrome-printed fixture");
+        assert!(
+            empty_names(&pdf) >= 3,
+            "{name}: the source should hold the empty key and the empty values, or this \
+             test measures nothing"
+        );
+        let parts = split_first(pdf, &[1]).unwrap_or_else(|e| panic!("{name}: refused: {e}"));
+        assert_eq!(parts.len(), 2, "{name}: a split after page 1 of two pages");
+        for (index, part) in parts.iter().enumerate() {
+            assert_eq!(
+                empty_names(part),
+                0,
+                "{name}: part {index} carries an empty name (or an object stream hides one)"
+            );
+        }
+    }
+}

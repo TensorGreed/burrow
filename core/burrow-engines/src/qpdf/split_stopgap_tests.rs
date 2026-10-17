@@ -555,6 +555,78 @@ fn an_empty_dests_key_is_admitted_only_when_dests_is_written_once() {
     );
 }
 
+/// `pdf`, a [`classic`] file, with `key` added to its trailer.
+fn with_trailer_key(pdf: &[u8], key: &str) -> Vec<u8> {
+    let text = String::from_utf8(pdf.to_vec()).expect("ASCII");
+    assert!(text.contains("/Root 1 0 R >>"), "the trailer to add to");
+    let out = text.replacen("/Root 1 0 R >>", &format!("/Root 1 0 R {key} >>"), 1);
+    assert_ne!(out, text, "the trailer key was added");
+    out.into_bytes()
+}
+
+/// A TRAILER THAT ALSO NAMES `/Dests` refuses the empty key: the trailer is a referrer, so the
+/// catalog's entry is no longer the dictionary's sole one. The twin names an object that is not the
+/// `/Dests` dictionary, and the same document opens.
+#[test]
+fn an_empty_dests_key_refuses_when_the_trailer_also_names_dests() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let base = classic(&document(
+        DESTS_CATALOG,
+        "",
+        SHOWN,
+        &[(
+            6,
+            0,
+            "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>".to_owned(),
+        )],
+    ));
+    opens("the base document", &base);
+    opens(
+        "the twin: the trailer names another object",
+        &with_trailer_key(&base, "/X 5 0 R"),
+    );
+    refuses(
+        "the trailer also names /Dests",
+        &with_trailer_key(&base, "/X 6 0 R"),
+        "[split-name-read-differently]",
+    );
+}
+
+/// A CROSS-REFERENCE STREAM'S `/Root` counts as an object naming the catalog, so the empty
+/// `/Dests` key refuses in a file whose only `/Root` lives there: a RECORDED OVER-REFUSAL (it fails
+/// closed), pinned so that a later relaxation shows up here as an acceptance. The twins: the same
+/// file with a named key opens, and the same empty key behind a classic trailer opens.
+#[test]
+fn an_empty_dests_key_refuses_behind_an_xref_stream_root_as_a_recorded_over_refusal() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let file = |dests: &str| {
+        with_object_stream(
+            &document(DESTS_CATALOG, "", SHOWN, &[(6, 0, dests.to_owned())]),
+            9,
+            0,
+            &[(7, "<< /Harmless true >>".to_owned())],
+        )
+    };
+    opens(
+        "the twin: a named key behind an xref stream",
+        &file("<< /A [3 0 R /XYZ 0 400 0] >>"),
+    );
+    opens(
+        "the twin: the empty key behind a classic trailer",
+        &classic(&document(
+            DESTS_CATALOG,
+            "",
+            SHOWN,
+            &[(6, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned())],
+        )),
+    );
+    refuses(
+        "the empty key, /Root in an xref stream",
+        &file("<< / [3 0 R /XYZ 0 400 0] >>"),
+        "[split-name-read-differently]",
+    );
+}
+
 /// `base` with an incremental update rewriting object `number` as `body`.
 fn with_revision(base: &[u8], number: i32, body: &str) -> Vec<u8> {
     let text = String::from_utf8_lossy(base);
