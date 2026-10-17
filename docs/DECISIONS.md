@@ -79,16 +79,17 @@ one is decided in an issue, with the same three parts.
     the `push` run on the identical merged tree concluded `success`. *Does not cover:* a run whose
     non-success is a real job/step failure — that is an ordinary red, fix it.
 
-    **Amended 2026-10-16: through the merge queue.** Once the owner enables "Require merge queue"
-    on `main`, a PR merges with `gh pr merge --auto`, and what the queue enforces is the required
-    **`ci` check-run** on the merge-group commit -- not the run-level conclusion this rule is about.
-    So a #275-shaped run (a run-level `failure` with every job green) would still merge, and with
-    `--auto` nobody reads the run before it does. That residual is read afterwards, from `main`'s
-    post-merge `push` run: a non-success there is treated as this rule says, investigated and
-    resolved before the next merge. **`ci-ok`, once the ruleset requires it in place of `ci`,
-    closes the job-level half of that gap and not the rest.** It needs every other job directly
-    and fails unless each one's result is `success`, so a skipped job -- which `ci` counted as
-    passing; it already failed on a cancelled one -- can no longer yield a green required check, and
+    **Amended 2026-10-16: through the merge queue.** Once the owner enables "Require merge queue" on
+    `main`, a PR merges with `gh pr merge --auto`, and what the queue enforces is the required
+    **`ci` check-run** (since 2026-10-16, `ci-ok`) on the merge-group commit -- not the run-level
+    conclusion this rule is about. So a #275-shaped run (a run-level `failure` with every job green)
+    would still merge, and with `--auto` nobody reads the run before it does. That residual is read
+    afterwards, from `main`'s post-merge `push` run: a non-success there is treated as this rule
+    says, investigated and resolved before the next merge. **`ci-ok`, which the ruleset requires in
+    place of `ci` since 2026-10-16, closes the job-level half of that gap and not the rest.** It
+    needs every other job directly and fails unless each one's result is `success`, so a skipped job
+    -- which `ci` counted as passing; it already failed on a cancelled one -- can no longer yield a
+    green required check, and
     `tools/check-ci-ok.py`
     fails CI if a job is added without being added to it. It cannot see #275's own shape, a
     run-level `failure` with every job `success`: every result it reads is then `success`. That
