@@ -454,7 +454,7 @@ const PERMITTED: [&str; 5] = [
 ];
 
 /// Names the scan must REJECT, one probe each: what a character says, a page's text, and the ink
-/// box R1 does not read until #344. Not the rule -- the rule is the equality with [`PERMITTED`],
+/// box R1 does not read until #206's ink half. Not the rule -- the rule is the equality with [`PERMITTED`],
 /// which rejects every other name too -- but the shapes the scan is shown to see.
 const REJECTED: &[&str] = &[
     "FPDFText_GetUnicode",

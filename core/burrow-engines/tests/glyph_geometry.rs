@@ -526,6 +526,7 @@ impl Resources for Helvetica {
                 right: 1000.0,
                 top: 931.0,
             }),
+            font_bbox_usable: true,
             font_matrix: Matrix::scale(0.001, 0.001),
             encoding: Encoding::Simple,
         })
@@ -757,6 +758,7 @@ impl Resources for CidFont {
                 right: 1000.0,
                 top: 900.0,
             }),
+            font_bbox_usable: true,
             font_matrix: Matrix::scale(0.001, 0.001),
             encoding: self.encoding.clone(),
         })
@@ -1034,6 +1036,7 @@ impl Resources for DeclaredWidths {
                 right: 1000.0,
                 top: 931.0,
             }),
+            font_bbox_usable: true,
             font_matrix: Matrix::scale(0.001, 0.001),
             encoding: Encoding::Simple,
         })
@@ -1423,6 +1426,7 @@ impl Resources for TestResources {
             width: FIXTURE_WIDTH,
             bytes_per_code: 1,
             font_bbox: None,
+            font_bbox_usable: false,
             font_matrix: Matrix::scale(0.001, 0.001),
             encoding: Encoding::Simple,
         })
@@ -1505,6 +1509,64 @@ fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
         assert!(
             drawn_characters(&chars).len() == 4,
             "which `drawn_characters` removes, leaving the four glyphs the file draws"
+        );
+    }
+}
+
+/// P2 and P3 on real pages: the real resolver's conservative boxes against PDFium's ink (#344).
+///
+/// Before #344 nothing called `assert_agrees` on a box the real resolver built -- only on the
+/// deliberate-mismatch control -- so P3's bound was never measured against a real glyph. It is
+/// here, on two producers' pages whose fonts declare their boxes in the `/FontDescriptor`, and the
+/// test also counts how many glyphs P3 against the LOOSE BOX ALONE would have failed: the reason
+/// the floor was re-derived, measured rather than asserted.
+#[test]
+fn real_producer_boxes_contain_their_ink_and_stay_near_their_floor() {
+    use burrow_engines::pdfsyntax::geometry::{ENVELOPE_RULE, EnvelopeRule};
+    use support::char_box_oracle::{MAX_CONSERVATIVE_AREA_RATIO, area, assert_agrees};
+    let mut examined = 0;
+    let mut loose_alone_fails = 0;
+    for name in ["producer-writer-untagged.pdf", "producer-latex.pdf"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/redaction/fixtures")
+            .join(name);
+        let pdf = std::fs::read(&path).expect("the committed fixture");
+        let walked = burrow_engines::glyphs_on_first_page(&pdf, &support::walk_options())
+            .unwrap_or_else(|error| panic!("{name}: the real resolver refused: {error:?}"));
+        let chars = chars_on_page(&pdf, 0);
+        let drawn: Vec<OracleChar> = drawn_characters(&chars).into_iter().cloned().collect();
+        let boxes: Vec<Rect> = walked
+            .iter()
+            .map(|glyph| {
+                let b = glyph.conservative_box();
+                Rect {
+                    left: b.left,
+                    bottom: b.bottom,
+                    right: b.right,
+                    top: b.top,
+                }
+            })
+            .collect();
+        assert_agrees(&boxes, &drawn, name);
+        examined += boxes.len();
+        loose_alone_fails += boxes
+            .iter()
+            .zip(&drawn)
+            .filter(|(mine, theirs)| {
+                area(mine) > area(&theirs.loose) * MAX_CONSERVATIVE_AREA_RATIO + 1.0
+            })
+            .count();
+    }
+    eprintln!(
+        "P2/P3 examined {examined} glyph(s); P3 against the loose box alone would fail \
+         {loose_alone_fails}"
+    );
+    assert!(examined > 100, "examined only {examined} glyph(s)");
+    if ENVELOPE_RULE == EnvelopeRule::Always {
+        assert!(
+            loose_alone_fails > 0,
+            "no glyph would fail P3 against the loose box alone, so the re-derived floor is not \
+             what this rule needs -- re-measure before keeping it"
         );
     }
 }

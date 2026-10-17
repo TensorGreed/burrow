@@ -101,7 +101,13 @@ struct FontFacts {
     widths: Vec<f64>,
     missing_width: Option<f64>,
     font_matrix: Matrix,
+    /// Every box the font declares, unioned (#344): the font dictionary's `/FontBBox`, its
+    /// `/FontDescriptor`'s, and for a Type 0 font its descendant's descriptor's. `None` when none
+    /// of them is four numbers. See [`declare_box`].
     font_bbox: Option<Rect>,
+    /// Whether any ONE declared box has area -- not their union, which two lines can give. Read
+    /// only by the narrower envelope rule; see `pdfsyntax::geometry::EnvelopeRule`.
+    font_bbox_usable: bool,
     bytes_per_code: u8,
     encoding: Encoding,
     /// `/W` and `/DW` for a CID font, in CID order.
@@ -516,6 +522,7 @@ impl<O: PdfObject> Resources for PageResources<O> {
             width,
             bytes_per_code: facts.bytes_per_code,
             font_bbox: facts.font_bbox,
+            font_bbox_usable: facts.font_bbox_usable,
             font_matrix: facts.font_matrix,
             encoding: facts.encoding.clone(),
         })
@@ -753,7 +760,9 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// past 2^24 or a `/Differences` past [`MAX_NUMBER_ARRAY`] items; [`Error::Malformed`] naming
 /// `type3-matrix`, or `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths`
 /// declared; [`Error::Unsupported`] naming `encoding-not-a-dictionary` for a simple font whose
-/// `/Encoding` is a stream (#180); and whatever [`read_composite`] refuses for a Type 0 font.
+/// `/Encoding` is a stream (#180); `number-unreadable` for a `/FontBBox` -- the dictionary's or the
+/// descriptor's -- holding a non-number or more than four items (#344); and whatever
+/// [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
@@ -763,7 +772,8 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         missing_width: None,
         // 0.001 for every font but Type 3, which declares its own.
         font_matrix: Matrix::scale(0.001, 0.001),
-        font_bbox: rect_of(&font.key(&FONT_BBOX))?,
+        font_bbox: None,
+        font_bbox_usable: false,
         bytes_per_code: 1,
         encoding: Encoding::Simple,
         cid_widths: BTreeMap::new(),
@@ -774,6 +784,9 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         differences: BTreeMap::new(),
         type_three: subtype == Some(SUBTYPE_TYPE3),
     };
+    // THE FONT DICTIONARY'S OWN `/FontBBox`: the standard place for a Type 3 font, and harmless to
+    // union for any other (#344).
+    declare_box(&mut facts, &font.key(&FONT_BBOX))?;
 
     // A SIMPLE FONT'S `/Encoding` THAT IS A STREAM REFUSES (#180's third shape), HERE, where every
     // simple font is read. qpdf answers null for a stream's keys, so its `/BaseEncoding` and
@@ -857,6 +870,9 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
             .any(|key| descriptor.key(key).type_code() != object_type::NULL);
     if descriptor.type_code() == object_type::DICTIONARY {
         facts.missing_width = number_strict(&descriptor.key(&MISSING_WIDTH))?;
+        // THE DESCRIPTOR'S `/FontBBox` (#344), where every Type 1, TrueType and (PDF 1.5+) Type 3
+        // font declares it. Unioned with the dictionary's, never chosen between: see `declare_box`.
+        declare_box(&mut facts, &descriptor.key(&FONT_BBOX))?;
     }
     // `/Flags`, READ AS PDFIUM READS IT -- a reference resolved, a whole number -- and refused where
     // it changes the glyph a code draws (#290, #297). A non-whole or out-of-range value refuses too:
@@ -1001,14 +1017,16 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     Ok(facts)
 }
 
-/// A Type 0 font: the descendant's `/W` and `/DW`, and the `/Encoding` CMap.
+/// A Type 0 font: the descendant's `/W` and `/DW`, its descriptor's `/FontBBox` (#344), and the
+/// `/Encoding` CMap.
 ///
 /// # Errors
 ///
 /// [`Error::Malformed`] naming `descendant-fonts`, for no descendant or one that is not a dictionary
 /// (#180); [`Error::Unsupported`] naming `width-source` for a descendant `/FontDescriptor` that is
 /// neither absent nor a dictionary, and `number-unreadable` for a `/DW` or `/WMode` that is not a
-/// number; and whatever [`parse_w`] refuses.
+/// number, or a descendant descriptor's `/FontBBox` holding a non-number or more than four items;
+/// and whatever [`parse_w`] refuses.
 fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
     facts.bytes_per_code = 2;
 
@@ -1063,9 +1081,16 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
     }
     // AND ITS `/FontDescriptor`, as a simple font's is (#125's seventh security review): one that
     // is neither absent nor a dictionary is read by PDFium through a stream's dictionary.
-    let descriptor_kind = descendant.key(&FONT_DESCRIPTOR).type_code();
+    let descendant_descriptor = descendant.key(&FONT_DESCRIPTOR);
+    let descriptor_kind = descendant_descriptor.type_code();
     if descriptor_kind != object_type::NULL && descriptor_kind != object_type::DICTIONARY {
         return Err(width_source_refusal());
+    }
+    // THE DESCENDANT'S DESCRIPTOR CARRIES A COMPOSITE FONT'S BOX (#344) -- the one that matters;
+    // the Type 0 dictionary's own and its descriptor's, read by `read_font`, are non-standard and
+    // unioned with it.
+    if descriptor_kind == object_type::DICTIONARY {
+        declare_box(facts, &descendant_descriptor.key(&FONT_BBOX))?;
     }
     facts.default_width = number_strict(&descendant.key(&DW))?.or(Some(1000.0));
     facts.cid_widths = parse_w(&descendant.key(&W))?;
@@ -1458,12 +1483,51 @@ fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> Result<i64> {
     }
 }
 
-/// A box: `None` when absent or not four numbers, and a refusal when an item is not a number.
+/// The most items a box may hold: four. See [`rect_of`].
+const BOX_ITEMS: std::ffi::c_int = 4;
+
+/// One declared `/FontBBox`, added to the font's union (#344).
+///
+/// **Unioned, never chosen between**, so reading another place can only grow a glyph's box: a
+/// descriptor box smaller than the dictionary's, or than the advance box, shrinks nothing.
+/// **Every** four-number box is unioned, a zero-area one included: its line still reaches where
+/// it reaches (round 0 of #344 measured a Type 3 `/FontBBox [0 -1000 0 1000]` whose line was the
+/// only thing reaching one em below the baseline). Area decides only `font_bbox_usable`, which the
+/// narrower envelope rule reads.
 ///
 /// # Errors
 ///
-/// As [`numbers_strict`].
+/// As [`rect_of`].
+fn declare_box<O: PdfObject>(facts: &mut FontFacts, handle: &O) -> Result<()> {
+    if let Some(declared) = rect_of(handle)? {
+        facts.font_bbox = Some(match facts.font_bbox {
+            Some(union) => union.union(&declared),
+            None => declared,
+        });
+        facts.font_bbox_usable |= declared.right > declared.left && declared.top > declared.bottom;
+    }
+    Ok(())
+}
+
+/// A box: `None` when absent or not four numbers, and a refusal when an item is not a number or
+/// the array holds more than four.
+///
+/// # More than four items refuses, WITHOUT READING ONE (#344, owner 2026-10-17)
+///
+/// [`numbers_strict`] reads up to [`MAX_NUMBER_ARRAY`] items before an arity check could reject
+/// them, and #344 added read sites: a 65,536-item box shared by every font on a page cost a
+/// 65,536-item read per font. The count is checked first. A refusal rather than a fall-back,
+/// because falling back would move a Type 3 dictionary box holding a fifth, non-number item from
+/// refused (ADR 0029 row 133) to `Ok`. Census before the change: 0 of 100 real documents carry a
+/// `/FontBBox` of more than four items, in 1,852 sites.
+///
+/// # Errors
+///
+/// As [`numbers_strict`], and `number-unreadable` for an array of more than four items.
 pub(super) fn rect_of<O: PdfObject>(handle: &O) -> Result<Option<Rect>> {
+    if handle.type_code() == object_type::ARRAY && handle.array_len() > BOX_ITEMS {
+        return Err(number_unreadable());
+    }
     Ok(match numbers_strict(handle)?.as_deref() {
         Some([left, bottom, right, top]) => Some(Rect {
             left: left.min(*right),

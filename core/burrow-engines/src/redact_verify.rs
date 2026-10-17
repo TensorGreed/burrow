@@ -540,6 +540,7 @@ mod tests {
             text_to_page: Matrix::translate(x, y),
             advance: 1.0,
             font_bbox: None,
+            floor_envelope: false,
             font_size: 1.0,
             scaled_font_size: 1.0,
             stroke_reach: (0.0, 0.0),
