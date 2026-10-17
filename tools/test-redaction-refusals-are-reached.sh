@@ -9,14 +9,14 @@
 # fixtures by rule, and requires it to go red NAMING the fixtures the deletion frees:
 #
 #   optional-content      the redaction walk's refusal       evade-oc-inside-an-unused-type3-font
-#   split-oc-form-route   split's walk of a form's /Resources  layer-at-depth-2 .. 8
+#   split-oc-form-route   split's walk of a form's /Resources  layer-at-depth-2 (the loop stops there)
 #   split-oc-type3-route  split's walk of a font's /Resources  layer-in-type3-glyph
 #   image-in-region       an image `Do`'s ink box             evade-image-in-form, ...-two-levels-down
 #   vector-in-region      a fill's ink box                     evade-paths-in-form, ...-two-levels-down
 #   shading-in-region     `sh`'s ink box                       evade-shading-sh-in-form
 #   form-route            the ink a nested form draws          the four form evasions, and the shading
 #   acroform-field-ft     the /FT scan                         evade-widget-ft-on-parent, ...
-#   acroform-catalogue    the catalogue /AcroForm key          the direct-/Root catalogue test
+#   acroform-catalogue    the catalogue /AcroForm key          a direct /Root carrying an /AcroForm
 #   structure-tree        the whole structure-tree refusal     evade-struct-without-structparents, its twin
 #
 # EACH MUTATION IS ASSERTED TWICE BEFORE ITS RESULT COUNTS. That it applied: the anchor occurs
@@ -24,8 +24,9 @@
 # defence that holds. And that cargo REBUILT `burrow-engines` for it: cargo decides by mtime, and a
 # red read off a binary built before the plant is the previous mutation's result, not this one's.
 #
-# The plants compile warning-free under CI's `-D warnings`: a deletion is a branch on
-# `std::hint::black_box`, which the compiler cannot fold, so nothing becomes unreachable or unused.
+# The plants were MEASURED to compile warning-free under CI's `-D warnings` (this script does not
+# set RUSTFLAGS; CI does): a deletion is a branch on `std::hint::black_box`, which the compiler
+# cannot fold, so nothing becomes unreachable or unused.
 # Red for a compile error is red for the wrong reason, and `require_red` would refuse it -- it
 # matches on the fixture names, never on the exit status alone.
 #
@@ -59,6 +60,9 @@ done
 if [ ! -d "$repo/engines/vendor" ]; then
   echo "SKIP  every mutation: engines/vendor is absent (engines/fetch.sh && engines/build-native.sh)"
   echo "      Nothing was measured. This is not a pass."
+  # IN CI A SKIP IS A FAILURE: the job that runs this has the engines, so their absence there is
+  # the job broken, and a green that examined nothing is the outcome this script exists to refuse.
+  [ -z "${CI:-}" ] || exit 1
   exit 0
 fi
 
@@ -168,7 +172,10 @@ require_red() {
   plant "$name"
   local out status
   set +e
-  out="$("$@" 2>&1)"
+  # NO COLOUR: CI sets CARGO_TERM_COLOR=always, which wraps `Compiling` in escape codes and made
+  # the rebuild check below refuse every mutation as stale -- measured under ci-local. Colour is
+  # not part of cargo's fingerprint, so this forces no rebuild of its own.
+  out="$(CARGO_TERM_COLOR=never "$@" 2>&1)"
   status=$?
   set -e
   restore
@@ -235,7 +242,8 @@ run() {
         "evade-widget-ft-on-parent.pdf: refused, but not by \`acroform-field\`|evade-field-without-acroform.pdf: refused, but not by \`acroform-field\`" \
         $resolved ;;
     acroform-catalogue)
-      require_red "$1" "a_direct_root_catalogue_carrying_a_form_is_refused" \
+      # Its ASSERTION message, not the test's name, which any failure of the test would print.
+      require_red "$1" "a direct /Root catalogue carrying an inline /AcroForm must refuse [acroform-field]" \
         "${defences[@]}" a_direct_root_catalogue_carrying_a_form_is_refused ;;
     structure-tree)
       # The golden: the structure-tree fixtures are pinned there, region by region.

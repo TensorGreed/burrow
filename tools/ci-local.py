@@ -300,7 +300,8 @@ JOBS: list[dict] = [
     {
         # #125 slice 4. Deletes each of the five refusals' checks, and the routes the evasion
         # fixtures take, in turn; requires the suite pinning those fixtures by rule to go red
-        # naming them, after a rebuild of burrow-engines. Registered runtime: ~30 s warm.
+        # naming them, after a rebuild of burrow-engines. Measured: ~30 s with the tree warm
+        # (incremental), a few minutes cold.
         "name": "redaction-refusals-are-reached",
         "run": "tools/test-redaction-refusals-are-reached.sh",
         "covers": ["tools/test-redaction-refusals-are-reached.sh"],
