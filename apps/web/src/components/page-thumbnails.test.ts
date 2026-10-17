@@ -211,6 +211,19 @@ describe("the page-picture strip", () => {
     );
   });
 
+  it("drops a render frozen across the back-forward cache: pagehide moves generation (owner, 2026-10-16, (a))", () => {
+    // A worker frozen with the page mid-render is accepted; what it posts is not. Every page it
+    // delivers -- before the freeze, or after a persisted `pageshow` restores the page -- must
+    // arrive for a generation nobody shows, so the stale branch above zeroes it. `pagehide` always
+    // precedes a back-forward cache entry, so moving `generation` there, first, covers the restore;
+    // `pageshow` only asks again. The behaviour is `e2e/page-thumbnails.spec.ts`'s back-forward
+    // cache test, in three browsers.
+    expect(source).toMatch(/const onPageHide = \(\) => \{\s*hidden = true;\s*generation \+= 1;/);
+    expect(source).toMatch(
+      /const onPageShow = \(\) => \{\s*hidden = false;\s*void pump\(\);\s*\};/,
+    );
+  });
+
   it("sends the same LIMITS every other operation sends", () => {
     // Including `maxPixels`, which is the ceiling ADR 0027 chose. A strip that sent its own
     // limits would be a second place for them to be decided.
