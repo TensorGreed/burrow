@@ -141,7 +141,10 @@ fuzz_target!(|data: &[u8]| {
                 // THE CEILING DID NOT ESCAPE. `Fit` promises a maximum, and a page fitted into
                 // a box may never exceed it -- rounding included, which is the case the
                 // clamping in `fit_into` exists for.
-                assert!(w <= box_width && h <= box_height, "a raster exceeded its box");
+                assert!(
+                    w <= box_width && h <= box_height,
+                    "a raster exceeded its box"
+                );
                 assert!(w >= 1 && h >= 1, "a raster has a zero dimension");
                 assert!(
                     u64::from(w) * u64::from(h) <= limits().max_pixels,

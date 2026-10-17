@@ -140,9 +140,10 @@ fuzz_target!(|data: &[u8]| {
                 }),
                 Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
             );
-            let before = PageRotator::open(&engine, document.to_vec().into_boxed_slice(), &counting)
-                .ok()
-                .and_then(|source| engine.pages(&source).ok());
+            let before =
+                PageRotator::open(&engine, document.to_vec().into_boxed_slice(), &counting)
+                    .ok()
+                    .and_then(|source| engine.pages(&source).ok());
             let after = PageRotator::open(&engine, output.into_boxed_slice(), &counting)
                 .ok()
                 .and_then(|source| engine.pages(&source).ok());
