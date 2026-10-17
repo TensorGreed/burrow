@@ -53,6 +53,38 @@ for arg in "$@"; do
   esac
 done
 
+# NODE AND PNPM ON PATH (2026-10-17). A fresh shell often has neither -- nvm and pnpm's own installer
+# put them on PATH from a profile that a non-interactive shell never reads -- and `ci-local.py` then
+# refuses with "node not found". Nothing is hard-coded: look where those installers put them
+# (`$NVM_DIR`, else `~/.nvm`; `$PNPM_HOME`, else `~/.local/share/pnpm[/bin]`), use the node `.nvmrc` names
+# (else the newest) for this script, and PRINT the export line, because a script cannot change its caller's PATH.
+added=()
+if ! command -v node >/dev/null 2>&1; then
+  # The version `.nvmrc` names if nvm has it, else the newest installed.
+  want="$(tr -d 'v \n' < "$here/../.nvmrc" 2>/dev/null || true)"
+  node_bin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/v"$want"*/bin 2>/dev/null | sort -V | tail -1 || true)"
+  [ -n "$node_bin" ] || node_bin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+  if [ -n "$node_bin" ] && [ -x "$node_bin/node" ]; then
+    PATH="$node_bin:$PATH"; added+=("$node_bin")
+  fi
+fi
+if ! command -v pnpm >/dev/null 2>&1; then
+  for pnpm_bin in "${PNPM_HOME:-$HOME/.local/share/pnpm}" "$HOME/.local/share/pnpm/bin"; do
+    if [ -x "$pnpm_bin/pnpm" ]; then
+      PATH="$pnpm_bin:$PATH"; added+=("$pnpm_bin"); break
+    fi
+  done
+fi
+if [ "${#added[@]}" -ne 0 ]; then
+  echo "setup-worktree: node/pnpm were not on PATH; using ${added[*]} for this run."
+  echo "  To run tools/ci-local.py in your shell too: export PATH=\"$(IFS=:; echo "${added[*]}"):\$PATH\""
+fi
+for tool in node pnpm; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    [ "$build" -eq 0 ] || { echo "setup-worktree: $tool not found on PATH or in the usual nvm/pnpm locations; put it on PATH and re-run" >&2; exit 2; }
+  }
+done
+
 [ -d "$target" ] || { echo "setup-worktree: $target is not a directory" >&2; exit 2; }
 target="$(cd "$target" && pwd -P)"
 
