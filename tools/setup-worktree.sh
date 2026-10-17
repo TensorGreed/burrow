@@ -61,7 +61,8 @@ done
 added=()
 if ! command -v node >/dev/null 2>&1; then
   # The version `.nvmrc` names if nvm has it, else the newest installed.
-  want="$(tr -d 'v \n' < "$here/../.nvmrc" 2>/dev/null || true)"
+  want=""
+  [ ! -f "$here/../.nvmrc" ] || want="$(tr -d 'v \n' < "$here/../.nvmrc")"
   node_bin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/v"$want"*/bin 2>/dev/null | sort -V | tail -1 || true)"
   [ -n "$node_bin" ] || node_bin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin 2>/dev/null | sort -V | tail -1 || true)"
   if [ -n "$node_bin" ] && [ -x "$node_bin/node" ]; then
