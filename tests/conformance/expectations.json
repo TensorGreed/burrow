@@ -901,6 +901,62 @@
       }
     },
     {
+      "name": "a-chrome-printed-tagged-document",
+      "inputs": [
+        {
+          "file": "fixtures/chrome-printed-tagged.pdf",
+          "sha256": "c973c643789e54a018914a89ae9ae86ca57e1499f8f89138bb6e3e82e42ab43a"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              90,
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ]
+          }
+        },
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
       "name": "reorder-a-flat-document",
       "inputs": [
         {

@@ -909,6 +909,25 @@ fn main() {
             platform_expectations: Vec::new(),
             known_gap: None,
         },
+        // THE SAME PAGE, PRINTED TAGGED (`tools/make-chrome-printed-fixture.mjs --tagged`). Chrome's
+        // tagged print writes the empty destination followed by a line break, where the untagged
+        // print above writes it followed by the `>>` that closes the annotation; between them the two
+        // fixtures hold both followers split admits. Every operation is listed for the same reason.
+        Fixture {
+            name: "a-chrome-printed-tagged-document",
+            filename: "chrome-printed-tagged.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: {
+                let mut every = every_single_document_operation(2, vec![90, 90], vec![0, 0], 2);
+                every.extend(splits_into(2));
+                every
+            },
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
         // ---- reorder -----------------------------------------------------------------
         //
         // Every page reversed, which is what `Operation::Reorder` fixes. THREE CASES, AND
