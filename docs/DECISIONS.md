@@ -197,8 +197,10 @@ one is decided in an issue, with the same three parts.
     `/StructParents` or an `/MCID`; the ADR 0029 amendment, lane 1d), the `/Link` narrowing and the
     iOS offset-0 narrowing (lane 1e) are post-launch. Lane 1's queue after the Chrome split fix
     (1a) is #344 (1b), then the core ink half of #206 (1c), and nothing else. This narrows the
-    launch plan above. *Decided:* owner, 2026-10-17. *Does not cover:* the final spec review, which
-    still hunts the whole class, or whether any of the three comes back before a later milestone.
+    launch plan above. Rule 19's principle is unchanged; its 2b instance now applies after launch.
+    The PDFium ink read-back still gates S9 via #206's ink half. *Decided:* owner, 2026-10-17.
+    *Does not cover:* the final spec review, which still hunts the whole class, or whether any of
+    the three comes back before a later milestone.
 
 18. **A release that closes a live leak may re-record and raise its size budgets to their policy
     minimums without asking, provided the base module's real growth in that PR is under 10%.** The
