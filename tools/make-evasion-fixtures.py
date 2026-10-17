@@ -796,6 +796,232 @@ def nearmiss_image_outside_region() -> bytes:
     return simple_page(pdf, content, res)
 
 
+# #125 SLICE 4 (2026-10-17): the image checkboxes that had no fixture, and form-shaped twins.
+#
+# A twin for a form-route evasion is drawn INSIDE A FORM too, one that does not reach the region:
+# its `/BBox` and everything it paints sit below the region. A page-level twin cannot fail a walk
+# that refuses every form outright, which is the over-refusal a form route's twin exists to catch.
+
+# Below the region (`REGION` starts at y = 88): a form this size drawn at the origin reaches nothing
+# the redaction asks to clear.
+CORNER_BBOX = b"[0 0 100 30]"
+
+
+def _form(pdf: Pdf, bbox: bytes, resources: bytes, content: bytes) -> int:
+    return pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox " + bbox + b" /Resources << " + resources + b" >>",
+        content,
+    )
+
+
+def _two_levels(pdf: Pdf, bbox: bytes, inner_resources: bytes, inner_content: bytes) -> int:
+    """An outer form whose only content is `/Inner Do`; the inner form draws `inner_content`."""
+    inner = _form(pdf, bbox, inner_resources, inner_content)
+    return _form(pdf, bbox, b"/XObject << /Inner " + str(inner).encode() + b" 0 R >>", b"/Inner Do\n")
+
+
+def _page_drawing_form(pdf: Pdf, helv: int, form: int, after: bytes = b"") -> bytes:
+    """A page whose content is `/X1 Do`, then `after`, then the keep line."""
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, b"/X1 Do\n" + after + keep_line_ops(), res)
+
+
+def _region_cm() -> bytes:
+    x0, y0, x1, y1 = REGION
+    return f"{x1 - x0} 0 0 {y1 - y0} {x0} {y0} cm".encode()
+
+
+def _region_rect() -> bytes:
+    x0, y0, x1, y1 = REGION
+    return f"{x0} {y0} {x1 - x0} {y1 - y0} re".encode()
+
+
+FULL_BBOX = f"[0 0 {PAGE_W} {PAGE_H}]".encode()
+
+
+def evade_image_in_form_two_levels_down() -> bytes:
+    """The image is drawn by a form inside a form. The page says only `/X1 Do`, the outer form only
+    `/Inner Do`; the image `Do` is two levels down, where one level is not a depth proof (#125)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    image, _w, _h = _grey_image_stream(pdf, secret("IMG-FORM2"))
+    outer = _two_levels(
+        pdf,
+        FULL_BBOX,
+        b"/XObject << /Im1 " + str(image).encode() + b" 0 R >>",
+        b"q " + _region_cm() + b" /Im1 Do Q\n",
+    )
+    return _page_drawing_form(pdf, helv, outer)
+
+
+def _image_in_a_corner_form(levels: int, tag: str) -> bytes:
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    image, _w, _h = _grey_image_stream(pdf, "DECORATION", scale=2)
+    resources = b"/XObject << /Im1 " + str(image).encode() + b" 0 R >>"
+    content = b"q 60 0 0 18 20 8 cm /Im1 Do Q\n"
+    if levels == 1:
+        form = _form(pdf, CORNER_BBOX, resources, content)
+    else:
+        form = _two_levels(pdf, CORNER_BBOX, resources, content)
+    return _page_drawing_form(pdf, helv, form, _secret_run(tag))
+
+
+def nearmiss_image_in_form_outside_region() -> bytes:
+    """`evade-image-in-form`'s twin: the image IS inside a form, and neither reaches the region.
+    MUST NOT be refused -- a walk that refused every image a form draws would pass the evasion."""
+    return _image_in_a_corner_form(1, "IMG-F1-NEAR")
+
+
+def nearmiss_image_in_form_two_levels_down_outside_region() -> bytes:
+    """The two-level twin: the same corner image, drawn by a form inside a form. MUST NOT be
+    refused."""
+    return _image_in_a_corner_form(2, "IMG-F2-NEAR")
+
+
+def _axial_shading(pdf: Pdf) -> int:
+    return pdf.add(
+        b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [30 0 370 0]"
+        b" /Function << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0.6] /N 1 >>"
+        b" /Extend [false false] >>"
+    )
+
+
+def evade_shading_sh_in_form() -> bytes:
+    """A shading painted by `sh`, clipped to the region, inside a Form XObject.
+
+    The page says only `/X1 Do`. A shading's extent is its clip, which the walk does not track, so
+    the shading is the whole page (`[shading-in-region]`, fail closed) -- this is the fixture that
+    measures it, through a form. The canary is text drawn over the shading.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = _form(
+        pdf,
+        FULL_BBOX,
+        b"/Shading << /Sh0 " + str(_axial_shading(pdf)).encode() + b" 0 R >>",
+        b"q " + _region_rect() + b" W n /Sh0 sh Q\n",
+    )
+    return _page_drawing_form(pdf, helv, form, _secret_run("SHADING-SH"))
+
+
+def _shading_pattern(pdf: Pdf) -> int:
+    return pdf.add(
+        b"<< /Type /Pattern /PatternType 2 /Shading " + str(_axial_shading(pdf)).encode()
+        + b" 0 R >>"
+    )
+
+
+def evade_shading_pattern_fill() -> bytes:
+    """A shading reached as a `/PatternType 2` fill colour: `/Pattern cs /Sh1 scn`, then a
+    rectangle over the region. The canary is text drawn over it."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"q /Pattern cs /Sh1 scn " + _region_rect() + b" f Q\n"
+        + _secret_run("SHADING-PATTERN") + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Pattern << /Sh1 " + str(_shading_pattern(pdf)).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_shading_on_another_page() -> bytes:
+    """`evade-shading-sh-in-form`'s twin: the `sh` is on page 2, and page 1 is the one redacted.
+
+    `sh` boxes the whole page, so no region on the page it is drawn on can miss it; what can be
+    measured is that the refusal is the PAGE's, not the document's. MUST NOT be refused.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    pages = pdf.reserve()
+    page1 = pdf.reserve()
+    page2 = pdf.reserve()
+    shading = _axial_shading(pdf)
+    body1 = pdf.stream(b"", _secret_run("SH-NEAR") + keep_line_ops())
+    body2 = pdf.stream(b"", b"q " + _region_rect() + b" W n /Sh0 sh Q\n" + keep_line_ops())
+    common = (
+        b" /MediaBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Shading << /Sh0 " + str(shading).encode() + b" 0 R >> >>"
+    )
+    for page, body in ((page1, body1), (page2, body2)):
+        pdf.put(
+            page,
+            b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + common
+            + b" /Contents " + str(body).encode() + b" 0 R >>",
+        )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 2 /Kids ["
+        + str(page1).encode() + b" 0 R " + str(page2).encode() + b" 0 R] >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build(root)
+
+
+def nearmiss_shading_pattern_never_filled() -> bytes:
+    """`evade-shading-pattern-fill`'s twin: the same `/PatternType 2` pattern in the page's
+    `/Pattern` resources, never selected as a colour. MUST NOT be refused."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Pattern << /Sh1 " + str(_shading_pattern(pdf)).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, _secret_run("SHPAT-NEAR") + keep_line_ops(), res)
+
+
+def _image_tiling_pattern(pdf: Pdf, image: int, w: int, h: int) -> int:
+    return pdf.stream(
+        b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1"
+        b" /BBox [0 0 " + f"{w} {h}".encode() + b"] /XStep " + str(w).encode()
+        + b" /YStep " + str(h).encode()
+        + b" /Resources << /XObject << /Im1 " + str(image).encode() + b" 0 R >> >>",
+        b"q " + f"{w} 0 0 {h} 0 0".encode() + b" cm /Im1 Do Q\n",
+    )
+
+
+def evade_image_in_tiling_pattern_inside_a_form() -> bytes:
+    """The dedicated tiling-pattern fixture: a `/PatternType 1` cell drawing the image, used as a
+    fill INSIDE a Form XObject over the region.
+
+    Refused by `[pattern-may-draw-text]`, the global pattern-fill refusal, and pinned to it: #125's
+    tiling-pattern checkbox is discharged by that broader refusal, not by the region signal.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    image, w, h = _grey_image_stream(pdf, secret("IMG-TILING"), scale=2)
+    form = _form(
+        pdf,
+        FULL_BBOX,
+        b"/Pattern << /P1 " + str(_image_tiling_pattern(pdf, image, w, h)).encode() + b" 0 R >>",
+        b"q /Pattern cs /P1 scn " + _region_rect() + b" f Q\n",
+    )
+    return _page_drawing_form(pdf, helv, form)
+
+
+def nearmiss_tiling_pattern_never_filled() -> bytes:
+    """The tiling-pattern twin: the same pattern in a form's `/Pattern` resources, never selected;
+    the form draws a short rule below the region. MUST NOT be refused -- the refusal is on the
+    fill, not on a pattern existing."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    image, w, h = _grey_image_stream(pdf, "DECORATION", scale=2)
+    form = _form(
+        pdf,
+        CORNER_BBOX,
+        b"/Pattern << /P1 " + str(_image_tiling_pattern(pdf, image, w, h)).encode() + b" 0 R >>",
+        b"0 g 20 6 60 2 re f\n",
+    )
+    return _page_drawing_form(pdf, helv, form, _secret_run("TILE-NEAR"))
+
+
 # ===========================================================================================
 # Refusal 2 — "a region intersecting VECTOR PATH content". Same proposed signal, same gap.
 # ===========================================================================================
@@ -861,6 +1087,38 @@ def nearmiss_paths_outside_region() -> bytes:
         + literal(secret("PATH-NEARMISS")) + b" Tj ET\n" + keep_line_ops()
     )
     return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
+
+
+def evade_paths_in_form_two_levels_down() -> bytes:
+    """The filled paths are inside a form inside a form (#125 slice 4); the page says `/X1 Do`."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    outer = _two_levels(
+        pdf, FULL_BBOX, b"", outline_ops(secret("PATH-FORM2"), SECRET_X, SECRET_Y, SECRET_SIZE)
+    )
+    return _page_drawing_form(pdf, helv, outer)
+
+
+def _rule_in_a_corner_form(levels: int, tag: str) -> bytes:
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = b"0 g 20 6 60 2 re f\n0.5 w 10 4 80 20 re S\n"
+    if levels == 1:
+        form = _form(pdf, CORNER_BBOX, b"", content)
+    else:
+        form = _two_levels(pdf, CORNER_BBOX, b"", content)
+    return _page_drawing_form(pdf, helv, form, _secret_run(tag))
+
+
+def nearmiss_paths_in_form_outside_region() -> bytes:
+    """`evade-paths-in-form`'s twin: a fill and a stroked border INSIDE a form, below the region.
+    MUST NOT be refused -- a walk refusing every path a form draws would pass the evasion."""
+    return _rule_in_a_corner_form(1, "PATH-F1-NEAR")
+
+
+def nearmiss_paths_in_form_two_levels_down_outside_region() -> bytes:
+    """The two-level twin: the same corner paths, in a form inside a form. MUST NOT be refused."""
+    return _rule_in_a_corner_form(2, "PATH-F2-NEAR")
 
 
 # ===========================================================================================
@@ -1038,6 +1296,66 @@ def nearmiss_annotation_not_a_widget() -> bytes:
         content,
         b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
         page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+    )
+
+
+def evade_widget_ft_on_parent() -> bytes:
+    """A widget with `/Subtype /Widget` and NO `/FT`; the field type and the value are on its
+    `/Parent`, and the catalogue carries no `/AcroForm` (#125 slice 4).
+
+    The third `/AcroForm` checkbox. With no catalogue key, only the `/FT` scan over referenced
+    objects can see it, and the object carrying `/FT` is reached only through the widget's
+    `/Parent`. The widget's `/Rect` is outside the region, so the annotation is kept. MUST be
+    refused.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    parent = pdf.reserve()
+    widget = pdf.add(
+        b"<< /Type /Annot /Subtype /Widget /Parent " + str(parent).encode() + b" 0 R"
+        b" /Rect [40 150 240 174] /F 4 >>"
+    )
+    pdf.put(
+        parent,
+        b"<< /FT /Tx /T " + literal("parent-field") +
+        b" /V " + utf16_hex(secret("FORM-FT-PARENT")) +
+        b" /Kids [" + str(widget).encode() + b" 0 R] >>",
+    )
+    content = (
+        b"BT /Helv 20 Tf " + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal("PAGE-TEXT-ONLY") + b" Tj ET\n" + keep_line_ops()
+    )
+    return simple_page(
+        pdf,
+        content,
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(widget).encode() + b" 0 R]",
+    )
+
+
+def nearmiss_annotation_with_a_parent_not_a_field() -> bytes:
+    """`evade-widget-ft-on-parent`'s twin: an annotation reaching another through `/Parent`, with
+    no `/FT` anywhere -- a popup and the note it belongs to. MUST NOT be refused: `/Parent` is
+    ordinary annotation structure, and the refusal is on a field type, not on the link."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    note = pdf.reserve()
+    popup = pdf.add(
+        b"<< /Type /Annot /Subtype /Popup /Parent " + str(note).encode() + b" 0 R"
+        b" /Rect [320 4 396 34] /F 4 >>"
+    )
+    pdf.put(
+        note,
+        b"<< /Type /Annot /Subtype /Text /Rect [300 10 320 30] /F 4"
+        b" /Contents " + literal("an ordinary note, with a popup")
+        + b" /Popup " + str(popup).encode() + b" 0 R >>",
+    )
+    content = _secret_run("PARENT-NEAR") + keep_line_ops()
+    return simple_page(
+        pdf,
+        content,
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(note).encode() + b" 0 R " + str(popup).encode() + b" 0 R]",
     )
 
 
@@ -1849,6 +2167,27 @@ def evade_oc_inside_an_unused_type3_font() -> bytes:
     return simple_page(
         pdf, _secret_run("OC-TYPE3") + keep_line_ops(), res, catalog_extra=_layer_off(ocg)
     )
+
+
+def nearmiss_property_list_inside_an_unused_type3_font() -> bytes:
+    """`evade-oc-inside-an-unused-type3-font`'s twin (#125 slice 4): the same unused Type 3 font,
+    its procedure marking content against a property list in the font's `/Resources` -- but the
+    list is an ordinary one (`/Span` with a `/Lang`), not a layer, and the catalogue has no
+    `/OCProperties`. MUST NOT be refused: a font's `/Properties` existing is not optional content.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    plain = pdf.add(b"<< /Lang (en-GB) >>")
+    proc = pdf.stream(b"", b"1000 0 d0 /Span /L0 BDC 0 0 500 500 re f EMC\n")
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000]"
+        b" /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a " + str(proc).encode() + b" 0 R >>"
+        b" /Encoding << /Type /Encoding /Differences [97 /a] >>"
+        b" /FirstChar 97 /LastChar 97 /Widths [1000]"
+        b" /Resources << /Properties << /L0 " + str(plain).encode() + b" 0 R >> >> >>"
+    )
+    res = b"/Font << /Helv " + str(helv).encode() + b" 0 R /T3 " + str(font).encode() + b" 0 R >>"
+    return simple_page(pdf, _secret_run("OCT3-NEAR") + keep_line_ops(), res)
 
 
 def evade_oc_on_an_appearance_stream() -> bytes:
@@ -3040,14 +3379,28 @@ CASES: list[tuple[str, str]] = [
     ("evade-tounicode-in-a-form-local-font", "font surgery"),
     ("nearmiss-tounicode-on-a-page-font", "font surgery"),
     ("nearmiss-image-outside-region", "image"),
+    ("evade-image-in-form-two-levels-down", "image"),
+    ("nearmiss-image-in-form-outside-region", "image"),
+    ("nearmiss-image-in-form-two-levels-down-outside-region", "image"),
+    ("evade-shading-sh-in-form", "image"),
+    ("nearmiss-shading-on-another-page", "image"),
+    ("evade-shading-pattern-fill", "image"),
+    ("nearmiss-shading-pattern-never-filled", "image"),
+    ("evade-image-in-tiling-pattern-inside-a-form", "image"),
+    ("nearmiss-tiling-pattern-never-filled", "image"),
     ("evade-paths-in-form", "vector paths"),
     ("evade-paths-in-type3-glyph", "vector paths"),
     ("nearmiss-paths-outside-region", "vector paths"),
+    ("evade-paths-in-form-two-levels-down", "vector paths"),
+    ("nearmiss-paths-in-form-outside-region", "vector paths"),
+    ("nearmiss-paths-in-form-two-levels-down-outside-region", "vector paths"),
     ("evade-widget-on-another-page", "/AcroForm"),
     ("evade-field-with-no-widget", "/AcroForm"),
     ("evade-acroform-inline-field", "/AcroForm"),
     ("evade-field-without-acroform", "/AcroForm"),
     ("nearmiss-annotation-not-a-widget", "/AcroForm"),
+    ("evade-widget-ft-on-parent", "/AcroForm"),
+    ("nearmiss-annotation-with-a-parent-not-a-field", "/AcroForm"),
     ("evade-struct-without-structparents", "/StructTreeRoot"),
     ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot"),
     ("evade-oc-two-levels-down", "optional content"),
@@ -3074,6 +3427,7 @@ CASES: list[tuple[str, str]] = [
     ("evade-oc-on-an-image", "optional content"),
     ("evade-oc-inside-an-unused-pattern", "optional content"),
     ("evade-oc-inside-an-unused-type3-font", "optional content"),
+    ("nearmiss-property-list-inside-an-unused-type3-font", "optional content"),
     ("evade-oc-on-an-appearance-stream", "optional content"),
     ("evade-oc-untyped-membership-dictionary", "optional content"),
     ("evade-oc-untyped-group", "optional content"),
@@ -3276,6 +3630,21 @@ BUILDERS = {
     "evade-annotation-named-from-the-catalogue": evade_annotation_named_from_the_catalogue,
     "evade-annotation-reply-on-another-page": evade_annotation_reply_on_another_page,
     "nearmiss-annotation-popup-of-a-kept-parent": nearmiss_annotation_popup_of_a_kept_parent,
+    "evade-image-in-form-two-levels-down": evade_image_in_form_two_levels_down,
+    "nearmiss-image-in-form-outside-region": nearmiss_image_in_form_outside_region,
+    "nearmiss-image-in-form-two-levels-down-outside-region": nearmiss_image_in_form_two_levels_down_outside_region,
+    "evade-shading-sh-in-form": evade_shading_sh_in_form,
+    "nearmiss-shading-on-another-page": nearmiss_shading_on_another_page,
+    "evade-shading-pattern-fill": evade_shading_pattern_fill,
+    "nearmiss-shading-pattern-never-filled": nearmiss_shading_pattern_never_filled,
+    "evade-image-in-tiling-pattern-inside-a-form": evade_image_in_tiling_pattern_inside_a_form,
+    "nearmiss-tiling-pattern-never-filled": nearmiss_tiling_pattern_never_filled,
+    "evade-paths-in-form-two-levels-down": evade_paths_in_form_two_levels_down,
+    "nearmiss-paths-in-form-outside-region": nearmiss_paths_in_form_outside_region,
+    "nearmiss-paths-in-form-two-levels-down-outside-region": nearmiss_paths_in_form_two_levels_down_outside_region,
+    "evade-widget-ft-on-parent": evade_widget_ft_on_parent,
+    "nearmiss-annotation-with-a-parent-not-a-field": nearmiss_annotation_with_a_parent_not_a_field,
+    "nearmiss-property-list-inside-an-unused-type3-font": nearmiss_property_list_inside_an_unused_type3_font,
 }
 
 

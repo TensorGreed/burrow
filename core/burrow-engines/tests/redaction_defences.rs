@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 88] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2681,6 +2681,12 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 88] = [
     ),
     // The twin `evade-oc-two-levels-down` has had since #164: nested forms with no layer at all.
     ("nearmiss-nested-forms-no-oc.pdf", None),
+    // The twin `evade-oc-inside-an-unused-type3-font` lacked (#125 slice 4): the same unused font,
+    // its procedure marking content against an ordinary property list, no layer anywhere.
+    (
+        "nearmiss-property-list-inside-an-unused-type3-font.pdf",
+        None,
+    ),
     ("nearmiss-oc-on-another-page.pdf", None),
     // A STREAM WHERE A DICTIONARY BELONGS. PDFium reads the stream's dictionary; burrow read it
     // as absent. Three of these were measured leaks returning `Ok`.
@@ -2909,6 +2915,11 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 88] = [
     ("evade-acroform-inline-field.pdf", Some("acroform-field")),
     ("evade-field-without-acroform.pdf", Some("acroform-field")),
     ("nearmiss-annotation-not-a-widget.pdf", None),
+    // #125 slice 4: `/FT` only on the widget's `/Parent`, no catalogue `/AcroForm` -- the `/FT`
+    // scan reaches the parent through the reference set. Its twin links two annotations by
+    // `/Parent` with no `/FT` anywhere.
+    ("evade-widget-ft-on-parent.pdf", Some("acroform-field")),
+    ("nearmiss-annotation-with-a-parent-not-a-field.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
@@ -2983,6 +2994,50 @@ fn canaries_of(declared: &[(String, Option<String>, Vec<String>)], name: &str) -
     canaries
 }
 
+/// Whether one pinned fixture's outcome holds: refused by exactly `wanted`, or, for a near-miss
+/// (`None`), redacted with every canary the manifest declares for it gone. `Ok(true)` for a
+/// near-miss checked, `Ok(false)` for a refusal by its rule, `Err` naming what moved.
+///
+/// RETURNED RATHER THAN PANICKED, so a run names EVERY fixture that moved and not only the first in
+/// list order -- which is what lets `tools/test-redaction-refusals-are-reached.sh` require a
+/// mutation to free each fixture it should, by name (#125 slice 4).
+fn held_to(
+    name: &str,
+    pdf: &[u8],
+    result: burrow_types::Result<(Vec<u8>, burrow_engines::redact::Report)>,
+    wanted: Option<&str>,
+    declared: &[(String, Option<String>, Vec<String>)],
+) -> Result<bool, String> {
+    match (result, wanted) {
+        (Err(error), Some(rule)) => {
+            // THE RULE, BRACKETED, not a substring of the message: `optional-content` appears in
+            // prose elsewhere and a bare `contains` would be satisfied by it.
+            let text = format!("{error:?}");
+            if text.contains(&format!("[{rule}]")) {
+                Ok(false)
+            } else {
+                Err(format!("{name}: refused, but not by `{rule}`: {text}"))
+            }
+        }
+        (Err(error), None) => Err(format!(
+            "{name}: a near-miss must be redacted, not refused -- the rule fired on the ordinary \
+             shape it exists to stay off: {error:?}"
+        )),
+        (Ok((out, report)), Some(rule)) => Err(format!(
+            "{name}: redacted {} bytes where `{rule}` should have refused, report {report:?}",
+            out.len()
+        )),
+        // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
+        (Ok((out, _)), None) => {
+            for canary in canaries_of(declared, name) {
+                assert_present(pdf, canary.as_bytes(), name);
+                assert_absent(&out, canary.as_bytes(), name);
+            }
+            Ok(true)
+        }
+    }
+}
+
 #[test]
 fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
     // THE SET IS THE MANIFEST'S, not this file's. `examined == RESOLVED_OUTCOMES.len()` held by
@@ -3016,44 +3071,163 @@ fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
     let mut redacted = 0usize;
+    let mut moved = Vec::new();
     for (name, wanted) in RESOLVED_OUTCOMES {
         let pdf = std::fs::read(directory.join(name)).unwrap_or_else(|error| {
             panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
         });
-        match (redact(&pdf), wanted) {
-            (Err(error), Some(rule)) => {
-                // THE RULE, BRACKETED, not a substring of the message: `optional-content`
-                // appears in prose elsewhere and a bare `contains` would be satisfied by it.
-                let text = format!("{error:?}");
-                assert!(
-                    text.contains(&format!("[{rule}]")),
-                    "{name}: refused, but not by `{rule}`: {text}"
-                );
-            }
-            (Err(error), None) => panic!(
-                "{name}: a near-miss must be redacted, not refused -- the rule fired on the \
-                 ordinary shape it exists to stay off: {error:?}"
-            ),
-            (Ok((out, report)), Some(rule)) => panic!(
-                "{name}: redacted {} bytes where `{rule}` should have refused, report {report:?}",
-                out.len()
-            ),
-            // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
-            (Ok((out, _)), None) => {
-                for canary in canaries_of(&declared, name) {
-                    assert_present(&pdf, canary.as_bytes(), name);
-                    assert_absent(&out, canary.as_bytes(), name);
-                }
-                redacted += 1;
-            }
+        match held_to(name, &pdf, redact(&pdf), wanted, &declared) {
+            Ok(was_redacted) => redacted += usize::from(was_redacted),
+            Err(what) => moved.push(what),
         }
     }
+    assert!(
+        moved.is_empty(),
+        "{} of {} pinned fixtures moved:\n{}",
+        moved.len(),
+        RESOLVED_OUTCOMES.len(),
+        moved.join("\n")
+    );
     let twins = RESOLVED_OUTCOMES
         .iter()
         .filter(|(_, rule)| rule.is_none())
         .count();
     eprintln!(
         "  #166 outcomes: {} of {} declared fixtures pinned, {redacted} of {twins} near-misses \
+         redacted with their canary gone",
+        listed.len(),
+        expected.len()
+    );
+    assert_eq!(
+        redacted, twins,
+        "every near-miss must be checked for its canary"
+    );
+}
+
+/// `tools/pdfbuild.py`'s `REGION`, the rectangle every hand-built fixture draws its canary in,
+/// `(30, 88, 370, 132)` in PDF space on a 200-point-high page, as display coordinates.
+fn pdfbuild_region() -> Region {
+    Region {
+        left: 30.0,
+        top: 68.0,
+        width: 340.0,
+        height: 44.0,
+    }
+}
+
+/// Every fixture in the manifest's `image` and `vector paths` groups, with the ONE rule it must
+/// refuse by under [`pdfbuild_region`], or `None` for a twin that must redact (#125 slice 4).
+///
+/// `outcomes.tsv` already pins each of these byte for byte, but by region and as a golden: this
+/// pins the RULE, so a mutation that sends a fixture to a different refusal fails by name. Several
+/// are discharged by a broader rule than the region signal, and say so: a tiling or shading pattern
+/// fill by `pattern-may-draw-text`, a filtered inline image by `inline-image-filtered`, a Type 3
+/// procedure by the Type 3 rules.
+const INK_OUTCOMES: [(&str, Option<&str>); 21] = [
+    ("evade-image-in-form.pdf", Some("image-in-region")),
+    (
+        "evade-image-in-form-two-levels-down.pdf",
+        Some("image-in-region"),
+    ),
+    ("nearmiss-image-outside-region.pdf", None),
+    // THE FORM-SHAPED TWINS: the image or the paths drawn inside a form that does not reach the
+    // region. A walk that refused everything a form draws passes the evasions and fails these.
+    ("nearmiss-image-in-form-outside-region.pdf", None),
+    (
+        "nearmiss-image-in-form-two-levels-down-outside-region.pdf",
+        None,
+    ),
+    ("evade-inline-image.pdf", Some("inline-image-filtered")),
+    (
+        "evade-inline-image-outside-type3-box.pdf",
+        Some("type-three-image-outside-its-box"),
+    ),
+    (
+        "evade-image-in-type3-glyph.pdf",
+        Some("type-three-procedure-shows-text"),
+    ),
+    ("evade-image-as-pattern.pdf", Some("pattern-may-draw-text")),
+    (
+        "evade-image-in-tiling-pattern-inside-a-form.pdf",
+        Some("pattern-may-draw-text"),
+    ),
+    ("nearmiss-tiling-pattern-never-filled.pdf", None),
+    // A SHADING: `sh` is the whole page, so its twin is a shading on ANOTHER page; a
+    // `/PatternType 2` fill is the pattern rule, and its twin a pattern never selected.
+    ("evade-shading-sh-in-form.pdf", Some("shading-in-region")),
+    ("nearmiss-shading-on-another-page.pdf", None),
+    (
+        "evade-shading-pattern-fill.pdf",
+        Some("pattern-may-draw-text"),
+    ),
+    ("nearmiss-shading-pattern-never-filled.pdf", None),
+    ("evade-paths-in-form.pdf", Some("vector-in-region")),
+    (
+        "evade-paths-in-form-two-levels-down.pdf",
+        Some("vector-in-region"),
+    ),
+    ("nearmiss-paths-outside-region.pdf", None),
+    ("nearmiss-paths-in-form-outside-region.pdf", None),
+    (
+        "nearmiss-paths-in-form-two-levels-down-outside-region.pdf",
+        None,
+    ),
+    (
+        "evade-paths-in-type3-glyph.pdf",
+        Some("type-three-procedure-paints"),
+    ),
+];
+
+#[test]
+fn an_image_a_shading_or_a_path_refuses_by_its_own_rule_through_every_route() {
+    // THE SET IS THE MANIFEST'S, as for `RESOLVED_OUTCOMES`: a fixture added to either group with
+    // no entry here fails here rather than going unpinned.
+    let declared = declared();
+    let expected: BTreeSet<String> = declared
+        .iter()
+        .filter(|(_, group, _)| matches!(group.as_deref(), Some("image" | "vector paths")))
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let listed: BTreeSet<String> = INK_OUTCOMES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        expected,
+        "INK_OUTCOMES pins {} fixtures; the manifest's image and vector groups declare {}",
+        listed.len(),
+        expected.len()
+    );
+
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
+    let mut redacted = 0usize;
+    let mut moved = Vec::new();
+    for (name, wanted) in INK_OUTCOMES {
+        let pdf = std::fs::read(directory.join(name)).unwrap_or_else(|error| {
+            panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
+        });
+        let page: BTreeSet<usize> = [0].into_iter().collect();
+        let result = support::redact_page(&pdf, 0, page, pdfbuild_region());
+        match held_to(name, &pdf, result, wanted, &declared) {
+            Ok(was_redacted) => redacted += usize::from(was_redacted),
+            Err(what) => moved.push(what),
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "{} of {} pinned fixtures moved:\n{}",
+        moved.len(),
+        INK_OUTCOMES.len(),
+        moved.join("\n")
+    );
+    let twins = INK_OUTCOMES
+        .iter()
+        .filter(|(_, rule)| rule.is_none())
+        .count();
+    eprintln!(
+        "  #125 ink outcomes: {} of {} declared fixtures pinned, {redacted} of {twins} near-misses \
          redacted with their canary gone",
         listed.len(),
         expected.len()

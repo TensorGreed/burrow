@@ -1160,6 +1160,159 @@ pages = 1
   notes = "MUST NOT be refused. A signal refusing any document with an image refuses most documents."
 
 [[fixture]]
+name = "evade-image-in-form-two-levels-down"
+file = "generated/evade-image-in-form-two-levels-down.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-FORM2"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "image-drawn"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "#125 slice 4. The image `Do` is in a form inside a form; the page says `/X1 Do`, the outer form `/Inner Do`. Refused by [image-in-region]."
+
+[[fixture]]
+name = "nearmiss-image-in-form-outside-region"
+file = "generated/nearmiss-image-in-form-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-IMG-F1-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The form-shaped twin of evade-image-in-form: the image is inside a form whose /BBox and drawing sit below the region."
+
+[[fixture]]
+name = "nearmiss-image-in-form-two-levels-down-outside-region"
+file = "generated/nearmiss-image-in-form-two-levels-down-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-IMG-F2-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-image-in-form-two-levels-down: the same two-form chain, its image below the region."
+
+[[fixture]]
+name = "evade-shading-sh-in-form"
+file = "generated/evade-shading-sh-in-form.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "shading — evasion"
+  canary = "BURROW-EVADE-SHADING-SH"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#125 slice 4. A shading painted by `sh`, clipped to the region, inside a Form XObject; the canary is text over it. Refused by [shading-in-region]: the walk does not track the clip, so `sh` is the whole page."
+
+[[fixture]]
+name = "nearmiss-shading-on-another-page"
+file = "generated/nearmiss-shading-on-another-page.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "shading — near-miss twin"
+  canary = "BURROW-EVADE-SH-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The `sh` is on page 2; page 1 is redacted. The shading refusal is the page's, not the document's."
+
+[[fixture]]
+name = "evade-shading-pattern-fill"
+file = "generated/evade-shading-pattern-fill.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "shading — evasion"
+  canary = "BURROW-EVADE-SHADING-PATTERN"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#125 slice 4. A shading reached as a /PatternType 2 fill colour over the region. Refused by [pattern-may-draw-text], the global pattern-fill refusal."
+
+[[fixture]]
+name = "nearmiss-shading-pattern-never-filled"
+file = "generated/nearmiss-shading-pattern-never-filled.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "shading — near-miss twin"
+  canary = "BURROW-EVADE-SHPAT-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The same /PatternType 2 pattern in the page's /Pattern resources, never selected as a colour."
+
+[[fixture]]
+name = "evade-image-in-tiling-pattern-inside-a-form"
+file = "generated/evade-image-in-tiling-pattern-inside-a-form.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-TILING"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "image-drawn"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "#125 slice 4, the dedicated tiling-pattern fixture: a /PatternType 1 cell drawing the image, used as a fill inside a form over the region. Pinned to [pattern-may-draw-text]: the checkbox is discharged by that broader refusal, not by the region signal."
+
+[[fixture]]
+name = "nearmiss-tiling-pattern-never-filled"
+file = "generated/nearmiss-tiling-pattern-never-filled.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-TILE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The same tiling pattern in a form's /Pattern resources, never selected; the form draws a rule below the region."
+
+[[fixture]]
 name = "evade-paths-in-form"
 file = "generated/evade-paths-in-form.pdf"
 kind = "hand-built"
@@ -1207,6 +1360,57 @@ pages = 1
   witness_observes = "canary"
   expect_after = "gone"
   notes = "MUST NOT be refused. A rule, a table border or a logo is in nearly every business document."
+
+[[fixture]]
+name = "evade-paths-in-form-two-levels-down"
+file = "generated/evade-paths-in-form-two-levels-down.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — evasion"
+  canary = "BURROW-EVADE-PATH-FORM2"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "vector-fills"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "#125 slice 4. The filled paths are in a form inside a form. Refused by [vector-in-region]."
+
+[[fixture]]
+name = "nearmiss-paths-in-form-outside-region"
+file = "generated/nearmiss-paths-in-form-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-PATH-F1-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The form-shaped twin of evade-paths-in-form: a fill and a stroked border inside a form, below the region."
+
+[[fixture]]
+name = "nearmiss-paths-in-form-two-levels-down-outside-region"
+file = "generated/nearmiss-paths-in-form-two-levels-down-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-PATH-F2-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-paths-in-form-two-levels-down: the same corner paths in a form inside a form."
 
 [[fixture]]
 name = "evade-widget-on-another-page"
@@ -1297,6 +1501,40 @@ pages = 1
   witness_observes = "canary"
   expect_after = "gone"
   notes = "MUST NOT be refused. An ordinary sticky note, and no `/AcroForm` at all."
+
+[[fixture]]
+name = "evade-widget-ft-on-parent"
+file = "generated/evade-widget-ft-on-parent.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — evasion"
+  canary = "BURROW-EVADE-FORM-FT-PARENT"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#125 slice 4. A /Subtype /Widget annotation with no /FT; /FT and /V are on its /Parent, and the catalogue has no /AcroForm. Only the /FT scan over referenced objects sees it, through /Parent. Refused by [acroform-field]."
+
+[[fixture]]
+name = "nearmiss-annotation-with-a-parent-not-a-field"
+file = "generated/nearmiss-annotation-with-a-parent-not-a-field.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-PARENT-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. A popup reaching its note through /Parent, with no /FT anywhere: /Parent is ordinary annotation structure."
 
 [[fixture]]
 name = "evade-struct-without-structparents"
@@ -2014,6 +2252,23 @@ pages = 1
   notes = """
 The page never draws with the font, so the Type 3 rule does not answer first.
 """
+
+[[fixture]]
+name = "nearmiss-property-list-inside-an-unused-type3-font"
+file = "generated/nearmiss-property-list-inside-an-unused-type3-font.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content in a Type 3 font's /Resources — near-miss twin"
+  canary = "BURROW-EVADE-OCT3-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-inside-an-unused-type3-font: the same unused Type 3 font, its procedure marking content against an ordinary /Span property list, not a layer; no /OCProperties."
 
 [[fixture]]
 name = "evade-oc-on-an-appearance-stream"
