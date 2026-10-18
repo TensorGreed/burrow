@@ -656,11 +656,14 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         // dictionary. Every part is then also held to `SPLIT_PART_REFERENCES`, which admits no
         // empty key at all, as a second line no measured shape reaches.
         admit_dests_empty_key: true,
+        // SPLIT OPTS IN to the empty `/Dest` value Chrome writes (owner, 2026-10-16). Redaction
+        // keeps the default, which refuses it (owner, 2026-10-17).
+        admit_dest_empty_value: true,
     };
 
 /// The same check as [`SPLIT_REFERENCES`], over a part split has written, with no empty key
 /// admitted: whatever reached the part, an empty key in it refuses (#136's Chrome narrowing, round
-/// 1's review).
+/// 1's review). The empty `/Dest` value stays opted in.
 const SPLIT_PART_REFERENCES: crate::redact::references::ReferenceRefusals =
     crate::redact::references::ReferenceRefusals {
         admit_dests_empty_key: false,

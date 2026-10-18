@@ -182,6 +182,14 @@ pub struct Found {
     /// accepts empty keys. One entry per key written; bounded, as the other lists are, by the work
     /// budget.
     pub empty_keys: Vec<EmptyKey>,
+    /// Every empty name written as a `/Dest` **value** before one of the followers Chrome writes
+    /// (LF, or the `>>` closing its dictionary), with the object holding it and whether it stands
+    /// in that object's own top-level dictionary. **These are not accepted by the scan either**:
+    /// the caller refuses every one unless its operation admits it (split; owner, 2026-10-17), so
+    /// a caller that ignores this
+    /// field accepts empty `/Dest` values. Recorded where the bytes are judged as written
+    /// ([`in_file`], [`in_object_stream`]); bounded, as the other lists are, by the work budget.
+    pub empty_values: Vec<Holder>,
     /// Who refers to each object, by the number written: how many references name it, how many of
     /// those are held by an object (rather than a trailer), and how many are the `/Dests` value of
     /// an object's own top-level dictionary, with the first such holder. What a caller needs to ask
@@ -688,8 +696,10 @@ impl<'a> Level<'a> {
 
 /// What an empty name is, by where it stands.
 enum EmptyName {
-    /// A value under `/Dest`, followed by LF or by the `>>` closing its dictionary.
-    Value,
+    /// A value under `/Dest`, followed by LF or by the `>>` closing its dictionary: recorded for
+    /// the caller to rule on ([`Found::empty_values`]), with whether it stands in the object's own
+    /// top-level dictionary.
+    Value { direct: bool },
     /// A key the caller rules on ([`Found::empty_keys`]).
     Key(EmptyKey),
     /// Anything else, and every name that is not empty: refused.
@@ -703,9 +713,9 @@ const EMPTY_VALUE_PARENTS: [&[u8]; 1] = [b"Dest"];
 /// Where an empty name stands, for a name [`name_reads_alike`] refused (owner, 2026-10-15).
 ///
 /// The empty name was measured in a dictionary, as a key and as a value, before every follower;
-/// the details are in the private measurement. Admitted, and nothing else: a **value** under a key
-/// in [`EMPTY_VALUE_PARENTS`], followed by LF or by the `>>` closing its dictionary; and, recorded
-/// for the caller to rule on, a **key** of an object's own top-level dictionary, or of a dictionary
+/// the details are in the private measurement. Recorded for the caller to rule on, and nothing
+/// else admitted: a **value** under a key in [`EMPTY_VALUE_PARENTS`], followed by LF or by the `>>`
+/// closing its dictionary; and a **key** of an object's own top-level dictionary, or of a dictionary
 /// written directly as its top-level `/Dests` value, followed by one space. Those are the followers
 /// Chrome writes (owner, 2026-10-16); the other white space and delimiters measured to end the name
 /// alike are refused, because no producer we have seen writes them. A name that is not empty, an empty name in an array or outside any container, in
@@ -736,7 +746,9 @@ fn empty_name_position(
         && value_follower
         && EMPTY_VALUE_PARENTS.contains(&level.key)
     {
-        return EmptyName::Value;
+        return EmptyName::Value {
+            direct: levels.len() == 1,
+        };
     }
     let Some(object) = holder else {
         return EmptyName::Refused;
@@ -828,7 +840,10 @@ impl<'c> Scan<'c> {
             {
                 // READ BEFORE THE STEP BELOW: the position is the one this name stands in.
                 match empty_name_position(written, next, closes_dictionary, &levels, holder) {
-                    EmptyName::Value => {}
+                    EmptyName::Value { direct } => self.found.empty_values.push(Holder {
+                        object: holder,
+                        direct,
+                    }),
                     EmptyName::Key(key) => self.found.empty_keys.push(key),
                     EmptyName::Refused => {
                         self.found.irregular = Some(Irregular::NameReadDifferently);
@@ -1301,9 +1316,10 @@ pub const MAX_NAME_WRITTEN: usize = 255;
 ///   Mixed case (`#aF`) was not measured and refuses;
 /// - one byte at least, and at most [`MAX_NAME_WRITTEN`] as written. The empty name (`/` with
 ///   nothing after it) refuses here; it was measured since (2026-10-15), the details are in the
-///   private measurement, and it is admitted only in the positions the scan's
-///   `empty_name_position` names -- as a `/Dest` value before LF or its dictionary's closing `>>`,
-///   and, for the caller to rule on, as a key of an object's own dictionary before one space.
+///   private measurement, and it passes this scan only in the positions the scan's
+///   `empty_name_position` names, each recorded for the caller to rule on -- as a `/Dest` value
+///   before LF or its dictionary's closing `>>` ([`Found::empty_values`]), and as a key of an
+///   object's own dictionary before one space ([`Found::empty_keys`]).
 ///
 /// A name followed by a vertical tab refuses too. Which reader reads each refused shape how is in
 /// the private measurement, not here. **The edges, measured since** (2026-10-14): as a name's first
@@ -1495,6 +1511,16 @@ mod tests {
         found.irregular.map_or(Ok(found.empty_keys), Err)
     }
 
+    /// `body` as object 1, the empty `/Dest` values the scan recorded (none where it was irregular).
+    fn values(body: &[u8]) -> Vec<super::Holder> {
+        let mut bytes = b"1 0 obj\n".to_vec();
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(b"\nendobj\n");
+        let found = file(&bytes);
+        assert_eq!(found.irregular, None, "{}", String::from_utf8_lossy(body));
+        found.empty_values
+    }
+
     const TOP: super::EmptyKey = super::EmptyKey {
         object: 1,
         in_direct_dests: false,
@@ -1517,7 +1543,34 @@ mod tests {
                 "{}",
                 String::from_utf8_lossy(body)
             );
+            // RECORDED FOR THE CALLER, not accepted here: one value, in object 1's own dictionary.
+            assert_eq!(
+                values(body),
+                vec![super::Holder {
+                    object: Some(1),
+                    direct: true
+                }],
+                "{}",
+                String::from_utf8_lossy(body)
+            );
         }
+        // ONE LEVEL DOWN, recorded as not direct, for the caller to refuse (owner, 2026-10-17).
+        for body in [
+            b"<< /Info << /Dest /\n>> >>".as_slice(),
+            b"<< /A << /S /GoTo /Dest />> >>",
+        ] {
+            assert_eq!(
+                values(body),
+                vec![super::Holder {
+                    object: Some(1),
+                    direct: false
+                }],
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        // THE TWIN, a named /Dest: nothing recorded.
+        assert_eq!(values(b"<< /Type /Annot /Dest /A\n>>"), Vec::new());
         // THE TWINS: a follower Chrome does not write, under the same key -- including the other
         // white space measured alike on 2026-10-15, and a `>` that does not begin `>>`.
         for body in [
@@ -1697,6 +1750,14 @@ mod tests {
         );
         let found = object_stream(b"5 0 << /Dest />>", 1, 4);
         assert_eq!((found.irregular, found.empty_keys), (None, Vec::new()));
+        assert_eq!(
+            found.empty_values,
+            vec![super::Holder {
+                object: Some(5),
+                direct: true
+            }],
+            "the member's empty /Dest value is recorded, held by the member"
+        );
     }
 
     /// The scan reports it, in a file's object, in an object stream's member and after a value,

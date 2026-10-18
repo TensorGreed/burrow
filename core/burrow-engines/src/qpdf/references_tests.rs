@@ -998,9 +998,12 @@ fn a_name_inside_the_measured_allowlist_redacts() {
 }
 
 /// REDACTION KEEPS THE CATALOG, so the empty `/Dests` key split admits is refused here, on both
-/// engines (owner, 2026-10-15); the empty `/Dest` value is admitted on both.
+/// engines (owner, 2026-10-15); and the empty `/Dest` value split admits is refused too, before
+/// either follower Chrome writes, on both engines (owner, 2026-10-17): redaction keeps
+/// `ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT`, which refuses. The twins, a named key and a named value,
+/// redact.
 #[test]
-fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_admits_the_dest_value() {
+fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_the_dest_value() {
     let mut objects = page_objects("");
     objects[0].2 = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>".to_owned();
     objects.push((6, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned()));
@@ -1014,14 +1017,82 @@ fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_admits_the_dest_va
     named[0].2 = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>".to_owned();
     named.push((6, 0, "<< /A [3 0 R /XYZ 0 400 0] >>".to_owned()));
     redacts_on_both(&classic(&named), "a named /Dests key");
-    // THE VALUE, in a link annotation outside the region.
-    let mut link = page_objects("");
-    link.push((
-        6,
-        0,
-        "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /\n/F 4 >>".to_owned(),
-    ));
-    redacts_on_both(&classic(&link), "/Dest / in a link");
+    // THE VALUE, in a link annotation outside the region, exactly as split admits it: the tagged
+    // follower (LF) and the untagged one (the `>>` closing the annotation).
+    let link = |inside: &str| {
+        let mut objects = page_objects("");
+        objects.push((
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside}"),
+        ));
+        classic(&objects)
+    };
+    for (what, inside) in [
+        ("/Dest / before LF", "/Dest /\n/Border [0 0 0] >>"),
+        ("/Dest / before >>", "/Border [0 0 0]\n/Dest />>"),
+    ] {
+        refused_on_both(&link(inside), "name-read-differently", what);
+    }
+    // THE TWINS: a named /Dest, in the same two places, redacts.
+    for (what, inside) in [
+        ("/Dest /A before LF", "/Dest /A\n/Border [0 0 0] >>"),
+        ("/Dest /A before >>", "/Border [0 0 0]\n/Dest /A>>"),
+    ] {
+        redacts_on_both(&link(inside), what);
+    }
+}
+
+/// THE EMPTY `/Dest` VALUE IN AN OBJECT STREAM refuses redaction too, on both engines: the
+/// members' values are merged with the file's before the check. The twin, the same member with a
+/// named `/Dest`, redacts.
+#[test]
+fn an_empty_dest_value_in_an_object_stream_member_refuses_redaction() {
+    let member = |dest: &str| {
+        with_object_stream(
+            &page_objects(""),
+            7,
+            0,
+            &[(
+                6,
+                format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 /Dest {dest}>>"),
+            )],
+        )
+    };
+    refused_on_both(
+        &member("/"),
+        "name-read-differently",
+        "an empty /Dest value in a member",
+    );
+    redacts_on_both(&member("/A"), "the twin: a named /Dest in a member");
+}
+
+/// THE ANNOTATION WALK (`redact/steps.rs`, the walk that reads qpdf's re-print of every object
+/// with names unjudged) never sees an empty `/Dest` value: with the post-launch removal switched on
+/// and the link inside the region, so that the walk runs, the reference pass has already refused
+/// it, on both followers and both engines. The twin, a named `/Dest`, is removed and redacts.
+#[test]
+fn an_empty_dest_value_in_a_removed_link_refuses_before_the_annotation_walk() {
+    let _removing = crate::redact::hooks::removing_annotations();
+    let link = |inside: &str| {
+        let mut objects = page_objects("/Annots [6 0 R]");
+        objects.push((
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [20 340 120 360] /F 4 {inside}"),
+        ));
+        classic(&objects)
+    };
+    for (what, inside) in [
+        ("/Dest / before LF, removed", "/Dest /\n/Border [0 0 0] >>"),
+        ("/Dest / before >>, removed", "/Border [0 0 0]\n/Dest />>"),
+    ] {
+        refused_on_both(&link(inside), "name-read-differently", what);
+    }
+    redacts_on_both(
+        &link("/Dest /A\n/Border [0 0 0] >>"),
+        "the twin: a named /Dest, removed",
+    );
 }
 
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse (#329; `name_reads_alike`): neither was

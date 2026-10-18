@@ -125,7 +125,18 @@ pub(crate) struct ReferenceRefusals {
     /// says when), as a second line of defence. Every other empty key refuses as [`Self::name`],
     /// and every empty key refuses where this is `false`.
     pub(crate) admit_dests_empty_key: bool,
+    /// Whether an empty name written as a `/Dest` value ([`Found::empty_values`]) passes this
+    /// check: split's, and nothing else's (owner, 2026-10-17). Where it is unset, every one refuses
+    /// as [`Self::name`]. **The default refuses** ([`ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT`]): an
+    /// operation opts in by name, and redaction does not.
+    pub(crate) admit_dest_empty_value: bool,
 }
+
+/// Whether an operation admits an empty `/Dest` value without opting in: **no**. Redaction keeps
+/// the default, so it refuses every empty name, key or value, on both followers and both engines,
+/// as it did before split admitted the value (owner, 2026-10-17). Split alone sets
+/// [`ReferenceRefusals::admit_dest_empty_value`].
+pub(crate) const ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT: bool = false;
 
 /// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
 pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
@@ -139,6 +150,8 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     // REDACTION KEEPS THE CATALOG, so an empty key there would reach the document it hands back,
     // and an empty key was not measured as alike (owner, 2026-10-15).
     admit_dests_empty_key: false,
+    // THE DEFAULT, which refuses: redaction does not opt in to the empty `/Dest` value split admits.
+    admit_dest_empty_value: ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT,
 };
 
 /// What an irregular reference was, for any operation's refusal of it. `operation` names who
@@ -276,6 +289,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
     let mut null_holders = core::mem::take(&mut wanted.null_values);
     let mut dictionary_references = core::mem::take(&mut wanted.dictionary_references);
     let mut empty_keys = core::mem::take(&mut wanted.empty_keys);
+    let mut empty_values = core::mem::take(&mut wanted.empty_values);
     let mut referrers = core::mem::take(&mut wanted.referrers);
     // The numbers object streams list as members: no header in the file speaks for them. Capped
     // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
@@ -324,6 +338,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         null_holders.extend(members.null_values);
         dictionary_references.extend(members.dictionary_references);
         empty_keys.extend(members.empty_keys);
+        empty_values.extend(members.empty_values);
         for (target, counted) in &members.referrers {
             referrers.entry(*target).or_default().absorb(counted);
         }
@@ -377,6 +392,11 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         if nothing && !declared {
             return Err((refusals.nothing)());
         }
+    }
+    // EVERY EMPTY `/Dest` VALUE REFUSES unless the operation opts in. DEFENCE IN DEPTH,
+    // unwitnessed: `accepted` has refused it already where it does not.
+    if !refusals.admit_dest_empty_value && !empty_values.is_empty() {
+        return Err((refusals.name)());
     }
     // EVERY EMPTY KEY REFUSES, unless the operation admits the catalog's `/Dests` dictionary,
     // that is the object holding it, and nothing but the catalog's `/Dests` entry refers to it.
@@ -584,11 +604,18 @@ fn named_by_trailers_only(catalog: c_int, referrers: &BTreeMap<c_int, Referrers>
 }
 
 /// The scan's answer, or the refusal it calls for.
+///
+/// An empty `/Dest` value refuses here, where the scan reads it, unless the operation opts in
+/// ([`ReferenceRefusals::admit_dest_empty_value`]): the same refusal, at the same point, as before
+/// split admitted the value, so an operation that keeps the default refuses as it always did.
 fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
         Some(Irregular::NameReadDifferently) => Err((refusals.name)()),
         Some(Irregular::SyntaxReadDifferently) => Err((refusals.syntax)()),
         Some(why) => Err((refusals.unreadable)(why)),
+        None if !found.empty_values.is_empty() && !refusals.admit_dest_empty_value => {
+            Err((refusals.name)())
+        }
         None => Ok(found),
     }
 }
