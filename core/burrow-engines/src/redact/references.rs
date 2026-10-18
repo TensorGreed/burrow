@@ -81,6 +81,12 @@ const COUNT: Name = Name::literal(b"/N\0");
 /// Where an object stream's first member begins.
 const FIRST: Name = Name::literal(b"/First\0");
 
+/// What a link annotation's own dictionary says it is ([`link_annotation_holds`]).
+const TYPE: Name = Name::literal(b"/Type\0");
+const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+const ANNOT: Name = Name::literal(b"/Annot\0");
+const LINK: Name = Name::literal(b"/Link\0");
+
 /// The trailer's catalog.
 const ROOT: Name = Name::literal(b"/Root\0");
 const DESTS: Name = Name::literal(b"/Dests\0");
@@ -126,8 +132,11 @@ pub(crate) struct ReferenceRefusals {
     /// and every empty key refuses where this is `false`.
     pub(crate) admit_dests_empty_key: bool,
     /// Whether an empty name written as a `/Dest` value ([`Found::empty_values`]) passes this
-    /// check: split's, and nothing else's (owner, 2026-10-17). Where it is unset, every one refuses
-    /// as [`Self::name`]. **The default refuses** ([`ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT`]): an
+    /// check: split's, and nothing else's (owner, 2026-10-17). Admitted only at the top level of a
+    /// link annotation's own dictionary -- an object written once, that qpdf reads as a dictionary
+    /// (not a stream) whose `/Type` is `/Annot` and whose `/Subtype` is `/Link` -- which is where
+    /// Chrome writes it; one nested deeper, in a form, in a trailer or anywhere else refuses as
+    /// [`Self::name`]. **The default refuses** ([`ADMIT_DEST_EMPTY_VALUE_BY_DEFAULT`]): an
     /// operation opts in by name, and redaction does not.
     pub(crate) admit_dest_empty_value: bool,
 }
@@ -393,10 +402,15 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
             return Err((refusals.nothing)());
         }
     }
-    // EVERY EMPTY `/Dest` VALUE REFUSES unless the operation opts in. DEFENCE IN DEPTH,
-    // unwitnessed: `accepted` has refused it already where it does not.
-    if !refusals.admit_dest_empty_value && !empty_values.is_empty() {
-        return Err((refusals.name)());
+    // EVERY EMPTY `/Dest` VALUE REFUSES unless the operation opts in -- `accepted` has refused it
+    // already where it does not -- and, where it does, unless a link annotation's own dictionary
+    // holds it (owner, 2026-10-17).
+    for holder in &empty_values {
+        if !refusals.admit_dest_empty_value
+            || !link_annotation_holds(document, &wanted, &listings, holder)?
+        {
+            return Err((refusals.name)());
+        }
     }
     // EVERY EMPTY KEY REFUSES, unless the operation admits the catalog's `/Dests` dictionary,
     // that is the object holding it, and nothing but the catalog's `/Dests` entry refers to it.
@@ -512,6 +526,52 @@ fn written_once(wanted: &Found, listings: &[c_int], identity: (c_int, c_int)) ->
         _ => false,
     };
     (number > 0 && once).then_some(number)
+}
+
+/// Whether `holder` is the top level of a link annotation's own dictionary: a direct key of an
+/// object written exactly once ([`written_once`]), which qpdf reads as a dictionary -- not a stream,
+/// so a form's dictionary is not one -- whose `/Type` is `/Annot` and whose `/Subtype` is `/Link`.
+/// Chrome's empty `/Dest` value stands nowhere else (the private inventory, 2026-10-16), and an
+/// annotation with no `/Type`, or of another subtype, is refused rather than reasoned about.
+fn link_annotation_holds<D: PdfDocument>(
+    document: &D,
+    wanted: &Found,
+    listings: &[c_int],
+    holder: &Holder,
+) -> Result<bool> {
+    let (true, Some(number)) = (holder.direct, holder.object) else {
+        return Ok(false);
+    };
+    // THE GENERATION OF ITS ONE COPY: its one header's, or 0 for an object-stream member. Anything
+    // else is not written once, and `written_once` refuses it below.
+    let generation = wanted
+        .declarations
+        .get(&number)
+        .and_then(|declared| declared.generations.first().copied())
+        .unwrap_or(0);
+    let Some(number) = written_once(wanted, listings, (number, generation)) else {
+        return Ok(false);
+    };
+    let object = document.object(number, generation)?;
+    // A STREAM IS NOT ONE, whatever its dictionary says. DEFENCE IN DEPTH, unwitnessed: the reads
+    // below do not find a link's `/Type` and `/Subtype` through a stream's handle either (its
+    // dictionary is `stream_dict`), so the mutation that drops this clause survives (measured: the
+    // fixture's stream that claims to be a link still refuses, and its named twin opens).
+    let link = if object.type_code() == object_type::DICTIONARY {
+        let kind = object.key(&TYPE);
+        let subtype = object.key(&SUBTYPE);
+        let link = kind.type_code() == object_type::NAME
+            && kind.name()? == ANNOT
+            && subtype.type_code() == object_type::NAME
+            && subtype.name()? == LINK;
+        subtype.drained()?;
+        kind.drained()?;
+        link
+    } else {
+        false
+    };
+    object.drained()?;
+    Ok(link)
 }
 
 /// Where an empty key may stand, as [`catalog_dests`] found the catalog.

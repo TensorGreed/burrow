@@ -776,6 +776,117 @@ fn an_empty_dest_closing_its_link_opens_split_and_an_empty_key_there_refuses() {
     }
 }
 
+/// WHERE THE EMPTY `/Dest` VALUE MAY STAND (owner, 2026-10-17): at the top level of a link
+/// annotation's own dictionary, where Chrome writes it, and nowhere else. One level down -- in a
+/// dictionary a link holds, or in one a used form's dictionary holds -- at the top level of a used
+/// form's dictionary, which is a stream's, or in an annotation that is not a link, one with no
+/// `/Type`, or a stream whose dictionary reads as a link's, it refuses, before either follower. The twins, the same value at a link's top level,
+/// open.
+#[test]
+fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
+    const FORM_SHOWN: &str = "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do";
+    let annotation = |opening: &str, inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< {opening} /Rect [200 20 260 40] /F 4 {inside}"),
+        )]
+    };
+    let link = |inside: &str| annotation("/Type /Annot /Subtype /Link", inside);
+    let form = |inside: &str| {
+        let drawn = "0 0 m 1 1 l S";
+        vec![(
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] {inside} /Length {} >>\n\
+                 stream\n{drawn}\nendstream",
+                drawn.len()
+            ),
+        )]
+    };
+    let in_link = |more: &[Written]| classic(&document(PLAIN_CATALOG, "", SHOWN, more));
+    let in_form = |more: &[Written]| {
+        classic(&document(
+            PLAIN_CATALOG,
+            "/XObject << /X1 7 0 R >>",
+            FORM_SHOWN,
+            more,
+        ))
+    };
+    for (what, pdf) in [
+        (
+            "nested in a link, before LF",
+            in_link(&link("/A << /S /GoTo /Dest /\n>> >>")),
+        ),
+        (
+            "nested in a link, before >>",
+            in_link(&link("/A << /S /GoTo /Dest />> >>")),
+        ),
+        (
+            "nested in a used form, before LF",
+            in_form(&form("/Info << /Dest /\n>>")),
+        ),
+        (
+            "nested in a used form, before >>",
+            in_form(&form("/Info << /Dest />>")),
+        ),
+        (
+            "a used form's top level, before LF",
+            in_form(&form("/Dest /\n")),
+        ),
+        (
+            "an annotation that is not a link",
+            in_link(&annotation("/Type /Annot /Subtype /Text", "/Dest /\n>>")),
+        ),
+        (
+            "a link with no /Type",
+            in_link(&annotation("/Subtype /Link", "/Dest /\n>>")),
+        ),
+        (
+            "a stream whose dictionary reads as a link's",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /\n/Length 0 >>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+    ] {
+        refuses(what, &pdf, "[split-name-read-differently]");
+    }
+    // THE TWINS: the same value at a link's top level, on both followers, and the forms above
+    // with a named /Dest, open.
+    for (what, pdf) in [
+        (
+            "a link's top level, before LF",
+            in_link(&link("/Dest /\n>>")),
+        ),
+        ("a link's top level, before >>", in_link(&link("/Dest />>"))),
+        (
+            "nested in a link, named",
+            in_link(&link("/A << /S /GoTo /Dest /A\n>> >>")),
+        ),
+        (
+            "a used form's top level, named",
+            in_form(&form("/Dest /A\n")),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, named",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /A\n/Length 0 >>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+    ] {
+        opens(what, &pdf);
+    }
+}
+
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
 /// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
 #[test]

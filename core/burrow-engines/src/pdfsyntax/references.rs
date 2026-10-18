@@ -185,8 +185,8 @@ pub struct Found {
     /// Every empty name written as a `/Dest` **value** before one of the followers Chrome writes
     /// (LF, or the `>>` closing its dictionary), with the object holding it and whether it stands
     /// in that object's own top-level dictionary. **These are not accepted by the scan either**:
-    /// the caller refuses every one unless its operation admits it (split; owner, 2026-10-17), so
-    /// a caller that ignores this
+    /// the caller refuses every one unless its operation admits it (split, and only at the top
+    /// level of a link annotation's dictionary; owner, 2026-10-17), so a caller that ignores this
     /// field accepts empty `/Dest` values. Recorded where the bytes are judged as written
     /// ([`in_file`], [`in_object_stream`]); bounded, as the other lists are, by the work budget.
     pub empty_values: Vec<Holder>,
