@@ -2214,9 +2214,9 @@ mod second_reading {
     #[test]
     fn r1_a_placement_defect_burrow_makes_twice_is_refused_by_the_renderer() {
         // THE CASE THE SECOND READING EXISTS FOR. The font reader misreads `/Widths`, in both of
-        // burrow's passes, as a real placement defect would: the operation places the second
-        // glyph at x = 15.6, outside the region, removes nothing, and burrow's own verification
-        // agrees. Only PDFium puts it inside.
+        // burrow's passes, as a real placement defect would: the operation places glyphs seven to
+        // twenty no further right than x = 20.6, their boxes short of the region, removes nothing,
+        // and burrow's own verification agrees. Only PDFium puts them inside.
         //
         // TWIN FIRST: the same document with the reader correct redacts, so the refusal below is
         // the defect's and not the document's.
@@ -2246,6 +2246,17 @@ mod second_reading {
         // find; R2 is not asked, because the output walks no glyph. This is the R1 sensitivity
         // the envelope absorbs, pinned so that its moving back is seen.
         reset();
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let shown = |bytes: &[u8]| {
+            crate::glyphs_on_first_page(bytes, &options)
+                .expect("the document walks")
+                .len()
+        };
+        assert_eq!(
+            shown(&document(CARRIED_BY_A_WIDTH)),
+            2,
+            "the input shows both glyphs"
+        );
         WIDTHS_MISREAD.with(|flag| flag.set(true));
         let planted = redact(CARRIED_BY_A_WIDTH);
         let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
@@ -2254,7 +2265,10 @@ mod second_reading {
             misread > 0,
             "the planted defect did not apply: no font's widths were read"
         );
-        assert_eq!(rule_of(planted), "Ok");
+        let output = planted.unwrap_or_else(|error| panic!("the flip must redact: {error}"));
+        // THE CUT, counted directly rather than implied by `Ok`: walked with the reader correct,
+        // the output shows neither glyph.
+        assert_eq!(shown(&output), 0, "both glyphs are cut");
     }
 
     /// As [`document`], with `fonts` added to the page's `/Font` (beside `/F1`), `xobjects` as its

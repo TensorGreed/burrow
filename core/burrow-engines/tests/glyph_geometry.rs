@@ -1561,12 +1561,18 @@ fn real_producer_boxes_contain_their_ink_and_stay_near_their_floor() {
         "P2/P3 examined {examined} glyph(s); P3 against the loose box alone would fail \
          {loose_alone_fails}"
     );
-    assert!(examined > 100, "examined only {examined} glyph(s)");
+    // EXACT, because both pages are committed fixtures: a count that moves means the walk, the
+    // oracle or the fixtures changed, and the figure in `MAX_CONSERVATIVE_AREA_RATIO`'s rustdoc
+    // (145 of 238) is no longer a measurement. Re-measure and update both together.
+    assert_eq!(
+        examined, 238,
+        "P2/P3 examined {examined} glyph(s), not the 238 the two pages draw"
+    );
     if ENVELOPE_RULE == EnvelopeRule::Always {
-        assert!(
-            loose_alone_fails > 0,
-            "no glyph would fail P3 against the loose box alone, so the re-derived floor is not \
-             what this rule needs -- re-measure before keeping it"
+        assert_eq!(
+            loose_alone_fails, 145,
+            "P3 against the loose box alone would fail {loose_alone_fails} glyph(s), not the 145 \
+             MAX_CONSERVATIVE_AREA_RATIO's rustdoc records -- re-measure the re-derived floor"
         );
     }
 }

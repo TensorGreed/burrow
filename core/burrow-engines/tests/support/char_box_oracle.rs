@@ -129,9 +129,10 @@ pub const TOLERANCE_PT: f64 = burrow_engines::redact_read_back::TOLERANCE_PT;
 ///
 /// Re-derived, not bumped. Under `EnvelopeRule::Always` every glyph's box contains
 /// `FLOOR_ENVELOPE` at its font size: 1.316 by 1.303 em, about 1.71 square ems, whatever the glyph.
-/// P3 against the loose box alone fails boxes that are exactly what the rule asks for: on the two producer pages
-/// `real_producer_boxes_contain_their_ink_and_stay_near_their_floor` reads, 145 of 238 glyphs
-/// (measured, 2026-10-17), and a zero-width glyph's loose box gives no bound at all.
+/// P3 against the loose box alone fails boxes that are exactly what the rule asks for: on the
+/// two producer pages `real_producer_boxes_contain_their_ink_and_stay_near_their_floor` reads,
+/// 145 of 238 glyphs (measured, 2026-10-17; that test asserts both counts exactly), and a
+/// zero-width glyph's loose box gives no bound at all.
 ///
 /// What P3 is for is unchanged: a box that has become "covers the page" is hundreds of times
 /// either floor. The four keeps its original argument, now for a declared box's excess over the
