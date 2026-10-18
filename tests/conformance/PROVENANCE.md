@@ -175,7 +175,7 @@ Chrome-printed file (owner, 2026-10-15).
   committed bytes; regenerating changes it, and that is a deliberate commit, never accepted drift.
 - **Split accepts it (#358).** Chrome writes `href="#"` as an empty-name destination (`/Dest /`),
   and the untagged print closes the annotation straight after it (`/Dest />>`). Split admits that
-  value and Chrome's empty `/Dests` key; redaction still refuses the key.
+  value and Chrome's empty `/Dests` key; redaction refuses both.
 - **`chrome-printed-tagged.pdf` is the same page printed with `--tagged`.** Chrome then writes the
   empty destination followed by a line break instead, so the two files hold both followers split
   admits. Same generator, same checks (shipped face only, no `/URI`, no `http`), same

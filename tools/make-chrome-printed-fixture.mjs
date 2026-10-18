@@ -51,7 +51,7 @@ const { chromium } = require("@playwright/test");
 
 // `--tagged` prints the same page with Chrome's accessibility tags (`tagged: true`), which writes
 // the same empty destination as a link annotation's value followed by a line break rather than by
-// `>>`, plus an empty `/Dests` key; the default is the untagged shape.
+// `>>`. Both prints also write an empty `/Dests` key. The default is the untagged shape.
 const tagged = process.argv.includes("--tagged");
 const out = join(
   repo,
