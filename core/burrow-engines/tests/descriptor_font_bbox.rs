@@ -462,7 +462,7 @@ fn the_envelope_is_the_union_of_the_core_afm_boxes() {
 }
 
 #[test]
-fn the_rule_in_force_is_the_owners_default_and_both_rules_say_what_they_say() {
+fn the_rule_in_force_is_the_owners_choice_and_both_rules_say_what_they_say() {
     // THE SWITCH, pinned both ways: the census measures each rule by flipping `ENVELOPE_RULE`, and
     // a flip that left this green would mean the switch is not the rule's only input.
     assert!(EnvelopeRule::Always.applies(true));
@@ -472,7 +472,8 @@ fn the_rule_in_force_is_the_owners_default_and_both_rules_say_what_they_say() {
     assert_eq!(
         ENVELOPE_RULE,
         EnvelopeRule::Always,
-        "the owner's default (D2 (b)); a census of the other rule flips this deliberately"
+        "owner, 2026-10-18: Always (variant (b)); a census of the other rule flips this \
+         deliberately"
     );
 }
 
@@ -539,6 +540,38 @@ fn a_composite_fonts_box_is_read_from_its_descendants_descriptor() {
             &format!("{subtype}, twin"),
             &composite(subtype, DEEP, "", "/DW 556", &short, &[]),
             (X, DEEP),
+        );
+    }
+}
+
+#[test]
+fn an_undersized_descendant_box_is_covered_by_the_envelope_under_the_always_rule() {
+    // F-11 on a composite font: the descendant's descriptor declares a usable box that stops at the
+    // baseline, so only the envelope reaches the region from here. Every other composite fixture
+    // declares a box that reaches on its own, so none of them can see a composite glyph losing the
+    // envelope. The twin sits where the envelope stops short.
+    let undersized = "/FontBBox [0 0 1000 700]";
+    for subtype in ["CIDFontType2", "CIDFontType0"] {
+        match ENVELOPE_RULE {
+            EnvelopeRule::Always => {
+                removed(
+                    &format!("{subtype}, an undersized descendant box"),
+                    &composite(subtype, ENVELOPE_REACHES, "", "/DW 556", undersized, &[]),
+                    (X, ENVELOPE_REACHES),
+                );
+            }
+            EnvelopeRule::WhenNoUsableBox => {
+                kept(
+                    &format!("{subtype}, an undersized descendant box, narrower rule"),
+                    &composite(subtype, ENVELOPE_REACHES, "", "/DW 556", undersized, &[]),
+                    (X, ENVELOPE_REACHES),
+                );
+            }
+        }
+        kept(
+            &format!("{subtype}, an undersized descendant box, twin"),
+            &composite(subtype, ENVELOPE_SHORT, "", "/DW 556", undersized, &[]),
+            (X, ENVELOPE_SHORT),
         );
     }
 }
@@ -719,8 +752,9 @@ fn a_descender_with_no_declared_box_is_inked_in_the_region_and_removed() {
 #[test]
 fn an_undersized_declared_box_is_covered_by_the_envelope_only_under_the_always_rule() {
     // F-11: a usable box that stops at the baseline, on a font whose `g` inks below it. Under the
-    // owner's default the envelope covers it; under the narrower rule the declared box is trusted
-    // and the ink stays -- the residue that rule accepts, measured here rather than described.
+    // rule in force (`Always`, owner 2026-10-18) the envelope covers it; under the narrower rule
+    // the declared box is trusted and the ink stays -- the residue that rule accepts, measured
+    // here rather than described.
     let pdf = simple("Type1", INKS, "0 0 1000 700", None);
     assert!(dark_in_region(&pdf) > 0, "the input must ink the region");
     match ENVELOPE_RULE {
@@ -759,8 +793,9 @@ fn a_box_of_three_numbers_falls_back_to_the_envelope() {
 fn a_box_of_more_than_four_items_refuses_at_every_site() {
     // F-7b, the owner's refusal of 2026-10-17. Its near-miss twin is EXACTLY FOUR NUMERIC items,
     // admitted and used: `a_type1_descriptor_box_is_read` and its siblings. Five numbers, and five
-    // with a name in them -- which proves no item is read before the count is checked: a name read
-    // first would refuse the same way, so the all-number case is the discriminating one.
+    // with a name in them. The all-number case is the one that separates the too-many-items
+    // refusal from the non-number refusal: a name refuses under either, five numbers only under
+    // the count. It says nothing about the order the two checks run in.
     for items in [format!("{REACHES} 0"), format!("{REACHES} /Extra")] {
         refuses(
             "descriptor",
@@ -788,10 +823,13 @@ fn a_box_of_more_than_four_items_refuses_at_every_site() {
 }
 
 #[test]
-fn a_huge_box_shared_by_many_fonts_refuses_without_reading_it() {
+fn a_fast_refusal_on_a_shared_huge_box() {
     // THE COST FIXTURE: one 65,536-item `/FontBBox`, the most `numbers_strict` would read, in one
-    // descriptor shared by 400 fonts that the page all draws with. Read item by item before the
-    // count were checked, that is 26 million reads; checked first, it is one refusal.
+    // descriptor shared by 400 fonts that the page all draws with. Under the old fall-back, which
+    // read a box that was not four numbers in full and then used none, that was a 65,536-item read
+    // for every font. The refusal removes that cost: the first font to read the box refuses the
+    // document. What this pins is the refusal; checking the count before reading any item is
+    // cheap, but nothing here tells it apart from one full read followed by the refusal.
     let fonts = 400;
     let mut content = String::new();
     let mut names = String::new();
@@ -828,7 +866,7 @@ fn a_huge_box_shared_by_many_fonts_refuses_without_reading_it() {
     let started = std::time::Instant::now();
     refuses("a 65,536-item box", &pdf, "number-unreadable");
     let took = started.elapsed();
-    // GENEROUS, because a busy machine is not a defect: the read it replaces is two orders above.
+    // GENEROUS, because a busy machine is not a defect. It is not a measure of the read order.
     assert!(
         took < std::time::Duration::from_secs(10),
         "the refusal took {took:?}"
@@ -1025,6 +1063,33 @@ fn horizontal_scaling_scales_the_declared_box_once() {
 }
 
 #[test]
+fn horizontal_scaling_leaves_the_envelopes_height_alone() {
+    // L-a: `Tz` scales the envelope's width, never its height. A font with no declared box, so the
+    // envelope is all that reaches below the baseline: under `Tz 50` it still reaches 0.293 em
+    // down from [`ENVELOPE_REACHES`], and stops short from [`ENVELOPE_SHORT`]. An envelope scaled
+    // by `Tz` in both axes reaches only half as far and keeps the first glyph too.
+    let font = simple_font("Type1", "");
+    let at = |y: f64| {
+        document(
+            &format!("BT /F1 {SIZE} Tf 50 Tz {X} {y} Td (g) Tj ET\n"),
+            font.as_bytes(),
+            "",
+            &[],
+        )
+    };
+    removed(
+        "Tz 50, envelope only",
+        &at(ENVELOPE_REACHES),
+        (X, ENVELOPE_REACHES),
+    );
+    kept(
+        "Tz 50, envelope only, twin",
+        &at(ENVELOPE_SHORT),
+        (X, ENVELOPE_SHORT),
+    );
+}
+
+#[test]
 fn a_negative_size_or_scale_flips_the_envelope_and_it_still_reaches() {
     // F-18: `-40 Tf` turns the glyph upside down, so the envelope's 0.293 em below the baseline is
     // 11.72 points ABOVE it, where the advance box -- now below the baseline -- is not. `-100 Tz`
@@ -1164,4 +1229,44 @@ fn the_type3_image_check_does_not_use_the_envelope() {
         ),
         "type-three-image-outside-its-box",
     );
+    // The twin: the same font with a dictionary box that contains the image redacts.
+    redact(&type_three_with(
+        "BT /F1 12 Tf 20 350 Td (g) Tj ET\n",
+        "/FontBBox [0 -200 1000 800]",
+        "[0.0001 0 0 0.0001 0 0]",
+        &widths,
+        "",
+        procedure,
+        &[],
+    ))
+    .expect("the twin: the dictionary's box contains the image");
+}
+
+#[test]
+fn the_type3_image_check_uses_no_envelope_in_either_unit() {
+    // F-10b at a `/FontMatrix` above one: the envelope's numbers read as glyph units here, not as
+    // thousandths of them. With no dictionary box, an image drawn within those numbers in glyph
+    // space is outside any box the font declares, and refuses. Together with
+    // `the_type3_image_check_does_not_use_the_envelope`, no reading of the envelope as a
+    // glyph-space box can contain the image. The glyph sits far from the region, so the image
+    // check is the only thing that can refuse.
+    let procedure = b"1 0 d0\nq 1 0 0 1 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    let widths = format!("[{}]", vec!["1"; 39].join(" "));
+    let far = "BT /F1 1 Tf 20 350 Td (g) Tj ET\n";
+    refuses(
+        "no dictionary box, glyph units above one",
+        &type_three_with(far, "", "[10 0 0 10 0 0]", &widths, "", procedure, &[]),
+        "type-three-image-outside-its-box",
+    );
+    // The twin: a dictionary box holding the image redacts.
+    redact(&type_three_with(
+        far,
+        "/FontBBox [0 0 1 1]",
+        "[10 0 0 10 0 0]",
+        &widths,
+        "",
+        procedure,
+        &[],
+    ))
+    .expect("the twin: the dictionary's box contains the image");
 }
