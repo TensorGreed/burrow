@@ -971,7 +971,7 @@ pub const FLOOR_ENVELOPE: Rect = Rect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvelopeRule {
     /// Always, whatever the font declares: an undersized declared box is covered up to the
-    /// envelope's extent. The owner's default.
+    /// envelope's extent. The rule in force (owner, 2026-10-18).
     Always,
     /// Only when the font declares no usable box -- none of four numbers with area. A declared
     /// box is then trusted, so an undersized one is a residue.
@@ -989,7 +989,8 @@ impl EnvelopeRule {
     }
 }
 
-/// The rule in force. #344's census measures both; the owner chooses on its numbers.
+/// The rule in force: owner, 2026-10-18: `Always` (variant (b)). It stays a switch because it is
+/// the census switch: #344's census measured both rules by flipping it, and a later one can.
 pub const ENVELOPE_RULE: EnvelopeRule = EnvelopeRule::Always;
 
 impl Glyph {

@@ -1512,11 +1512,14 @@ fn declare_box<O: PdfObject>(facts: &mut FontFacts, handle: &O) -> Result<()> {
 /// A box: `None` when absent or not four numbers, and a refusal when an item is not a number or
 /// the array holds more than four.
 ///
-/// # More than four items refuses, WITHOUT READING ONE (#344, owner 2026-10-17)
+/// # More than four items refuses (#344, owner 2026-10-17)
 ///
-/// [`numbers_strict`] reads up to [`MAX_NUMBER_ARRAY`] items before an arity check could reject
-/// them, and #344 added read sites: a 65,536-item box shared by every font on a page cost a
-/// 65,536-item read per font. The count is checked first. A refusal rather than a fall-back,
+/// [`numbers_strict`] reads up to [`MAX_NUMBER_ARRAY`] items, and before #344 a box that was not
+/// four numbers fell back to no box after being read in full. #344 added read sites, so under
+/// that fall-back a 65,536-item box shared by every font on a page cost a 65,536-item read per
+/// font. The refusal removes that cost. The count is checked before any item is read, which is
+/// cheap, but no test pins that order separately: a read followed by the refusal is as correct
+/// and costs one such read. A refusal rather than a fall-back,
 /// because falling back would move a Type 3 dictionary box holding a fifth, non-number item from
 /// refused (ADR 0029 row 133) to `Ok`. Census before the change: 0 of 100 real documents carry a
 /// `/FontBBox` of more than four items, in 1,852 sites.

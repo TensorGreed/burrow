@@ -242,8 +242,9 @@ unsafe extern "C" {
     // POSITIONS ONLY, AND THE LIST IS CLOSED. These five open and close a page's text, count its
     // characters, and answer where PDFium places each one (its pen origin) and whether PDFium
     // invented it. The ink box (`FPDFText_GetCharBox`) is deliberately not declared until #206's
-    // ink half, which follows #344 (see `redact_read_back`'s R1). No function that returns a character's Unicode or a page's
-    // text is named anywhere in this crate's library source (`src/`) -- `FPDFText_GetUnicode`,
+    // ink half, which follows #344 (see `redact_read_back`'s R1). No function that returns a
+    // character's Unicode or a page's text is named anywhere in this crate's library source
+    // (`src/`) -- `FPDFText_GetUnicode`,
     // `FPDFText_GetText`, `FPDFText_GetBoundedText` and the rest. The one exception is the
     // test-only oracle in `tests/support/char_box_oracle.rs`, which never ships. The reason is
     // that a reading that decodes through the font verifies the document's own claim about itself
