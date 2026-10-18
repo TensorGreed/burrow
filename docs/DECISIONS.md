@@ -193,6 +193,15 @@ one is decided in an issue, with the same three parts.
     refusal rate is the launch metric; and the final spec-review round itself, which hunts the
     whole class by design.
 
+    **Amended 2026-10-17: launch scope.** Slice 2b (refuse ink removal on pages with
+    `/StructParents` or an `/MCID`; the ADR 0029 amendment, lane 1d), the `/Link` narrowing and the
+    iOS offset-0 narrowing (lane 1e) are post-launch. Lane 1's queue after the Chrome split fix
+    (1a) is #344 (1b), then the core ink half of #206 (1c), and nothing else. This narrows the
+    launch plan above. Rule 19's principle is unchanged; its 2b instance now applies after launch.
+    The PDFium ink read-back still gates S9 via #206's ink half. *Decided:* owner, 2026-10-17.
+    *Does not cover:* the final spec review, which still hunts the whole class, or whether any of
+    the three comes back before a later milestone.
+
 18. **A release that closes a live leak may re-record and raise its size budgets to their policy
     minimums without asking, provided the base module's real growth in that PR is under 10%.** The
     before and after numbers are reported in the batch summary. Anything over 10%, or any change to
@@ -260,6 +269,12 @@ one is decided in an issue, with the same three parts.
 23. **Every merge names the review(s) it satisfied under rule 17; a merge with no named review is a
     stop.** *Decided:* owner, 2026-10-16. *Does not cover:* what a review must find, which rule 17
     and rule 15 set; this rule only makes the review visible at the merge.
+
+24. **A round is not finished until it is saved.** A round (round 0, a review round, a
+    measurement) is not finished until its inputs, outputs and any measurement patch are saved
+    under ~/burrow-security or ~/burrow-census, named with the SHA they ran on. The Friday report
+    lists each round's path. Rebuilding a lost artefact is logged as a miss. *Decided:* owner,
+    2026-10-17. *Does not cover:* what goes in each artefact.
 
 ## Spec review first (the practice that uses rule 10)
 
