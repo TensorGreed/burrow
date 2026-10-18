@@ -1505,8 +1505,9 @@ fn empty_names(pdf: &[u8]) -> usize {
             .count()
 }
 
-/// THE PROBE FOR `empty_names`, so a count of zero below is a measurement: it finds the empty key
-/// and both empty values, and passes the near-miss twins, a one-byte name in each place.
+/// THE PROBE FOR `empty_names`, so a count of zero below is a measurement: it finds the empty key,
+/// both empty values and an object stream, and passes the near-miss twins -- a one-byte name in
+/// each place, and a stream of another type.
 #[test]
 fn the_empty_name_finder_finds_each_shape_and_passes_its_twin() {
     for (what, found, twin) in [
@@ -1521,6 +1522,11 @@ fn the_empty_name_finder_finds_each_shape_and_passes_its_twin() {
             "<</Dest /A\n/F 4>>",
         ),
         ("a value before >>", "<</F 4 /Dest />>", "<</F 4 /Dest /A>>"),
+        (
+            "an object stream, which would hide its members",
+            "<</Type /ObjStm /N 1>>",
+            "<</Type /XRef>>",
+        ),
     ] {
         assert_eq!(empty_names(found.as_bytes()), 1, "{what}");
         assert_eq!(empty_names(twin.as_bytes()), 0, "{what}: twin");

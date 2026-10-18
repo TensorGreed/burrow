@@ -780,8 +780,9 @@ fn an_empty_dest_closing_its_link_opens_split_and_an_empty_key_there_refuses() {
 /// annotation's own dictionary, where Chrome writes it, and nowhere else. One level down -- in a
 /// dictionary a link holds, or in one a used form's dictionary holds -- at the top level of a used
 /// form's dictionary, which is a stream's, or in an annotation that is not a link, one with no
-/// `/Type`, or a stream whose dictionary reads as a link's, it refuses, before either follower. The twins, the same value at a link's top level,
-/// open.
+/// `/Type`, or a stream whose dictionary reads as a link's, it refuses, before each follower (LF,
+/// and the `>>` closing its dictionary). After an integer value it is the next key, not the value,
+/// and refuses before LF too. The twins, the same value at a link's top level, open.
 #[test]
 fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
     const FORM_SHOWN: &str = "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do";
@@ -799,7 +800,7 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
             7,
             0,
             format!(
-                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] {inside} /Length {} >>\n\
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length {} {inside}\n\
                  stream\n{drawn}\nendstream",
                 drawn.len()
             ),
@@ -825,26 +826,38 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
         ),
         (
             "nested in a used form, before LF",
-            in_form(&form("/Info << /Dest /\n>>")),
+            in_form(&form("/Info << /Dest /\n>> >>")),
         ),
         (
             "nested in a used form, before >>",
-            in_form(&form("/Info << /Dest />>")),
+            in_form(&form("/Info << /Dest />> >>")),
         ),
         (
             "a used form's top level, before LF",
-            in_form(&form("/Dest /\n")),
+            in_form(&form("/Dest /\n>>")),
         ),
         (
-            "an annotation that is not a link",
+            "a used form's top level, before >>",
+            in_form(&form("/Dest />>")),
+        ),
+        (
+            "an annotation that is not a link, before LF",
             in_link(&annotation("/Type /Annot /Subtype /Text", "/Dest /\n>>")),
         ),
         (
-            "a link with no /Type",
+            "an annotation that is not a link, before >>",
+            in_link(&annotation("/Type /Annot /Subtype /Text", "/Dest />>")),
+        ),
+        (
+            "a link with no /Type, before LF",
             in_link(&annotation("/Subtype /Link", "/Dest /\n>>")),
         ),
         (
-            "a stream whose dictionary reads as a link's",
+            "a link with no /Type, before >>",
+            in_link(&annotation("/Subtype /Link", "/Dest />>")),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, before LF",
             in_link(&[(
                 6,
                 0,
@@ -852,6 +865,20 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
                  stream\n\nendstream"
                     .to_owned(),
             )]),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, before >>",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Length 0 /Dest />>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+        (
+            "after an integer value, before LF: the next key",
+            in_link(&link("/Dest 5 /\n6 >>")),
         ),
     ] {
         refuses(what, &pdf, "[split-name-read-differently]");
@@ -870,7 +897,11 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
         ),
         (
             "a used form's top level, named",
-            in_form(&form("/Dest /A\n")),
+            in_form(&form("/Dest /A\n>>")),
+        ),
+        (
+            "after an integer value before another key, before LF",
+            in_link(&link("/K 5 /Dest /\n>>")),
         ),
         (
             "a stream whose dictionary reads as a link's, named",
@@ -885,6 +916,29 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
     ] {
         opens(what, &pdf);
     }
+}
+
+/// A LINK WRITTEN TWICE is not one whose empty `/Dest` value split admits (round 1's reviews): an
+/// incremental update that writes the same link again leaves two copies of the object, and which
+/// one a reader takes is not something the rule reasons about, so it refuses. The twins open: the
+/// same link written once, and the same link written twice with a named `/Dest`, so it is the empty
+/// value that refuses, not the update.
+#[test]
+fn an_empty_dest_value_opens_split_only_in_a_link_written_once() {
+    let link = |dest: &str| {
+        format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 /Dest {dest}\n>>")
+    };
+    let once = |dest: &str| classic(&document(PLAIN_CATALOG, "", SHOWN, &[(6, 0, link(dest))]));
+    refuses(
+        "an empty /Dest value in a link written twice",
+        &with_revision(&once("/"), 6, &link("/")),
+        "[split-name-read-differently]",
+    );
+    opens("the twin: the same link written once", &once("/"));
+    opens(
+        "the twin: a named /Dest in a link written twice",
+        &with_revision(&once("/A"), 6, &link("/A")),
+    );
 }
 
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),

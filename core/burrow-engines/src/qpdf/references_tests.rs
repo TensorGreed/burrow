@@ -1043,9 +1043,9 @@ fn the_chrome_empty_names_redaction_refuses_the_dests_key_and_the_dest_value() {
     }
 }
 
-/// THE EMPTY `/Dest` VALUE IN AN OBJECT STREAM refuses redaction too, on both engines: the
-/// members' values are merged with the file's before the check. The twin, the same member with a
-/// named `/Dest`, redacts.
+/// THE EMPTY `/Dest` VALUE IN AN OBJECT STREAM refuses redaction too, before both followers and on
+/// both engines: the members' values are merged with the file's before the check. The twins, the
+/// same member with a named `/Dest`, redact.
 #[test]
 fn an_empty_dest_value_in_an_object_stream_member_refuses_redaction() {
     let member = |dest: &str| {
@@ -1059,12 +1059,47 @@ fn an_empty_dest_value_in_an_object_stream_member_refuses_redaction() {
             )],
         )
     };
+    for (what, dest) in [
+        ("an empty /Dest value in a member, before >>", "/"),
+        ("an empty /Dest value in a member, before LF", "/\n"),
+    ] {
+        refused_on_both(&member(dest), "name-read-differently", what);
+    }
+    for (what, dest) in [
+        ("the twin: a named /Dest in a member, before >>", "/A"),
+        ("the twin: a named /Dest in a member, before LF", "/A\n"),
+    ] {
+        redacts_on_both(&member(dest), what);
+    }
+}
+
+/// THE ORDER OF REDACTION'S REFUSALS: an empty `/Dest` value refuses where the scan reads it, before
+/// the lookups, so a document that also refers to an object that is not there refuses as a name,
+/// on both engines and both followers, as it did before split admitted the value. The loop after
+/// the lookups refuses it too, as defence in depth; this is what tells the first refusal from the
+/// second. The twin, the same document with a named `/Dest`, refuses as the reference to nothing.
+#[test]
+fn an_empty_dest_value_refuses_redaction_before_a_reference_to_nothing() {
+    let link = |inside: &str| {
+        let mut objects = page_objects("/Extra 9 0 R");
+        objects.push((
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside}"),
+        ));
+        classic(&objects)
+    };
+    for (what, inside) in [
+        ("/Dest / before LF, and 9 0 R absent", "/Dest /\n>>"),
+        ("/Dest / before >>, and 9 0 R absent", "/Dest />>"),
+    ] {
+        refused_on_both(&link(inside), "name-read-differently", what);
+    }
     refused_on_both(
-        &member("/"),
-        "name-read-differently",
-        "an empty /Dest value in a member",
+        &link("/Dest /A\n>>"),
+        "reference-to-nothing",
+        "the twin: a named /Dest, and 9 0 R absent",
     );
-    redacts_on_both(&member("/A"), "the twin: a named /Dest in a member");
 }
 
 /// THE ANNOTATION WALK (`redact/steps.rs`, the walk that reads qpdf's re-print of every object

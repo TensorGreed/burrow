@@ -226,7 +226,7 @@ pub struct Referrers {
 
 impl Referrers {
     /// Add `other`'s counts to these, keeping the first `/Dests` holder seen.
-    pub fn absorb(&mut self, other: &Self) {
+    pub(crate) fn absorb(&mut self, other: &Self) {
         self.sites = self.sites.saturating_add(other.sites);
         self.held = self.held.saturating_add(other.held);
         self.dests_entries = self.dests_entries.saturating_add(other.dests_entries);
@@ -718,8 +718,9 @@ const EMPTY_VALUE_PARENTS: [&[u8]; 1] = [b"Dest"];
 /// closing its dictionary; and a **key** of an object's own top-level dictionary, or of a dictionary
 /// written directly as its top-level `/Dests` value, followed by one space. Those are the followers
 /// Chrome writes (owner, 2026-10-16); the other white space and delimiters measured to end the name
-/// alike are refused, because no producer we have seen writes them. A name that is not empty, an empty name in an array or outside any container, in
-/// a dictionary this cannot follow, or under any other key, refuses.
+/// alike are refused, because no producer we have seen writes them. A name that is not empty, an
+/// empty name in an array or outside any container, in a dictionary this cannot follow, or under
+/// any other key, refuses.
 fn empty_name_position(
     written: &[u8],
     next: Option<u8>,
@@ -740,6 +741,9 @@ fn empty_name_position(
     // followed by LF, or by the `>>` that closes its dictionary; a key, by one space.
     let value_follower = next == Some(b'\n') || (next == Some(b'>') && closes_dictionary);
     let key_follower = next == Some(b' ');
+    // `!level.in_container` is DEFENCE IN DEPTH, unwitnessed: a container this level holds pushes
+    // a level of its own, so while one is open this level is never `levels.last()` (its removal
+    // survives, measured).
     if !level.expect_key
         && level.pending == 0
         && !level.in_container
@@ -1319,7 +1323,8 @@ pub const MAX_NAME_WRITTEN: usize = 255;
 ///   private measurement, and it passes this scan only in the positions the scan's
 ///   `empty_name_position` names, each recorded for the caller to rule on -- as a `/Dest` value
 ///   before LF or its dictionary's closing `>>` ([`Found::empty_values`]), and as a key of an
-///   object's own dictionary before one space ([`Found::empty_keys`]).
+///   object's own dictionary, or of a dictionary written directly as its top-level `/Dests` value,
+///   before one space ([`Found::empty_keys`]).
 ///
 /// A name followed by a vertical tab refuses too. Which reader reads each refused shape how is in
 /// the private measurement, not here. **The edges, measured since** (2026-10-14): as a name's first
@@ -1631,15 +1636,23 @@ mod tests {
     }
 
     /// AN INTEGER BEFORE IT means qpdf reads the empty name as the next KEY, not as the value
-    /// (security review, round 1): `<< /Dest 5 / 6 >>` refuses. The twin, an integer value before
-    /// another key, admits the `/Dest` value after it.
+    /// (security review, round 1): `<< /Dest 5 / 6 >>` refuses, and so does the same with LF after
+    /// the empty name -- a value follower, so only the integer before it (`pending`) tells the two
+    /// apart (round 1's security review: with a space there, the key follower refused it for
+    /// another reason). The twin, an integer value before another key, admits the `/Dest` value
+    /// after it.
     #[test]
     fn an_empty_name_after_an_integer_value_is_not_the_dest_value() {
-        assert_eq!(
-            names(b"<< /Dest 5 / 6 >>"),
-            Err(Irregular::NameReadDifferently)
-        );
+        for body in [b"<< /Dest 5 / 6 >>".as_slice(), b"<< /Dest 5 /\n6 >>"] {
+            assert_eq!(
+                names(body),
+                Err(Irregular::NameReadDifferently),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
         assert_eq!(names(b"<< /K 5 /Dest />>"), Ok(Vec::new()));
+        assert_eq!(names(b"<< /K 5 /Dest /\n>>"), Ok(Vec::new()));
     }
 
     /// A `/Dests` WRITTEN DIRECTLY in an object's dictionary: its empty keys are recorded as such,
