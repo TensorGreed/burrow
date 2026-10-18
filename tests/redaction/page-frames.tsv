@@ -151,7 +151,7 @@ INPUT	tests/redaction/generated/evade-image-as-pattern.pdf	38be1ca84c3e237683b84
 PAGE	tests/redaction/generated/evade-image-as-pattern.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	497a2d3aa72e323a2fe655d608d2ca9a1af2d91df42f61df30c6fe495120a927
 PAGE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	FRAME 400 200
-INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
+INPUT	tests/redaction/generated/evade-image-in-form.pdf	58f51a6c9c16e745dc3ae3c34e60874af8b8f8ea7a1c35e1b3c50fb396ade040
 PAGE	tests/redaction/generated/evade-image-in-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-image-in-tiling-pattern-inside-a-form.pdf	12b7c14927a0c1bd89ac41edab777f4f47b8890b5f62693dccbe52660ab050c6
 PAGE	tests/redaction/generated/evade-image-in-tiling-pattern-inside-a-form.pdf	0	FRAME 400 200
@@ -207,7 +207,7 @@ INPUT	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1f89a
 PAGE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	3a4207e60ede2d086e7cd03a737b182b867e8e5a9a1b5de6b23c1b1f0e4d8766
 PAGE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	FRAME 400 200
-INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
+INPUT	tests/redaction/generated/evade-paths-in-form.pdf	98d1289679bc532093382afb57143d39d86a2ba7557e86231b988026ebfff58f
 PAGE	tests/redaction/generated/evade-paths-in-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
 PAGE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	FRAME 400 200
