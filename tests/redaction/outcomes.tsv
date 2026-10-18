@@ -20,8 +20,8 @@ CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	whole	ERR Unsupp
 CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	band	ERR Unsupported("pdf redaction [structure-tree]: the document carries a structure tree, whose alternate and actual text can describe what a redaction removes, from off the page -- so the whole document is refused")
 INPUT	tests/redaction/fixtures/producer-writer-untagged.pdf	4ed608e245a8762d989607315169958aebec760ad4b6704bfc992a3e8f950b7b
 CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	manifest	OK cfe53ed2ac0c18e0ff77e749ab6f16170f9a87b13ad5287213b11031004bff5c report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
-CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	pdfbuild	OK 529acb9d6353706c9e7c4e6cd929ab160ba9d6e02f9ebc26d5874ca55f5c0972 report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
+CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	manifest	OK 21e7417383dae8ac6c2f077caeb73e0778d855b22e622ef20e7dba851253da39 report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
+CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	pdfbuild	OK f54fb4303d82f6a8dc5502dbc613969de674022069e2a6ea9cb97ddd06e66f85 report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
 CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	whole	OK 41924062cb66720a8887317feb52497d1b4ad83f94e1cdd4bd647cc0916e9ad7 report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
 CASE	tests/redaction/fixtures/producer-writer-untagged.pdf	0	0	band	OK 44fa2fd34b558fdfdc7102ab1d634ba79673186fff4668c948b64185dd0b8085 report dda6ac6e981958beeec4d1a65ab8d7eb050b7724ef5fd20f0046ada097e87fa4
 INPUT	tests/redaction/fixtures/producer-writer.pdf	2993655cf9eb9eff9dd55152c7be1b382bbbf9f2905e8fc414447701b64bb7f6
@@ -635,13 +635,13 @@ CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	0	whole	
 CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
 INPUT	tests/redaction/generated/handle-std14-differences-remap.pdf	1882b29fe2c88f69f909ab249077cc2e22874e0e97a12c4226ce02120e3b7a5e
 CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	0	pdfbuild	OK 1f88400b3ef0fe4e89d48e0593b322d0112885c38bf456b156b7ac9fb4305fbd report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
-CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	0	whole	OK 9a4fb6dcffa25e1ce07a5f6269c8e3400323887e0910d0a69fcb6287c6ed1ddc report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	0	pdfbuild	OK 56b115cec0fb7d42cdccfe94a646ea310403fc4a5e450f6fefe7d7704d10b7e8 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	0	whole	OK d762d83753f2ceb4065d0cb7642325e9d4a01086f8b224d1f553a1767cbcb4ea report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/handle-std14-differences-remap.pdf	0	0	band	OK 64f96f0eb1288e62c07c608975b6d99937bea98863421f461141d043ba7b25cd report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 INPUT	tests/redaction/generated/handle-std14-macroman.pdf	90e0d2c5a301ba188a811d820846a1979686a5a07c2b6085bb833eebfc46ccdd
 CASE	tests/redaction/generated/handle-std14-macroman.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/handle-std14-macroman.pdf	0	0	pdfbuild	OK f60288a7c2c7ac5c464c69040c7b610ce96452cdcc0e8da5de8994bc6b39cbfc report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
-CASE	tests/redaction/generated/handle-std14-macroman.pdf	0	0	whole	OK 046ec52768fa15de5fe8e7d71d528051fc43b8fe0dc0290fe792918864bcf04b report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/handle-std14-macroman.pdf	0	0	pdfbuild	OK c267c713871e73cba0995202fc9849f40df71f52caf116d6d24af6e525a81e65 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/handle-std14-macroman.pdf	0	0	whole	OK 225ef4eb17b9f6dd9f1731c092659d128dc8ca607066358b43dea517842c74e5 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/handle-std14-macroman.pdf	0	0	band	OK ee3d7427828a46c41ee6edfa715afd79787cc7d4525d5c654d184e759e925a9a report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 INPUT	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	46cc269657fe4ee7c3f5fcc1ddfc6709c10423cedead22939d8056d93c937bdd
 CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -650,13 +650,13 @@ CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	
 CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	band	OK 0440f9e8d2a8cea38aa1ca3885ea109b2281be32710b0fc0f8d92dff46a1c478 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	e58dc0cda12677671efa00da7760718b183642d446cc586071d0837bdf5966b2
 CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	pdfbuild	OK 838985274f5b404aa6a533913d3995e6dde43db84547f4c35917e896ebb9017c report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
-CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	whole	OK c5625f22d0f5cb7802d2a60a6da02ee439b42fbd291df0583f06fdc45b2f828e report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	pdfbuild	OK 44fd13b31e563914520f011f0c2cadb8ab6a7abcf5694f84e1e30ea740ec31ef report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	whole	OK e10b7352d9e0132edaea57be039dc1dc294fe923f0fb784e07437945e67cc85e report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
 CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	band	OK c65e53f79d74b678aee9c88ab41b6071e0e6475dfb9567cbad67e8484cb6faa6 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
 INPUT	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	16ebf128f834e3a72021be1dfa3812a96c52995cbe805da07afc39f14668720e
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	manifest	OK 7628db6a23c32e14c4d7cf41d2e529ea2ba09b35e82c67cd7e6db2ad9f014ea2 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	pdfbuild	OK 55717161379a305f8e30b4114643e8c612a044f7077ec8964278018bc06d7f0b report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	pdfbuild	OK 10d9f0afd1a5a0868d001e428dce157419d63376fe391bfcefeef128529e115d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	whole	ERR Unsupported("pdf redaction [annotation-in-region]: an annotation sits in the region, and burrow neither removes nor keeps an annotation there yet; flatten or remove it, then try again")
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	band	ERR Unsupported("pdf redaction [annotation-in-region]: an annotation sits in the region, and burrow neither removes nor keeps an annotation there yet; flatten or remove it, then try again")
 INPUT	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	9475226f2e483773d93942e1a466240c2f7f87159ff1693c4cb13b60845c1f1a
@@ -681,12 +681,12 @@ CASE	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	0	0	who
 CASE	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	0	0	band	OK d813c75c6b0fd5c1779929e3a594b74627a0b342f5b7556a368b9154ca7f3843 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	cd3e6f85b6006a0b06cf60dc5f7aa60d3f12c40227b6e0754f66a3c8ed2f6124
 CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	pdfbuild	OK 2997da85ca9aced7c95d79a854e0843c998ac76185a098a31d72d89c50210720 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
-CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	whole	OK c380715bd6095c25f384e2387a9b8b6bb718083b05e1a5b4dc82528b296f3946 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	pdfbuild	OK fa615681d11fe23c51184fbc86fae97c566bb9e24cf455ef5fe8d2e40faddaff report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	whole	OK 49732dc60dc8644599a11bcd94767f26967f11393c5f16718d0c23554131406e report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	band	OK 7482f79c6a29ada16137d598a0bbce709ff72d21ca6d7cdf4d972ee3de075312 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	pdfbuild	OK e2dc8111b97c729766ec304495f43f0078c62459dbb4836ed66af3493ef7da48 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	pdfbuild	OK d03ffb2c6e8c88266190fd8655e8fa037ba5fcec3b2808cd775664a47fb66f2b report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	whole	OK 24d4bc462b3829f6afe4aa20e1a4bb030b54c71c9d773a773b6d2cee4fd8d077 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	band	OK 54924ae385ca51e3e68a789ba5a41d5b6fcc77453b037604f02bd23785bce6e6 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 INPUT	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	2844a59246b64171bf1fb06c6179012181c4e8fcc83215cee6d0648ea23814fd
@@ -701,7 +701,7 @@ CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	whole
 CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	band	OK e8bce9507b2bc8512dfc590354a4b5f701daa1073a905b52bb29c6a43e5a9a81 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	2a804754bbea01e26bda5c1b4994e2cf11eeb1802aeaa1b4ccaded8032e4e734
 CASE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	0	pdfbuild	OK 6b908cd24441911a658c09f930da515cda37251756678f546b420e38db8510d4 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	0	pdfbuild	OK 651c8b46fcadc39abec7bd8274e2ea7973d284f854adbc9556ef38d87bd967f1 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	0	whole	OK 278f6e81d1429a4cc65e4c59feb5805442e5216ba279c38b31535f06251ad1b5 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	0	band	OK afdce49ba6e2661d4ced3023cbe22ac635f1a218f565d11f93820180d30de554 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
@@ -795,8 +795,8 @@ CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	0	w
 CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	0	band	OK 92d278005335ff4c5111fdba80b4f7bd1114e5c5e4cde9986c3f6a8387cf592f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	ade3a89fd4049ec784e46f6ccb7058d5e4c2919522124d26872059c733e17357
 CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	pdfbuild	OK c3b500a3de3c270ea1c6ed6a50cfdda438f1062f892339b258cf8edbd349db49 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
-CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	whole	OK a2b7e35b359d4566a6a4d1ecfa6b1495c59902663415fdc7067835ebcd899683 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	pdfbuild	OK 5293f77e9ab46505962885d807fe58d28639211f0d4f0a8fbf08d86dd9004ac8 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	whole	OK e4bcc6b12df0617998a781e5ac1bad2ad234715b32afb581438a0cfbe3bd4c7f report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	band	OK c56a7490ea32144f55ebc9acd0b7d3134cd2f451d95b35b4699d88763f5d64f1 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
 CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -810,12 +810,12 @@ CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	whole	O
 CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	band	OK ebe9057182cbdd82e7e77fad0d7903b759e000542ef259ec7c7070da3a364c91 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4
 CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	pdfbuild	OK 9e26e0af22e771f33ba4940dad5f8a22f1dc21536ff31754f2687bfcdffa04bb report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	pdfbuild	OK 78f60b574b6b3c97968cd9896715297741336e3c175a71dfd22ee506249b222e report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
 CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	whole	ERR Unsupported("pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as an image, whose bitmap would stay in the font after the glyph is removed")
 CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	band	OK 41c39116bb76a4067024a50b284b9ab94b24ee802bcbd6c15b5fc0cf4dc25524 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
 INPUT	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	ee1178a4afaf795c778d94533721277b02181a5a0735751952c60cbcfb3f62d1
 CASE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	0	pdfbuild	OK 994436d57f654b3ac9f9fb7ed9376911a39885d70bdc3927fd831c4c4405ec2e report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+CASE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	0	pdfbuild	OK ce3ee17b63bea419a66207e02e209c55d34b284aec57a03fa9eb9307158a2155 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	0	whole	OK 88a16496c4e506609bf2aaf993b4c3cf78eaadac628c059650c73f12b0d6acec report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	0	band	OK 61ad34e95b7d8c4fd4685849e3be0b67709233e682f3d78b1324f98fc98fab01 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 INPUT	tests/conformance/fixtures/blank-1page.pdf	bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0

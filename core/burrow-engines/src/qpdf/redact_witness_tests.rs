@@ -512,3 +512,90 @@ mod ceiling_tests {
         }
     }
 }
+
+/// #344's F-16: the verification reads the descriptor's `/FontBBox` too.
+///
+/// An engine that LIES on the way back -- it reports `Ok` and keeps a glyph whose descriptor box
+/// reaches the region -- is caught only if the read-back boxes the glyph as the operation does.
+/// The "output" here is a document the engine left untouched; the real read-back must refuse it.
+mod descriptor_box {
+    use super::QpdfWitness;
+    use crate::pdfsyntax::region::Region;
+    use crate::redact_verify::{Cleared, region_is_cleared};
+    use burrow_types::{Limits, ManualClock};
+    use std::sync::Arc;
+
+    /// A 400-point page drawing one `g` at 40 points, 16 points above the region `[100, 300] x
+    /// [250, 300]`, in a Type1 font whose DESCRIPTOR declares `bbox`.
+    fn output(bbox: &str) -> Vec<u8> {
+        let content = "BT /F1 40 Tf 150 316 Td (g) Tj ET\n";
+        let widths = format!("[{}]", vec!["556"; 39].join(" "));
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+                 /FirstChar 65 /LastChar 103 /Widths {widths} /FontDescriptor 6 0 R >>"
+            ),
+            format!(
+                "<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /FontBBox [{bbox}] \
+                 /ItalicAngle 0 /Ascent 931 /Descent -225 /CapHeight 718 /StemV 88 >>"
+            ),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    fn check(bbox: &str) -> burrow_types::Result<()> {
+        let clock = Arc::new(ManualClock::new(0));
+        let limits = Limits::default();
+        let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
+        let witness = QpdfWitness::new(limits, clock, deadline);
+        let expected = Cleared {
+            page: 0,
+            region: Region {
+                left: 100.0,
+                top: 100.0,
+                width: 200.0,
+                height: 50.0,
+            },
+            cut_fonts: std::collections::BTreeSet::new(),
+            cut: 0,
+        };
+        region_is_cleared(&witness, &output(bbox), &expected)
+    }
+
+    #[test]
+    fn a_kept_glyph_whose_descriptor_box_reaches_the_region_is_refused_on_the_way_back() {
+        // THE TWIN FIRST: the descriptor's box stops 0.8 points short, so the untouched page is
+        // clean and the check passes -- the refusal below is the box's.
+        check("0 -380 1000 900").expect("nothing the page draws reaches the region");
+        let error = check("0 -600 1000 900")
+            .expect_err("the glyph's descriptor box reaches the region and it is still drawn");
+        assert!(format!("{error}").contains("still drawn"), "{error}");
+    }
+}

@@ -33,7 +33,9 @@
 //!   PDFium's ink box (`FPDFText_GetCharBox`) is not read. Calibrated against main, an ink-box rule
 //!   refused 152 of 3,488 tiles that burrow redacts today, every one of them traced to burrow's
 //!   conservative glyph box ignoring `/FontDescriptor`'s `/FontBBox` (#344) rather than to a glyph
-//!   PDFium places in the region. The origin rule refused none. The ink half lands after #344.
+//!   PDFium places in the region. The origin rule refused none. #344 now reads that box, and a
+//!   floor envelope besides; the ink half is #206's, after it, and is what can see a font whose
+//!   outlines exceed the box it declares.
 //!
 //!   A region no more than twice [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) wide or
 //!   tall has nothing left to compare once the tolerance is taken off, and refuses as
@@ -187,7 +189,7 @@ pub const MAX_MARKED_WORK: u64 = 1_000_000;
 
 /// One character as the second reading places it. Page space, as the content stream draws it.
 ///
-/// No ink box: R1 reads origins only until #344 (see the module's R1).
+/// No ink box: R1 reads origins only until #206's ink half (see the module's R1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlacedChar {
     /// The pen position: `FPDFText_GetCharOrigin`.

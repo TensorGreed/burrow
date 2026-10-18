@@ -775,8 +775,13 @@ pub struct Glyph {
     pub text_to_page: Matrix,
     /// The advance this glyph contributes, in unscaled text-space units.
     pub advance: f64,
-    /// The font's `/FontBBox`, in glyph space, if the font declared one.
+    /// Every box the font declares, unioned, in glyph space (#344): the font dictionary's
+    /// `/FontBBox`, its `/FontDescriptor`'s, and for a Type 0 font its descendant's descriptor's.
+    /// `None` when none of them is four numbers. See [`GlyphMetrics::font_bbox`].
     pub font_bbox: Option<Rect>,
+    /// Whether [`FLOOR_ENVELOPE`] is unioned into this glyph's box, as [`ENVELOPE_RULE`] decided
+    /// from the font's declared boxes (#344). A **guess, not a bound**: see the constant.
+    pub floor_envelope: bool,
     /// The font size in force, for the advance box's height.
     pub font_size: f64,
     /// The font size in force, scaled by `Tz` -- the denominator a `TJ` adjustment divides by.
@@ -944,12 +949,70 @@ pub struct GlyphSource {
     pub bytes_per_code: u8,
 }
 
+/// The floor envelope (#344): the union of the fourteen Core AFM `FontBBox`es committed under
+/// ADR 0030, **[-200 -293 1116 1010] thousandths of an em**, here in ems of text space.
+///
+/// # A guess, not a bound
+///
+/// It is what the standard fonts declare, and real fonts mostly ink inside it: a Latin
+/// descender reaches about -0.22 em, Symbol's deepest -0.293. Nothing makes a font stay inside
+/// it. It exists so that a glyph whose font declares no box -- or, under
+/// [`EnvelopeRule::Always`], one that declares too small a box -- is not reduced to its advance
+/// box, which stops at the baseline. `envelope_is_the_union_of_the_core_afm_boxes` derives it
+/// from the committed AFM files, so it cannot drift from them.
+pub const FLOOR_ENVELOPE: Rect = Rect {
+    left: -0.200,
+    bottom: -0.293,
+    right: 1.116,
+    top: 1.010,
+};
+
+/// When [`FLOOR_ENVELOPE`] is unioned into a glyph's box (#344, the owner's D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvelopeRule {
+    /// Always, whatever the font declares: an undersized declared box is covered up to the
+    /// envelope's extent. The rule in force (owner, 2026-10-18).
+    Always,
+    /// Only when the font declares no usable box -- none of four numbers with area. A declared
+    /// box is then trusted, so an undersized one is a residue.
+    WhenNoUsableBox,
+}
+
+impl EnvelopeRule {
+    /// Whether a glyph whose font has (`true`) or lacks a usable declared box gets the envelope.
+    #[must_use]
+    pub const fn applies(self, font_bbox_usable: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::WhenNoUsableBox => !font_bbox_usable,
+        }
+    }
+}
+
+/// The rule in force: owner, 2026-10-18: `Always` (variant (b)). It stays a switch because it is
+/// the census switch: #344's census measured both rules by flipping it, and a later one can.
+pub const ENVELOPE_RULE: EnvelopeRule = EnvelopeRule::Always;
+
 impl Glyph {
-    /// The box a region test must use: the advance box **unioned with the scaled `/FontBBox`**.
+    /// The box a region test must use: the advance box **unioned with every `/FontBBox` the font
+    /// declares** (scaled through [`Self::to_page`]) **and, where [`Self::floor_envelope`] says
+    /// so, with [`FLOOR_ENVELOPE`]** (scaled by the font size through [`Self::text_to_page`]);
+    /// then widened by the stroke reach and the width drift.
     ///
-    /// See the module header for the measurement this exists for. A font that declares no
-    /// `/FontBBox` gets the advance box alone, which is the best available answer and is
-    /// recorded as such rather than silently treated as complete.
+    /// See the module header for the measurement this exists for.
+    ///
+    /// # What this covers, and what it does not (#344)
+    ///
+    /// Before #344 the declared box was read from the font dictionary alone, so every Type 1,
+    /// TrueType and CID font -- which declare theirs in the `/FontDescriptor` -- got the advance
+    /// box alone, from the baseline up one em, and a descender from the line above reached a
+    /// region this box did not (137 of 3,236 `Ok` tiles in the census on 3b46b21, all on embedded
+    /// Type 1 or CID fonts carrying a descriptor box). The descriptor boxes are now unioned in.
+    ///
+    /// **Not covered:** a font whose outlines draw outside the box it declares (and, with no
+    /// usable box under the narrower rule, outside [`FLOOR_ENVELOPE`]). Nothing in the file
+    /// contradicts such a box; PDFium's own ink boxes are what can (#206's ink half). The envelope
+    /// is a guess about real fonts, not a bound on any.
     #[must_use]
     pub fn conservative_box(&self) -> Rect {
         // TEXT SPACE THROUGH THE TEXT MATRIX, glyph space through the glyph matrix. See
@@ -961,9 +1024,18 @@ impl Glyph {
             top: self.font_size,
         }
         .transformed(&self.text_to_page);
-        let ink = match self.font_bbox {
+        let declared = match self.font_bbox {
             Some(bbox) => advance.union(&bbox.transformed(&self.to_page)),
             None => advance,
+        };
+        // THE FLOOR ENVELOPE, in ems of TEXT space, so it is the same for every `/FontMatrix`.
+        // Transformed BEFORE the union: under a negative `Tf` or `Tz` the scaled envelope is
+        // inverted, and `Rect::union` of an inverted rectangle keeps the wrong edges, while
+        // `transformed` takes all four corners and normalises (#344's round 0).
+        let ink = if self.floor_envelope {
+            declared.union(&self.envelope_on_page())
+        } else {
+            declared
         };
         // A STROKED OUTLINE (#278), widened by the reach the walk derived from the line width.
         let (dx, dy) = self.stroke_reach;
@@ -979,6 +1051,13 @@ impl Glyph {
             right: ink.right + dx + drift_x,
             top: ink.top + dy + drift_y,
         }
+    }
+
+    /// [`FLOOR_ENVELOPE`] at this glyph's font size and `Tz`, in page space.
+    fn envelope_on_page(&self) -> Rect {
+        FLOOR_ENVELOPE.transformed(
+            &Matrix::scale(self.scaled_font_size, self.font_size).then(&self.text_to_page),
+        )
     }
 
     /// The advance with `Tz` applied, which is the width it occupies on the page.
@@ -3070,8 +3149,15 @@ pub struct GlyphMetrics {
     ///
     /// Carried because word spacing depends on it; see [`takes_word_spacing`].
     pub bytes_per_code: u8,
-    /// The font's `/FontBBox`, in glyph space.
+    /// Every `/FontBBox` the font declares, unioned, in glyph space (#344): the font
+    /// dictionary's, its `/FontDescriptor`'s, and for a Type 0 font its descendant's
+    /// descriptor's. Each four-number box counts, a zero-area one included. `None` when the font
+    /// declares no box of four numbers anywhere -- which, before #344, was every font but Type 3,
+    /// because the descriptor was never read.
     pub font_bbox: Option<Rect>,
+    /// Whether any **one** declared box has area. Not derived from the union, which two
+    /// zero-area lines can give area to. Read only by [`EnvelopeRule::WhenNoUsableBox`].
+    pub font_bbox_usable: bool,
     /// Glyph space to text space -- `/FontMatrix` for a Type 3, 0.001 otherwise.
     pub font_matrix: Matrix,
     /// How the font's codes are encoded, from which the walk derives the writing mode.
@@ -4561,6 +4647,7 @@ fn show(
             text_to_page,
             advance: width * state.text.font_size,
             font_bbox: metrics.font_bbox,
+            floor_envelope: ENVELOPE_RULE.applies(metrics.font_bbox_usable),
             font_size: state.text.font_size,
             scaled_font_size: state.text.font_size * scale,
             stroke_reach,
@@ -4705,6 +4792,7 @@ mod tests {
                     right: 1000.0,
                     top: 1000.0,
                 }),
+                font_bbox_usable: true,
                 font_matrix: Matrix::scale(self.font_matrix_scale, self.font_matrix_scale),
                 encoding: self.encoding.clone(),
             })

@@ -58,10 +58,17 @@
 //! their advances routinely — accents, swashes, italic descenders. The advance box is where the
 //! glyph's *pen* is, not where its *ink* is, and redaction is about the ink.
 //!
+//! Since #344 that box is read where fonts declare it -- the `/FontDescriptor`, and a composite
+//! font's descendant's -- and unioned with a floor envelope (`FLOOR_ENVELOPE`, a guess from the
+//! Core 14 AFM boxes, not a bound). Before #344 it was read from the font dictionary alone, which
+//! only a Type 3 font uses, so every other font got the advance box: from the baseline up.
+//!
 //! **What that does not cover, stated rather than implied:** a `/FontBBox` that lies. A font may
-//! declare a box its glyphs exceed, and nothing in the file contradicts it. P2 catches it in the
-//! suite; at runtime it is a residue, and the fixture that would provoke it belongs with the
-//! refusals rather than here.
+//! declare a box its glyphs exceed, and nothing in the file contradicts it; under
+//! `EnvelopeRule::Always` the envelope covers a lie up to its own extent, and no further. P2
+//! catches it in the suite; at runtime it is a residue that only PDFium's own ink boxes can see
+//! (#206's ink half), and the fixture that would provoke it belongs with the refusals rather
+//! than here.
 
 #![allow(
     dead_code,
@@ -111,11 +118,26 @@ use std::os::raw::{c_char, c_double, c_float, c_int, c_void};
 /// so the test oracle and the runtime cannot drift apart.
 pub const TOLERANCE_PT: f64 = burrow_engines::redact_read_back::TOLERANCE_PT;
 
-/// How much larger than PDFium's loose box burrow's conservative box may be, by area.
+/// How much larger than its FLOOR burrow's conservative box may be, by area: the floor is the
+/// larger of PDFium's loose box and the floor envelope at PDFium's font size (#344).
 ///
 /// P2 is satisfied trivially by a box the size of the page, so it needs a companion. Four is
 /// loose enough for a `/FontBBox` that genuinely covers a tall glyph set — a Type 3 font's box
 /// can be several times the advance in both axes — and tight enough that a degenerate box fails.
+///
+/// # Why the floor is no longer the loose box alone (#344)
+///
+/// Re-derived, not bumped. Under `EnvelopeRule::Always` every glyph's box contains
+/// `FLOOR_ENVELOPE` at its font size: 1.316 by 1.303 em, about 1.71 square ems, whatever the glyph.
+/// P3 against the loose box alone fails boxes that are exactly what the rule asks for: on the
+/// two producer pages `real_producer_boxes_contain_their_ink_and_stay_near_their_floor` reads,
+/// 145 of 238 glyphs (measured, 2026-10-17; that test asserts both counts exactly), and a
+/// zero-width glyph's loose box gives no bound at all.
+///
+/// What P3 is for is unchanged: a box that has become "covers the page" is hundreds of times
+/// either floor. The four keeps its original argument, now for a declared box's excess over the
+/// floor. The envelope's area is taken axis-aligned, so a rotated glyph's floor is understated,
+/// which makes the bound tighter there, never looser.
 pub const MAX_CONSERVATIVE_AREA_RATIO: f64 = 4.0;
 
 /// The smallest displacement a fixture's term must produce, in PDF points.
@@ -241,6 +263,7 @@ unsafe extern "C" {
         top: *mut c_double,
     ) -> c_int;
     fn FPDFText_GetLooseCharBox(text_page: *mut c_void, index: c_int, rect: *mut FsRectF) -> c_int;
+    fn FPDFText_GetFontSize(text_page: *mut c_void, index: c_int) -> c_double;
     /// Whether PDFium **invented** this character rather than reading it from the file.
     ///
     /// A positioning adjustment wide enough to look like a gap produces a space; a `T*` line
@@ -341,6 +364,8 @@ pub struct OracleChar {
     pub loose: Rect,
     /// `FPDFText_GetCharBox` — the inked box, which burrow's must contain.
     pub ink: Rect,
+    /// `FPDFText_GetFontSize`, in points: the size P3's envelope floor is taken at (#344).
+    pub font_size: f64,
     /// Whether PDFium **invented** this character rather than reading it from the file.
     ///
     /// `FPDFText_IsGenerated`. A wide positioning adjustment produces a space; a `T*` line move
@@ -695,6 +720,8 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
         assert!(ok != 0, "FPDFText_GetCharOrigin refused character {at}");
         // SAFETY: as above.
         let generated = unsafe { FPDFText_IsGenerated(text, at) };
+        // SAFETY: as above.
+        let font_size = unsafe { FPDFText_GetFontSize(text, at) };
         out.push(OracleChar {
             unicode: canonical_unicode(unicode),
             raw_unicode: unicode,
@@ -715,6 +742,7 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
                 right: r,
                 top: t,
             },
+            font_size,
         });
     }
 
@@ -795,15 +823,30 @@ pub fn assert_agrees(computed: &[Rect], oracle: &[OracleChar], what: &str) {
             theirs.ink
         );
         // P3 -- and the box may not be arbitrarily large, or P2 passes by covering the page.
-        let area = |r: &Rect| (r.right - r.left).max(0.0) * (r.top - r.bottom).max(0.0);
-        let (ours, loose) = (area(mine), area(&theirs.loose));
+        let ours = area(mine);
+        let floor = p3_floor(theirs);
         assert!(
-            ours <= loose * MAX_CONSERVATIVE_AREA_RATIO + 1.0,
-            "{what}: glyph {at} ({character:?})'s box is {ours:.2} pt^2 against PDFium's \
-             {loose:.2} -- more than {MAX_CONSERVATIVE_AREA_RATIO}x, so \"conservative\" has \
+            ours <= floor * MAX_CONSERVATIVE_AREA_RATIO + 1.0,
+            "{what}: glyph {at} ({character:?})'s box is {ours:.2} pt^2 against a floor of \
+             {floor:.2} -- more than {MAX_CONSERVATIVE_AREA_RATIO}x, so \"conservative\" has \
              become \"covers the page\" and P2 proves nothing.\n  burrow: {mine:?}",
         );
     }
+}
+
+/// A rectangle's area, zero for an inverted one.
+#[must_use]
+pub fn area(r: &Rect) -> f64 {
+    (r.right - r.left).max(0.0) * (r.top - r.bottom).max(0.0)
+}
+
+/// P3's floor for one character: the larger of PDFium's loose box and the floor envelope at
+/// PDFium's font size. See [`MAX_CONSERVATIVE_AREA_RATIO`] for why it is not the loose box alone.
+#[must_use]
+pub fn p3_floor(theirs: &OracleChar) -> f64 {
+    let envelope = burrow_engines::pdfsyntax::geometry::FLOOR_ENVELOPE;
+    let ems = (envelope.right - envelope.left) * (envelope.top - envelope.bottom);
+    area(&theirs.loose).max(ems * theirs.font_size * theirs.font_size)
 }
 
 /// Assert that a fixture's term actually moves a glyph far enough for the tolerance to mean

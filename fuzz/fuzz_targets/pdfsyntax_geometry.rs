@@ -97,6 +97,9 @@ impl Resources for Hostile {
             width: self.width,
             bytes_per_code: self.bytes_per_code,
             font_bbox: self.bbox,
+            font_bbox_usable: self
+                .bbox
+                .is_some_and(|b| b.right > b.left && b.top > b.bottom),
             font_matrix: Matrix::scale(self.font_matrix_scale, self.font_matrix_scale),
             encoding: self.encoding.clone(),
         })

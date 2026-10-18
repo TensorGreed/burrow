@@ -2244,6 +2244,10 @@ fn judge_type_three_font<O: PdfObject>(
     if procs.type_code() != object_type::DICTIONARY {
         return Ok(false);
     }
+    // THE DICTIONARY'S BOX ALONE (#344). Not the union the walk boxes glyphs with, and not the
+    // floor envelope: a descriptor box, or an envelope (text space, not glyph space) read here,
+    // would "contain" an image that falls outside the dictionary's box, moving
+    // `[type-three-image-outside-its-box]` from refused to `Ok`. More than four items refuses.
     let font_bbox = super::resources::rect_of(&font.key(&FONT_BBOX))?;
     // A DIRECT `/CharProcs` has the shared identity `(0, 0)`, so it is never cached.
     let procs_object = procs.object()?;
