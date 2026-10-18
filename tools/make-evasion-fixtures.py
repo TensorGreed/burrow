@@ -842,9 +842,25 @@ def _region_rect() -> bytes:
 FULL_BBOX = f"[0 0 {PAGE_W} {PAGE_H}]".encode()
 
 
+# THE PAGE'S TOP-LEFT CORNER, `(0, 0)` to `(10, 10)` from the top in display units: the two-level
+# form fixtures put ink there as well as in `REGION`, so a redaction of a small region at the
+# corner -- the local census's -- reaches it too and reads refused rather than `ok`.
+CORNER_INK = (0, PAGE_H - 10, 10, PAGE_H)
+
+
+def _region_to_corner_cm() -> bytes:
+    """A placement covering `REGION` and stretched up and left to `CORNER_INK`."""
+    x0, y0, x1, _y1 = REGION
+    left, _bottom, _right, top = CORNER_INK
+    return f"{x1 - left} 0 0 {top - y0} {left} {y0} cm".encode()
+
+
 def evade_image_in_form_two_levels_down() -> bytes:
     """The image is drawn by a form inside a form. The page says only `/X1 Do`, the outer form only
-    `/Inner Do`; the image `Do` is two levels down, where one level is not a depth proof (#125)."""
+    `/Inner Do`; the image `Do` is two levels down, where one level is not a depth proof (#125).
+
+    The ONE image covers `REGION` and reaches the page's top-left corner (`CORNER_INK`), so a
+    redaction of either refuses by `[image-in-region]`."""
     pdf = Pdf()
     helv = helvetica(pdf)
     image, _w, _h = _grey_image_stream(pdf, secret("IMG-FORM2"))
@@ -852,7 +868,7 @@ def evade_image_in_form_two_levels_down() -> bytes:
         pdf,
         FULL_BBOX,
         b"/XObject << /Im1 " + str(image).encode() + b" 0 R >>",
-        b"q " + _region_cm() + b" /Im1 Do Q\n",
+        b"q " + _region_to_corner_cm() + b" /Im1 Do Q\n",
     )
     return _page_drawing_form(pdf, helv, outer)
 
@@ -1090,11 +1106,19 @@ def nearmiss_paths_outside_region() -> bytes:
 
 
 def evade_paths_in_form_two_levels_down() -> bytes:
-    """The filled paths are inside a form inside a form (#125 slice 4); the page says `/X1 Do`."""
+    """The filled paths are inside a form inside a form (#125 slice 4); the page says `/X1 Do`.
+
+    The same inner form also fills `CORNER_INK`, so a redaction of the page's top-left corner
+    reaches a path two levels down too and refuses by `[vector-in-region]`."""
     pdf = Pdf()
     helv = helvetica(pdf)
+    left, bottom, right, top = CORNER_INK
+    corner = f"0 g {left} {bottom} {right - left} {top - bottom} re f\n".encode()
     outer = _two_levels(
-        pdf, FULL_BBOX, b"", outline_ops(secret("PATH-FORM2"), SECRET_X, SECRET_Y, SECRET_SIZE)
+        pdf,
+        FULL_BBOX,
+        b"",
+        corner + outline_ops(secret("PATH-FORM2"), SECRET_X, SECRET_Y, SECRET_SIZE),
     )
     return _page_drawing_form(pdf, helv, outer)
 

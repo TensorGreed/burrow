@@ -369,11 +369,11 @@ CASE	tests/redaction/generated/evade-image-as-pattern.pdf	1	1	whole	ERR InvalidA
 CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
 CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	whole	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
 CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	band	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
-INPUT	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	ec37768691b1fa602ef6fbb7c9fe9a86a0e651128bbe0503c9677b1fa1d126c7
+INPUT	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	497a2d3aa72e323a2fe655d608d2ca9a1af2d91df42f61df30c6fe495120a927
 CASE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	0	whole	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
-CASE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	0	band	OK 2240e5f04f95fbd370e3a025a6be79c2987863834bb4b18d9d6b0ffb00b362eb report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	0	band	OK d054cba6bc80c47feb2958f81a921eb381209f919b54e11aab2658866463211a report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
 CASE	tests/redaction/generated/evade-image-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
@@ -509,11 +509,11 @@ CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1	1	wh
 CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
 CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	whole	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
 CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	band	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
-INPUT	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	46c8dcbc012ff5e59a076977a3976da31b8c5d2fd2e0b92547b58817b8345bbe
+INPUT	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	3a4207e60ede2d086e7cd03a737b182b867e8e5a9a1b5de6b23c1b1f0e4d8766
 CASE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
-CASE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	0	band	OK 7c3decc95ccc4246ffb01188d84cb0ea62e2d6b767fd35921a5378f380f50e00 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	0	band	OK c3314563e65e262c513d2605737cad622e4bc3d17eb2f762e00c5d6e3b51f27c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
 CASE	tests/redaction/generated/evade-paths-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
