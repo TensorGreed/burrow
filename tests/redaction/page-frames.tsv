@@ -149,8 +149,12 @@ INPUT	tests/redaction/generated/evade-generation-with-a-sign.pdf	79ce35f37479b76
 PAGE	tests/redaction/generated/evade-generation-with-a-sign.pdf	0	FRAME 200 400
 INPUT	tests/redaction/generated/evade-image-as-pattern.pdf	38be1ca84c3e237683b84686afa00949b4f3fba65a985c82f411301cd6aec305
 PAGE	tests/redaction/generated/evade-image-as-pattern.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	497a2d3aa72e323a2fe655d608d2ca9a1af2d91df42f61df30c6fe495120a927
+PAGE	tests/redaction/generated/evade-image-in-form-two-levels-down.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
 PAGE	tests/redaction/generated/evade-image-in-form.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-image-in-tiling-pattern-inside-a-form.pdf	12b7c14927a0c1bd89ac41edab777f4f47b8890b5f62693dccbe52660ab050c6
+PAGE	tests/redaction/generated/evade-image-in-tiling-pattern-inside-a-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-image-in-type3-glyph.pdf	30ef3383f0cde7b3998f06330b7728ae511c84635aefc9b1aa33e41f5bbfbc20
 PAGE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-inline-image-outside-type3-box.pdf	634cf40afd1a839307b0cedfa793c222da52087a72e41bf75bd4ef63ae69e89f
@@ -201,6 +205,8 @@ INPUT	tests/redaction/generated/evade-oc-untyped-group.pdf	f5e85aef475df6885cf68
 PAGE	tests/redaction/generated/evade-oc-untyped-group.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1f89a2618761d78c71bd81d7f4f660e23057e0734fb6dda10b68f336792361a3
 PAGE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	3a4207e60ede2d086e7cd03a737b182b867e8e5a9a1b5de6b23c1b1f0e4d8766
+PAGE	tests/redaction/generated/evade-paths-in-form-two-levels-down.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
 PAGE	tests/redaction/generated/evade-paths-in-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
@@ -231,6 +237,10 @@ INPUT	tests/redaction/generated/evade-rotate-null-over-the-tree.pdf	f43406a29161
 PAGE	tests/redaction/generated/evade-rotate-null-over-the-tree.pdf	0	RULE page-attribute-inherited
 INPUT	tests/redaction/generated/evade-rotate-past-the-integer-range.pdf	6da495de62501515b949577ba01391165142722cd8e03106d6b38316af423b10
 PAGE	tests/redaction/generated/evade-rotate-past-the-integer-range.pdf	0	RULE page-frame-unreadable
+INPUT	tests/redaction/generated/evade-shading-pattern-fill.pdf	7a253e1233c922ebaa5cc24eba0a12d4b57647256768c2a969e7c71a09a9013a
+PAGE	tests/redaction/generated/evade-shading-pattern-fill.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-shading-sh-in-form.pdf	3dbbcb019aebb537493b5b0b1d402e9f373a48a7cc3fb21e328ec913f5c40df3
+PAGE	tests/redaction/generated/evade-shading-sh-in-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-std14-symbolic-flags.pdf	c3b9744994b46a8f8e0a2ab632ff78b684a4a32060ab43548f61a363005c77b7
 PAGE	tests/redaction/generated/evade-std14-symbolic-flags.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-struct-without-structparents.pdf	17ab032fdb04e43be37af9126856852ce022f41a4ba7acd5b0b8bc12a7000051
@@ -245,6 +255,8 @@ INPUT	tests/redaction/generated/evade-type3-subtype-as-a-string.pdf	f7fa5bede371
 PAGE	tests/redaction/generated/evade-type3-subtype-as-a-string.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-user-unit-two.pdf	da712d646ccc66cccdb750fdeb4f7f34984a310315dbeda454db87e0b88602bf
 PAGE	tests/redaction/generated/evade-user-unit-two.pdf	0	RULE user-unit-not-one
+INPUT	tests/redaction/generated/evade-widget-ft-on-parent.pdf	c0660478d560265d1f11072681be352293f4dc756ac38c4f573e60a7fc8eb5b0
+PAGE	tests/redaction/generated/evade-widget-ft-on-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-widget-on-another-page.pdf	5d5aa0aebc4367be97236b7ec49143b2b9080235c6b03e6ad223028c255b26bb
 PAGE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	FRAME 400 200
 PAGE	tests/redaction/generated/evade-widget-on-another-page.pdf	1	FRAME 400 200
@@ -272,6 +284,8 @@ INPUT	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	c
 PAGE	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	1c50d2aa72c090e0cf3acc05b544bb3b12c863a903cabfc821ccd7438dea2b7c
 PAGE	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-with-a-parent-not-a-field.pdf	c7666592d5b6383149faf41b07e61c6c3912f801668f8b2dbc4ac660245d0137
+PAGE	tests/redaction/generated/nearmiss-annotation-with-a-parent-not-a-field.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	cd3e6f85b6006a0b06cf60dc5f7aa60d3f12c40227b6e0754f66a3c8ed2f6124
 PAGE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
@@ -282,6 +296,10 @@ INPUT	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	2047ef1f
 PAGE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	2a804754bbea01e26bda5c1b4994e2cf11eeb1802aeaa1b4ccaded8032e4e734
 PAGE	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-image-in-form-outside-region.pdf	a85fc885c893436ac4594a06e9f778b317ac2de7bb1407f53e6e2fcb094cdd0d
+PAGE	tests/redaction/generated/nearmiss-image-in-form-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-image-in-form-two-levels-down-outside-region.pdf	95b3d22756945def45e29a9bee11d5433e6c600e644c06aecb1f39e2e6299093
+PAGE	tests/redaction/generated/nearmiss-image-in-form-two-levels-down-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
 PAGE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-kids-all-pages.pdf	dcfa34be68d22d33acf77dc27c991f6d37b2d87dd1f37b5909966cdb3b39b5a7
@@ -307,8 +325,14 @@ INPUT	tests/redaction/generated/nearmiss-page-attributes-declared-over-the-tree.
 PAGE	tests/redaction/generated/nearmiss-page-attributes-declared-over-the-tree.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-page-frame-plainly-declared.pdf	6b341228fa401e39a97e01f7d9b0b8326a7f6707cea621f78d5e83c5e007a912
 PAGE	tests/redaction/generated/nearmiss-page-frame-plainly-declared.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-paths-in-form-outside-region.pdf	af57dccf834d1e6549fd4ff6685b8e7b36a0648ec6e6af807cc5edfd6cc6cdb6
+PAGE	tests/redaction/generated/nearmiss-paths-in-form-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-paths-in-form-two-levels-down-outside-region.pdf	c7f83348acb1084013575523adadc8219f6ae6c8d35afb346f9374bdfb7b08da
+PAGE	tests/redaction/generated/nearmiss-paths-in-form-two-levels-down-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-paths-outside-region.pdf	b2134e96b63c8dc7af4b76dcc76bd99e4e1920a22fbb986edbd5ea6c58b8fbc7
 PAGE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-property-list-inside-an-unused-type3-font.pdf	b5338d62a7382ef5b5639482cb9ba379e3ffdf379c1aa8f507be5e654d09cd96
+PAGE	tests/redaction/generated/nearmiss-property-list-inside-an-unused-type3-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	8bc06a062102ccd520a6cfa35df901a0a4f6a0b74f8adfad1f3705a9e176aaa3
 PAGE	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-resources-on-the-page.pdf	c06df7d6838df4c351656691bf5dc90d821644e27e56f4791a5c1127cc2977d4
@@ -317,10 +341,17 @@ INPUT	tests/redaction/generated/nearmiss-right-generation-in-an-object-stream.pd
 PAGE	tests/redaction/generated/nearmiss-right-generation-in-an-object-stream.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	c5e5711521fd4525c06c176cd3d30abd6dc264392005c4692def2a3fa3e628b2
 PAGE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-shading-on-another-page.pdf	d5f126828166a3ed25a63d5970c108e4598edaf135b5c14493558d6cea6a9a46
+PAGE	tests/redaction/generated/nearmiss-shading-on-another-page.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/nearmiss-shading-on-another-page.pdf	1	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-shading-pattern-never-filled.pdf	d74b95c9e2f89b91e1e221ff273316a6adfbf2e28a3a249f6d59d540f7694044
+PAGE	tests/redaction/generated/nearmiss-shading-pattern-never-filled.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	ade3a89fd4049ec784e46f6ccb7058d5e4c2919522124d26872059c733e17357
 PAGE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
 PAGE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	b4fdbf4c785b63abdad2b25958ef9c56a4527a180df651ae0458a8562e79b151
+PAGE	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	e165355c611be327e06b6e3d2dd59f81e696dfb290974c583d33cc69065e3b8a
 PAGE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4

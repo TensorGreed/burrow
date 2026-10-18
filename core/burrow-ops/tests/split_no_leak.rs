@@ -1287,6 +1287,56 @@ fn a_form_chain_at_the_ceiling_still_splits() {
     );
 }
 
+/// The depths between the two above (#125 slice 4): `oc-nested.pdf` pins one level and the
+/// ceiling pins nine, so a layer two to eight forms down was never measured.
+const MEASURED_DEPTHS: std::ops::RangeInclusive<usize> = 2..=8;
+
+#[test]
+fn a_layer_at_every_depth_the_walk_follows_is_refused() {
+    // EVERY DEPTH, each by the per-page check. As written, the stopgap refuses each at the open;
+    // with the catalog switch renamed, only the prune walk can refuse it, and it must do so by the
+    // optional-content check rather than by the depth ceiling, which is nine.
+    for depth in MEASURED_DEPTHS {
+        let why = format!("a layer {depth} forms down");
+        let pdf = fixture(&format!("layer-at-depth-{depth}.pdf"));
+        assert_the_stopgap_refuses(&pdf, &why);
+        assert_the_per_page_refusal(split_first(without_the_catalog_switch(pdf), &[1]), &why);
+    }
+}
+
+#[test]
+fn the_same_form_chains_without_a_layer_split_at_every_depth() {
+    // THE TWINS: the same chain, the deepest form marking content against an ordinary `/Span`
+    // property list. A walk that refused on depth, or on `/Properties` existing, passes the test
+    // above and fails this one.
+    for depth in MEASURED_DEPTHS {
+        let outputs = split_first(fixture(&format!("forms-at-depth-{depth}.pdf")), &[1])
+            .unwrap_or_else(|error| {
+                panic!("a {depth}-deep form chain with no layer was refused: {error:?}")
+            });
+        assert_eq!(outputs.len(), 2, "split after page 1 yields two parts");
+    }
+}
+
+#[test]
+fn a_layer_inside_a_type_three_glyph_procedure_is_refused() {
+    // The walk reaches it by descending the FONT dictionary's `/Resources`, not a form's.
+    let pdf = fixture("layer-in-type3-glyph.pdf");
+    assert_the_stopgap_refuses(&pdf, "a layer in a Type 3 glyph");
+    assert_the_per_page_refusal(
+        split_first(without_the_catalog_switch(pdf), &[1]),
+        "a layer in a Type 3 glyph",
+    );
+}
+
+#[test]
+fn a_type_three_font_with_an_ordinary_property_list_splits() {
+    // THE TWIN: the same font and procedure, the property list a `/Span` one, no layer.
+    let outputs = split_first(fixture("no-layer-in-type3-glyph.pdf"), &[1])
+        .expect("a Type 3 font with an ordinary property list is not optional content");
+    assert_eq!(outputs.len(), 2, "split after page 1 yields two parts");
+}
+
 /// A 2-page doc whose page 1 carries a widget annotation whose `/AP /N` appearance is a chain of
 /// `levels` nested Form XObjects, the deepest holding a hidden OCG. The appearance is absorbed at
 /// EVEN depth, so this drives the `follow_resources` guard parity the form-chain fixtures do not.

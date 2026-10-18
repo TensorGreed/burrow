@@ -350,6 +350,14 @@ jobs:
       - name: Each split path reaches the shared pruning policy
         run: tools/test-prune-is-reached.sh
 
+      # #125's five refusals, each shown to be REACHED: the script deletes each check in turn
+      # (and the routes the evasion fixtures take -- a form's ink, a form's and a Type 3 font's
+      # layers) and requires the suite pinning those fixtures by rule to go red NAMING them, after
+      # asserting the plant applied and that cargo rebuilt burrow-engines for it. IN `test` because
+      # every suite it runs needs the native engines; it says so, rather than passing, without them.
+      - name: Each redaction refusal is reached by its evasion fixtures
+        run: tools/test-redaction-refusals-are-reached.sh
+
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
       # through a whole ADR cycle. Lives here because it needs the built artifacts.

@@ -201,6 +201,7 @@ def main(out: Path) -> None:
     refusal_shapes(out)
     walk_shapes(out)
     destinations(out)
+    layers_at_depth(out)
 
 
 def canary_per_page(out: Path) -> None:
@@ -597,6 +598,119 @@ def walk_shapes(out: Path) -> None:
     )
 
 
+def layers_at_depth(out: Path) -> None:
+    """Optional content at every depth the walk follows, and inside a Type 3 glyph procedure --
+    each with a twin that has the same shape and no layer (#125 slice 4).
+
+    ``oc-nested.pdf`` pins ONE level and ``split_no_leak.rs`` pins the ceiling (nine forms, refused
+    for depth; eight, with no layer, split). Depths two to eight with a layer were unmeasured, and
+    so was a layer in a Type 3 font's own ``/Resources``, which the walk reaches by descending the
+    font dictionary rather than a form:
+
+      * ``layer-at-depth-N.pdf`` (N = 2..8) -- page 1 draws ``/Fx1``, each form draws the next,
+        and the N-th form marks its content with an OCG named in its own ``/Properties``. The
+        catalog turns the layer off.
+      * ``forms-at-depth-N.pdf`` -- the same chain; the N-th form's property list is an ordinary
+        ``/Span`` one, and there is no ``/OCProperties``. MUST split: the detector keys on the
+        layer, not on depth or on ``/Properties`` existing.
+      * ``layer-in-type3-glyph.pdf`` -- page 1 shows a glyph of a Type 3 font whose procedure
+        marks its content with an OCG named in the FONT's ``/Resources``.
+      * ``no-layer-in-type3-glyph.pdf`` -- the same font, its property list an ordinary one.
+    """
+    kids = " ".join(f"{3+i} 0 R" for i in range(PAGES))
+    first = 3 + 2 * PAGES  # 13: the first object after the pages and their contents
+
+    def document(page1_resources: str, page1_stream: bytes, extra: list[bytes], layer: bool) -> bytes:
+        pages, streams = [], []
+        for i in range(PAGES):
+            resources = f"/Resources << {page1_resources} >> " if i == 0 else ""
+            pages.append(
+                (
+                    f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    f"{resources}/Contents {3 + PAGES + i} 0 R >>"
+                ).encode()
+            )
+            streams.append(page1_stream if i == 0 else content(i + 1))
+        props = first + len(extra) - 1  # the property list is always the last extra object
+        catalog_extra = (
+            f"/OCProperties << /OCGs [{props} 0 R] /D << /OFF [{props} 0 R] >> >> " if layer else ""
+        )
+        return build(
+            [
+                f"<< /Type /Catalog /Pages 2 0 R {catalog_extra}>>".encode(),
+                # The inherited empty `/Resources` `walk_shapes` explains: no page is repaired.
+                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
+            ]
+            + pages
+            + streams
+            + extra,
+            1,
+        )
+
+    def property_list(layer: bool, label: str) -> tuple[bytes, bytes]:
+        """The property list object, and the marked-content tag that names it."""
+        if layer:
+            return f"<< /Type /OCG /Name (BURROWMARK layer {label}) >>".encode(), b"/OC"
+        return b"<< /Lang (en-GB) >>", b"/Span"
+
+    for depth in range(2, 9):
+        for layer in (True, False):
+            label = f"{depth} forms down"
+            props_obj, tag = property_list(layer, label)
+            props = first + depth
+            forms = []
+            for level in range(1, depth + 1):
+                if level < depth:
+                    forms.append(
+                        stream(
+                            f"q /Fx{level + 1} Do Q".encode(),
+                            extra="/Type /XObject /Subtype /Form /BBox [0 0 9 9] "
+                            f"/Resources << /XObject << /Fx{level + 1} {first + level} 0 R >> >> ",
+                        )
+                    )
+                else:
+                    forms.append(
+                        stream(
+                            tag + f" /MC0 BDC BT (BURROWMARK drawn {label}) Tj ET EMC".encode(),
+                            extra="/Type /XObject /Subtype /Form /BBox [0 0 9 9] "
+                            f"/Resources << /Properties << /MC0 {props} 0 R >> >> ",
+                        )
+                    )
+            name = f"layer-at-depth-{depth}.pdf" if layer else f"forms-at-depth-{depth}.pdf"
+            write(
+                out,
+                name,
+                document(
+                    f"/XObject << /Fx1 {first} 0 R >>",
+                    stream(b"q /Fx1 Do Q"),
+                    forms + [props_obj],
+                    layer,
+                ),
+            )
+
+    for layer in (True, False):
+        props_obj, tag = property_list(layer, "in a Type 3 glyph")
+        font = (
+            f"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] "
+            f"/FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {first + 1} 0 R >> "
+            f"/Encoding << /Type /Encoding /Differences [97 /a] >> "
+            f"/FirstChar 97 /LastChar 97 /Widths [1000] "
+            f"/Resources << /Properties << /MC0 {first + 2} 0 R >> >> >>"
+        ).encode()
+        procedure = stream(b"1000 0 d0 " + tag + b" /MC0 BDC 0 0 500 500 re f EMC")
+        name = "layer-in-type3-glyph.pdf" if layer else "no-layer-in-type3-glyph.pdf"
+        write(
+            out,
+            name,
+            document(
+                f"/Font << /T3 {first} 0 R >>",
+                stream(b"BT /T3 12 Tf 20 100 Td (a) Tj ET"),
+                [font, procedure, props_obj],
+                layer,
+            ),
+        )
+
+
 def refusal_shapes(out: Path) -> None:
     """Two documents that open and split on any other tool, and that burrow refuses.
 
@@ -713,4 +827,4 @@ if __name__ == "__main__":
         sys.exit(f"usage: {sys.argv[0]} <output-dir>")
     target = Path(sys.argv[1])
     main(target)
-    print(f"split fidelity fixtures: 13 written to {target}")
+    print(f"split fidelity fixtures: 29 written to {target}")
