@@ -94,6 +94,11 @@ const DESTS: Name = Name::literal(b"/Dests\0");
 /// How many lookups run between two reads of the deadline.
 const LOOKUPS_PER_CHECKPOINT: usize = 256;
 
+/// How many times object streams list each object number as a member, counted once as the
+/// streams are read so that asking about one number costs a lookup, not a pass over every
+/// listing (round 1's security review: a pass per question was quadratic).
+type Listings = BTreeMap<c_int, usize>;
+
 /// The refusals the check raises, named by the operation that runs it.
 ///
 /// **Carried by the caller, as the lexer's `InlineImages` carries redaction's** (#228): split runs
@@ -306,7 +311,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
     let mut listed: BTreeSet<c_int> = BTreeSet::new();
     // HOW MANY OBJECT STREAMS list each number: a number listed twice, or listed and also headed in
     // the file body, is more than one revision of the object.
-    let mut listings: Vec<c_int> = Vec::new();
+    let mut listings = Listings::new();
 
     // THE OBJECT STREAMS, from every stream object's header. qpdf reads an object stream's
     // members through `getObject(number, 0)` whatever generation the stream was written with
@@ -342,7 +347,10 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
         )?;
         wanted.references.extend(members.references);
         // ENTRIES, not streams: a number listed twice in one stream is two copies.
-        listings.extend_from_slice(&members.member_list);
+        for number in &members.member_list {
+            let counted = listings.entry(*number).or_default();
+            *counted = counted.saturating_add(1);
+        }
         listed.extend(members.members);
         null_holders.extend(members.null_values);
         dictionary_references.extend(members.dictionary_references);
@@ -402,14 +410,32 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
             return Err((refusals.nothing)());
         }
     }
-    // EVERY EMPTY `/Dest` VALUE REFUSES unless the operation opts in -- `accepted` has refused it
-    // already where it does not -- and, where it does, unless a link annotation's own dictionary
-    // holds it (owner, 2026-10-17).
-    for holder in &empty_values {
-        if !refusals.admit_dest_empty_value
-            || !link_annotation_holds(document, &wanted, &listings, holder)?
-        {
+    // EVERY EMPTY `/Dest` VALUE REFUSES unless the operation opts in, and, where it does, unless a
+    // link annotation's own dictionary holds it (owner, 2026-10-17).
+    if !empty_values.is_empty() {
+        // DEFENCE IN DEPTH: `accepted` has refused every empty value already where the operation
+        // does not opt in, so this refuses nothing on its own (its removal alone survives,
+        // measured); the mutation removing both is killed by redaction's tests.
+        if !refusals.admit_dest_empty_value {
             return Err((refusals.name)());
+        }
+        // ONE QUESTION PER HOLDING OBJECT, and the deadline read between them (round 1's security
+        // review): a link may hold its value many times, and a value nested deeper, or held by a
+        // header that did not read, refuses without asking the engine anything.
+        let mut holders = BTreeSet::new();
+        for holder in &empty_values {
+            let (true, Some(number)) = (holder.direct, holder.object) else {
+                return Err((refusals.name)());
+            };
+            holders.insert(number);
+        }
+        for (asked, number) in holders.into_iter().enumerate() {
+            if asked % LOOKUPS_PER_CHECKPOINT == 0 {
+                checkpoint()?;
+            }
+            if !link_annotation_holds(document, &wanted, &listings, number)? {
+                return Err((refusals.name)());
+            }
         }
     }
     // EVERY EMPTY KEY REFUSES, unless the operation admits the catalog's `/Dests` dictionary,
@@ -485,7 +511,7 @@ fn null_value_found<D: PdfDocument>(
     document: &D,
     wanted: &Found,
     listed: &BTreeSet<c_int>,
-    listings: &[c_int],
+    listings: &Listings,
     null_holders: &[Holder],
     dictionary_references: &[((i32, i32), Holder)],
 ) -> Result<bool> {
@@ -515,11 +541,11 @@ fn null_value_found<D: PdfDocument>(
 /// `None` for anything else -- written twice (an earlier revision, or a header and a member), at
 /// another generation, or numbered 0 -- so a check keyed on it applies to no object. Shared by the
 /// null-value exemption's catalog and by the catalog's `/Dests`.
-fn written_once(wanted: &Found, listings: &[c_int], identity: (c_int, c_int)) -> Option<c_int> {
+fn written_once(wanted: &Found, listings: &Listings, identity: (c_int, c_int)) -> Option<c_int> {
     let (number, generation) = identity;
     let headed = wanted.declarations.get(&number);
     let headers = headed.map_or(0, |declared| declared.headers);
-    let listed_times = listings.iter().filter(|listed| **listed == number).count();
+    let listed_times = listings.get(&number).copied().unwrap_or(0);
     let once = match (headers, listed_times) {
         (1, 0) => headed.is_some_and(|declared| declared.generations.contains(&generation)),
         (0, 1) => true,
@@ -528,20 +554,18 @@ fn written_once(wanted: &Found, listings: &[c_int], identity: (c_int, c_int)) ->
     (number > 0 && once).then_some(number)
 }
 
-/// Whether `holder` is the top level of a link annotation's own dictionary: a direct key of an
-/// object written exactly once ([`written_once`]), which qpdf reads as a dictionary -- not a stream,
-/// so a form's dictionary is not one -- whose `/Type` is `/Annot` and whose `/Subtype` is `/Link`.
-/// Chrome's empty `/Dest` value stands nowhere else (the private inventory, 2026-10-16), and an
-/// annotation with no `/Type`, or of another subtype, is refused rather than reasoned about.
+/// Whether object `number`, whose own top-level dictionary holds an empty `/Dest` value, is a link
+/// annotation: an object written exactly once ([`written_once`]), which qpdf reads as a dictionary
+/// -- not a stream, so a form's dictionary is not one -- whose `/Type` is `/Annot` and whose
+/// `/Subtype` is `/Link`. Chrome's empty `/Dest` value stands nowhere else (the private inventory,
+/// 2026-10-16), and an annotation with no `/Type`, or of another subtype, is refused rather than
+/// reasoned about. The caller has already refused a value nested deeper than the top level.
 fn link_annotation_holds<D: PdfDocument>(
     document: &D,
     wanted: &Found,
-    listings: &[c_int],
-    holder: &Holder,
+    listings: &Listings,
+    number: c_int,
 ) -> Result<bool> {
-    let (true, Some(number)) = (holder.direct, holder.object) else {
-        return Ok(false);
-    };
     // THE GENERATION OF ITS ONE COPY: its one header's, or 0 for an object-stream member. Anything
     // else is not written once, and `written_once` refuses it below.
     let generation = wanted
@@ -553,10 +577,12 @@ fn link_annotation_holds<D: PdfDocument>(
         return Ok(false);
     };
     let object = document.object(number, generation)?;
-    // A STREAM IS NOT ONE, whatever its dictionary says. DEFENCE IN DEPTH, unwitnessed: the reads
-    // below do not find a link's `/Type` and `/Subtype` through a stream's handle either (its
-    // dictionary is `stream_dict`), so the mutation that drops this clause survives (measured: the
-    // fixture's stream that claims to be a link still refuses, and its named twin opens).
+    // A STREAM IS NOT ONE, whatever its dictionary says. DEFENCE IN DEPTH, unwitnessed: on both
+    // seams `PdfObject::key` answers null for any object that is not a dictionary
+    // (`qpdf/redact_graph.rs`, `web/redact.rs`), so the reads below find no `/Type` or `/Subtype`
+    // through a stream's handle either, and the mutation that drops this clause survives
+    // (measured: the fixture's stream that claims to be a link still refuses, and its named twin
+    // opens).
     let link = if object.type_code() == object_type::DICTIONARY {
         let kind = object.key(&TYPE);
         let subtype = object.key(&SUBTYPE);
@@ -591,7 +617,7 @@ struct DestsSlots {
 fn catalog_dests<D: PdfDocument>(
     document: &D,
     wanted: &Found,
-    listings: &[c_int],
+    listings: &Listings,
 ) -> Result<DestsSlots> {
     let trailer = document.trailer()?;
     let root = trailer.key(&ROOT);
@@ -667,7 +693,9 @@ fn named_by_trailers_only(catalog: c_int, referrers: &BTreeMap<c_int, Referrers>
 ///
 /// An empty `/Dest` value refuses here, where the scan reads it, unless the operation opts in
 /// ([`ReferenceRefusals::admit_dest_empty_value`]): the same refusal, at the same point, as before
-/// split admitted the value, so an operation that keeps the default refuses as it always did.
+/// split admitted the value, so an operation that keeps the default refuses as it always did --
+/// before the lookups, so a document that also refers to nothing still refuses as a name
+/// (`qpdf/references_tests.rs` pins that ordering on both engines).
 fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
         Some(Irregular::NameReadDifferently) => Err((refusals.name)()),
@@ -688,8 +716,17 @@ fn integer_at<O: PdfObject>(dictionary: &O, key: &Name) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::written_once;
+    use super::{Listings, written_once};
     use crate::pdfsyntax::references::{Declared, Found};
+
+    /// The listings of object streams that list `numbers`, once per entry.
+    fn listed(numbers: &[i32]) -> Listings {
+        let mut listings = Listings::new();
+        for number in numbers {
+            *listings.entry(*number).or_default() += 1;
+        }
+        listings
+    }
 
     fn headed(number: i32, generations: &[i32]) -> Found {
         let mut found = Found::default();
@@ -709,30 +746,36 @@ mod tests {
     /// a member, two members, and the number 0.
     #[test]
     fn written_once_holds_only_for_one_copy_at_the_generation_asked() {
-        assert_eq!(written_once(&headed(6, &[0]), &[], (6, 0)), Some(6));
         assert_eq!(
-            written_once(&headed(6, &[0]), &[], (6, 1)),
+            written_once(&headed(6, &[0]), &listed(&[]), (6, 0)),
+            Some(6)
+        );
+        assert_eq!(
+            written_once(&headed(6, &[0]), &listed(&[]), (6, 1)),
             None,
             "a header at another generation"
         );
         assert_eq!(
-            written_once(&headed(6, &[0, 0]), &[], (6, 0)),
+            written_once(&headed(6, &[0, 0]), &listed(&[]), (6, 0)),
             None,
             "two headers"
         );
-        assert_eq!(written_once(&Found::default(), &[6], (6, 0)), Some(6));
         assert_eq!(
-            written_once(&headed(6, &[0]), &[6], (6, 0)),
+            written_once(&Found::default(), &listed(&[6]), (6, 0)),
+            Some(6)
+        );
+        assert_eq!(
+            written_once(&headed(6, &[0]), &listed(&[6]), (6, 0)),
             None,
             "a header and a member"
         );
         assert_eq!(
-            written_once(&Found::default(), &[6, 6], (6, 0)),
+            written_once(&Found::default(), &listed(&[6, 6]), (6, 0)),
             None,
             "two members"
         );
         assert_eq!(
-            written_once(&headed(0, &[0]), &[], (0, 0)),
+            written_once(&headed(0, &[0]), &listed(&[]), (0, 0)),
             None,
             "number 0"
         );

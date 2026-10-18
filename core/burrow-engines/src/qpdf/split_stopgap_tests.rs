@@ -1151,3 +1151,74 @@ fn an_object_numbered_zero_is_never_the_catalog_at_split_s_open() {
         &with_object_zero(&text, "<< /Extra 1 >>"),
     );
 }
+
+/// A clock that counts how often it is read and moves a millisecond each time.
+struct Counting(std::sync::atomic::AtomicU64);
+impl Clock for Counting {
+    fn now_ms(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// THE EMPTY-VALUE LOOKUPS READ THE DEADLINE (round 1's security review): split's reference pass
+/// asks the engine about every link annotation holding an empty `/Dest` value, one question per
+/// object, and reads the deadline between them as the reference lookups do. Asked directly, with a
+/// clock that moves a millisecond per read: a document of many such links reads it more often than
+/// its twin holding a number in the same place, and with the budget set between the two counts, the
+/// pass refuses with the time limit -- which, without the reads in that loop, it never could, since
+/// nothing after the loop reads the clock.
+#[test]
+fn the_empty_value_lookups_read_the_deadline() {
+    use crate::redact::graph::OpensForRedaction;
+
+    let links: u32 = 4096;
+    let build = |dest: &str| {
+        let mut more: Vec<Written> = Vec::new();
+        for number in 0..links {
+            more.push((
+                100 + number,
+                0,
+                format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest {dest}\n>>"),
+            ));
+        }
+        classic(&document(PLAIN_CATALOG, "", SHOWN, &more))
+    };
+    let run = |pdf: &[u8], budget: u64| {
+        let (document, _) = super::Qpdf
+            .open_for_redaction(pdf, &options())
+            .expect("opens");
+        let clock = Counting(std::sync::atomic::AtomicU64::new(0));
+        let mut limits = Limits::default();
+        limits.max_duration_ms = budget;
+        let deadline = burrow_types::Deadline::start(&clock, &limits);
+        let result = crate::redact::references::refuse_references_to_nothing_as(
+            &document,
+            pdf,
+            &deadline,
+            &clock,
+            &crate::prune::SPLIT_REFERENCES,
+        )
+        .map(drop);
+        (result, clock.0.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    let empty = build("/");
+    let twin = build("0");
+    assert_eq!(empty.len(), twin.len(), "the twin is the same length");
+    let (twin_result, twin_reads) = run(&twin, u64::MAX);
+    twin_result.expect("the twin passes");
+    let (empty_result, empty_reads) = run(&empty, u64::MAX);
+    empty_result.expect("links at their top level pass with time to spare");
+    let loop_reads = empty_reads.saturating_sub(twin_reads);
+    assert!(
+        loop_reads >= u64::from(links) / 256,
+        "{loop_reads} more deadline reads over {links} links holding an empty /Dest value: the \
+         lookups must read it every 256 objects"
+    );
+    let budget = twin_reads + loop_reads / 2;
+    match run(&empty, budget).0 {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms");
+        }
+        other => panic!("a deadline that passes inside the lookups: {other:?}"),
+    }
+}
