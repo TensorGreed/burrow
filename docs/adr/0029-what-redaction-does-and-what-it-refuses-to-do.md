@@ -130,7 +130,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a Type 3 glyph procedure that draws an **inline image outside its font's `/FontBBox`**, or a font with no box | **refuse**, `[type-three-image-outside-its-box]` — added 2026-10-08 (#125). **Page-wide**, like the paint rule: every Type 3 font the page draws with is checked, wherever the region is. The image's extent is the unit square through the procedure's own `cm`s, and it is judged against **each** font that names the procedure, since two fonts can share one with different boxes. Outside the box no region over the image reaches the glyph: `Ok` over 5,309 dark pixels, measured. A TeX bitmap font draws each image inside its box and is not refused by this |
 | a **Type 3 glyph procedure carrying a `/Matrix`** of its own | **refuse**, `[type-three-procedure-matrix]` — added 2026-10-08 (#125, security review). PDFium applies it as it applies a form's, before the procedure's own `cm`; no producer is known to write one, so it is refused rather than modelled. Page-wide, like the rows beside it |
 | a **`/Subtype` that is not a name** -- on a font, on a Form XObject, and on ANY stream the optional-content walk reaches (a form, a pattern, an appearance stream, a glyph procedure), which reads it to ask "is this an image" | **refuse**, `[subtype-not-a-name]` — added 2026-10-08 (#125, second security review). PDFium reads `/Subtype` by its bytes, so `(Type3)` is a Type 3 font and `(Form)` a form to it; burrow read "not a name" as "not this" and skipped every Type 3 rule and the form's content. Measured `Ok` with a procedure's shown text, painted path and image, and a form's text, all left in the region (879 and 6,000 dark pixels before and after). The text and form cases were on `main` before this slice; the redaction page is not reachable by visitors. The post-run read-back re-runs burrow's walk, so it shared the blind spot. One branch keeps its own reading on purpose: an annotation's markup test (#229) counts a non-name `/Subtype` as markup, which fails safe. 0 of 4,824 census tiles refuse by it |
-| a **number-valued key, or array of numbers, holding something that is not a number** -- `/Widths`, `/W`, `/FirstChar`, `/MissingWidth`, `/DW`, `/WMode`, `/FontBBox`, `/FontMatrix`, a form's `/Matrix` | **refuse**, `[number-unreadable]` — added 2026-10-08 (#125, third security review). These were read by tokenising the array's unparsed text, which resolves only the array: an inner reference became two numbers, a string or name vanished, and every later item shifted. PDFium reads item by item. Measured `Ok` over the secret: `/Widths` with a string placed it outside the region; a form `/Matrix` and a Type 3 `/FontMatrix` with a string in them, 374 and 7,500 dark pixels left. Now read item by item: a reference resolves, as PDFium resolves it, and anything else refuses -- an array where one number belongs (`/DW [500]`, which PDFium reads as 0), a `/FirstChar` that is not whole (PDFium truncates; the old reader fell back to 0), a number past 2^24, and an array past 65,536 items. `/Widths` is read only as far as code 255. A `/W` code given two DIFFERENT widths refuses `[widths-overlap]` (PDFium takes the first, the map kept the last; the same width twice is read alike); a `/W` that reads more than 262,144 items refuses `[widths-too-long]`; a `/FirstChar` below 0, or past 255 with `/Widths` declared, refuses `[first-char]` wherever the font is read; a `/W` start or end that is not whole refuses, where it was skipped or stopped the array. **A fraction is parsed, not truncated or rounded as PDFium stores widths -- and that leaked, measured, over enough padding (#291): bounded since by the width-drift row below.** This discharges #181 (`/Widths`, `/CropBox`) and #241 (`/FontBBox`, a form's `/Matrix`; its `/CropBox` half was already read item by item by the page frame since #224, now pinned). On `main` before this slice |
+| a **number-valued key, or array of numbers, holding something that is not a number** -- `/Widths`, `/W`, `/FirstChar`, `/MissingWidth`, `/DW`, `/WMode`, `/FontBBox`, `/FontMatrix`, a form's `/Matrix` | **refuse**, `[number-unreadable]` — added 2026-10-08 (#125, third security review). These were read by tokenising the array's unparsed text, which resolves only the array: an inner reference became two numbers, a string or name vanished, and every later item shifted. PDFium reads item by item. Measured `Ok` over the secret: `/Widths` with a string placed it outside the region; a form `/Matrix` and a Type 3 `/FontMatrix` with a string in them, 374 and 7,500 dark pixels left. Now read item by item: a reference resolves, as PDFium resolves it, and anything else refuses -- an array where one number belongs (`/DW [500]`, which PDFium reads as 0), a `/FirstChar` that is not whole (PDFium truncates; the old reader fell back to 0), a number past 2^24, and an array past 65,536 items. `/Widths` is read only as far as code 255. A `/W` code given two DIFFERENT widths refuses `[widths-overlap]` (PDFium takes the first, the map kept the last; the same width twice is read alike); a `/W` that reads more than 262,144 items refuses `[widths-too-long]`; a `/FirstChar` below 0, or past 255 with `/Widths` declared, refuses `[first-char]` wherever the font is read; a `/W` start or end that is not whole refuses, where it was skipped or stopped the array. **A fraction is parsed, not truncated or rounded as PDFium stores widths -- and that leaked, measured, over enough padding (#291): bounded since by the width-drift row below.** This discharges #181 (`/Widths`, `/CropBox`) and #241 (`/FontBBox`, a form's `/Matrix`; its `/CropBox` half was already read item by item by the page frame since #224, now pinned). **Since #344, `/FontBBox` is read at two more sites -- a font's `/FontDescriptor` and a composite font's descendant's descriptor -- under the same rule, and a `/FontBBox` of more than four items refuses at every site without an item being read** (see the 2026-10-17 amendment). On `main` before this slice |
 | a **font whose widths PDFium takes from another source** -- `/Widths` present but a number (a string, name or dictionary refuses `[number-unreadable]` first), or an empty array; a `/MissingWidth`, or an embedded `/FontFile`, `/FontFile2` or `/FontFile3`, with no `/Widths` (the embedded case added by the seventh security review: a Helvetica embedding a monospace program, `Ok` over the secret, three subtypes); a `/FontDescriptor` that is not a dictionary; a Type 3 font with no `/Widths`, an empty one, or a `/MissingWidth` | **refuse**, `[width-source]` — added 2026-10-08 (#125, sixth security review). PDFium chooses by what `/Widths` IS: an array of any length means the array then `/MissingWidth`, never the standard-14 table; no `/Widths` means an embedded program's widths if there is one, and otherwise the table, `/MissingWidth` ignored; Type 3 uses neither. burrow chose by what reading produced, and each shape returned `Ok` over the secret (110 dark pixels before and after). The table is now consulted only when `/Widths` is absent, and every disagreement refuses; nothing is modelled. 0 of 4,824 census tiles refuse by it |
 | a **standard-14 font with no `/Widths`** -- the glyph a code draws, and its width | **placed by NAME** (#290, the owner's decision of 2026-10-09): `/Differences` and the base encoding give each code a glyph name, and its width comes from `pdfsyntax/standard14_table.rs`, GENERATED from Adobe's Core 14 AFMs (ADR 0030) intersected with the pinned PDFium's measured advances per style; a face gate requires PDFium to have loaded the measured face. A name the AFM and PDFium disagree on (about 85 per Helvetica or Times style), one outside the AFM (`uni0057`, `W.alt`, `.notdef`), or a code under a base encoding past 126 refuses `[no-widths]`. The residual -- exact for AFM viewers and for PDFium's bundled faces, not for a viewer substituting a system font -- is DECISIONS.md rule 14. Measured leaks closed: `/Differences [96 /grave]` and `[65 /W]`, and `/MacRomanEncoding` read as Standard, each `Ok` over the secret on `main`. 0 of 4,824 census tiles newly refused |
 | a **base encoding other than StandardEncoding, WinAnsiEncoding or MacRomanEncoding** on a font with no `/Widths` | **refuse**, `[width-source]` (#290). PDFium's MacExpert behaves as WinAnsi and its PDFDoc differs by subtype, measured; an unknown name is not Standard to it either. MacRoman is admitted: it matched Annex D at every code PDFium's faces carry, and over 32..=126 it differs from Standard only at 39 and 96 |
@@ -5346,3 +5346,62 @@ read; an `ID` refuses earlier, in the lexer, since no `BI` opened it. Found by t
 **Cost, measured** against `main`: **0 of 4,824** census tiles change outcome, and **0 of 282**
 inputs at open (99 real documents, 182 fixtures, `big_book.pdf`). `tests/redaction/outcomes.tsv`
 regenerates unchanged.
+
+## Amendment, 2026-10-17 — #344: the declared `/FontBBox` is read where fonts declare it, with a floor envelope
+
+**The defect.** A glyph's conservative box (§6) was the advance box unioned with the font
+dictionary's `/FontBBox`. Only a Type 3 font declares its box there. Type 1, TrueType and CID fonts
+declare it in the `/FontDescriptor`, a composite font in its descendant's, so every such glyph got
+the advance box alone, from the baseline up one em. A descender from the line above could reach a
+region its box did not. Measured on 3b46b21 by the PDFium ink read-back (#206's calibration
+instrument, rebuilt): 137 of 3,236 `Ok` census tiles, 343 characters on 47 documents, all on
+embedded Type 1 or CID fonts that carry a descriptor box. PDFium never draws a simple or CID glyph
+from `/FontBBox`, which this read-back depends on: a probe of nine font families against four box
+values each found no character box that moved. CFF (`/FontFile3`) programs and vertical writing were not probed.
+
+**The rule.** A glyph's box is its advance box, unioned with **every** four-number `/FontBBox` its
+font declares (the dictionary's, the descriptor's, and for Type 0 the descendant descriptor's; a
+zero-area box included), scaled through the glyph matrix, unioned with the **floor envelope**,
+scaled by the font size in text space. Then the stroke reach and the width drift are added, as
+before. The boxes are unioned and never chosen between, so reading another site can only grow a
+box. The verification re-walks with the same reader and inherits the rule.
+
+- **The floor envelope is a guess, not a bound.** It is the union of the fourteen Core AFM
+  `FontBBox`es committed under ADR 0030, [-200 -293 1116 1010] thousandths of an em, derived from
+  those files by a test. Real fonts mostly ink inside it. Nothing makes a font do so.
+- **When it applies** is `EnvelopeRule`: `Always` (the owner's default, D2 (b)), or
+  `WhenNoUsableBox` (no declared box of four numbers with area). The census measured both.
+- **Validity.** A box that is absent, or not four numbers, contributes nothing. An inverted box is
+  normalised and used. A `/FontBBox` holding a non-number refuses `[number-unreadable]` at the new
+  sites as at the old (row 133). **More than four items refuses `[number-unreadable]` at every site
+  before any item is read** (owner, 2026-10-17). It was 0 of 100 real documents, 1,852 sites, all
+  exactly four numbers, which bounds the rate below about 3% at 95%, not below 1%. A box that
+  composes to a non-finite one refuses `[non-finite-geometry]`, the envelope included.
+- **The Type 3 image check (row 130) keeps the dictionary's box alone.** It is in glyph space, and
+  a descriptor box or the text-space envelope read there would "contain" an image outside the
+  dictionary box, moving `[type-three-image-outside-its-box]` from refused to `Ok`.
+- **Not covered:** a font whose outlines draw outside the box it declares. Under `Always` the
+  envelope covers that up to its own extent and no further. The ROADMAP ship-blocker row and #206's
+  ink half carry it. A standard-14 font with no descriptor gets the envelope only, which was 0 of
+  the 137 tiles. Its own AFM box is filed as #387 (owner D3).
+
+**Census, against 3b46b21** (both instruments, 4,825 tiles, 284 inputs at open):
+
+| | `Ok` tiles | moves | intruding tiles (charbox / raster) |
+|---|--:|---|--:|
+| baseline 3b46b21 | 3,236 | | 137 / 130 |
+| `Always` | 3,234 | 2 `ok` → `[type-three-image-cut]`, 1 document | **0 / 0** |
+| `WhenNoUsableBox` | 3,236 | none | **0 / 0** |
+
+- Under both rules, no input moved from refused to `Ok`, no tile intruded that was clean before, no
+  new refusal tag appeared, and no descriptor-site refusal fired on a real document. The open census
+  did not move.
+- `Always` costs two tiles of one TeX bitmap-font page. Its Type 3 fonts declare usable dictionary
+  boxes, and the envelope reaches past them onto a glyph that draws an image. That is the whole
+  Type 3 cost.
+- `tests/redaction/outcomes.tsv` regenerates with 17 of 965 rows changed, every one `Ok` before and
+  after with the same report: more glyphs removed beside the region.
+- The second reading's R1 plant moved past the envelope's reach. The old plant now redacts, both
+  glyphs cut by identity, and that is pinned.
+- The oracle's P3 floor was re-derived as the larger of PDFium's loose box and the envelope:
+  against the loose box alone, 145 of 238 real glyphs fail a box that is what the rule asks for.
