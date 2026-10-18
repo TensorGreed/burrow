@@ -255,36 +255,48 @@ async function runOperation(request) {
   // and still holds a usable handle to the same file after a worker is killed.
   //
   // Reading a Blob is a memory read. It issues no request, so no CSP directive is consulted.
-  const bytes = new Uint8Array(await request.blob.arrayBuffer());
-  const password = request.password ? new Uint8Array(request.password) : undefined;
+  /** @type {Uint8Array | undefined} */
+  let bytes;
+  /** @type {Uint8Array | undefined} */
+  let password;
+  // #199, AS THE OTHER TWO WORKERS DO: the input and the password are zeroed once Rust has them,
+  // and so is every pixel copy the bridge handed in -- on success, on a refusal and on a throw.
+  try {
+    bytes = new Uint8Array(await request.blob.arrayBuffer());
+    password = request.password ? new Uint8Array(request.password) : undefined;
 
-  // NOT freed here. wasm-bindgen passes a struct argument BY VALUE: the generated glue calls
-  // `__destroy_into_raw()` and hands the raw pointer to Rust, which then owns it. Calling
-  // `.free()` afterwards is a double free and throws "null pointer passed to rust", which
-  // manifests as the worker never replying at all.
-  const limits = new wasm_bindgen.WebLimits(
-    BigInt(request.limits.maxInputBytes),
-    BigInt(request.limits.maxMemoryBytes),
-    BigInt(request.limits.maxDurationMs),
-    BigInt(request.limits.maxPages),
-    BigInt(request.limits.maxPixels),
-  );
-
-  if (request.op === "render") {
-    // Every number that shapes the request comes from the page and is validated in RUST: the
-    // page list against the real page count, the box against `max_pixels`, both inside
-    // `render_begin`. Nothing here compares anything (ADR 0009 §2).
-    renderStrip(
-      request.id,
-      bytes,
-      Uint32Array.from(request.pages),
-      request.boxWidth,
-      request.boxHeight,
-      password,
-      limits,
+    // NOT freed here. wasm-bindgen passes a struct argument BY VALUE: the generated glue calls
+    // `__destroy_into_raw()` and hands the raw pointer to Rust, which then owns it. Calling
+    // `.free()` afterwards is a double free and throws "null pointer passed to rust", which
+    // manifests as the worker never replying at all.
+    const limits = new wasm_bindgen.WebLimits(
+      BigInt(request.limits.maxInputBytes),
+      BigInt(request.limits.maxMemoryBytes),
+      BigInt(request.limits.maxDurationMs),
+      BigInt(request.limits.maxPages),
+      BigInt(request.limits.maxPixels),
     );
-    return null;
-  }
 
-  return wasm_bindgen.page_count(bytes, password, limits);
+    if (request.op === "render") {
+      // Every number that shapes the request comes from the page and is validated in RUST: the
+      // page list against the real page count, the box against `max_pixels`, both inside
+      // `render_begin`. Nothing here compares anything (ADR 0009 §2).
+      renderStrip(
+        request.id,
+        bytes,
+        Uint32Array.from(request.pages),
+        request.boxWidth,
+        request.boxHeight,
+        password,
+        limits,
+      );
+      return null;
+    }
+
+    return wasm_bindgen.page_count(bytes, password, limits);
+  } finally {
+    __burrow_wipe_handed_out();
+    bytes?.fill(0);
+    password?.fill(0);
+  }
 }

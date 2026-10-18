@@ -713,6 +713,9 @@ export function createWorkerHost(options) {
       // A reply to a request that is no longer in flight — the watchdog fired and settled it
       // already, or a worker was discarded between the post and the reply. Dropped: the
       // caller has its answer, and settling twice would be worse than saying nothing.
+      // A PAGE'S PIXELS for a request nobody holds any more go nowhere, so they are zeroed rather
+      // than left to the collector (#199, D4: rendered pixels are decoded content).
+      if (data.pixels instanceof ArrayBuffer) new Uint8Array(data.pixels).fill(0);
       return;
     }
 

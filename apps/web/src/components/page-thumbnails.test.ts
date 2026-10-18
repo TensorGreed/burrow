@@ -131,22 +131,97 @@ describe("the page-picture strip", () => {
     expect('"2d"').not.toMatch(/^"2d",\s*\{\s*willReadFrequently:\s*true\s*\}$/);
   });
 
-  it("never terminates its worker while a render is in flight", () => {
+  it("never terminates its worker while a render is in flight, except at the end deadline", () => {
     // Terminating the render worker mid-render crashed Firefox's content process (SIGSEGV in
     // libxul, the whole tab) about one run in ten on the split test that edits the cuts while
     // it runs; releasing only once the render settles measured 0 in 120. A source scan, and it
-    // says so: every `discardWorker()` in the component must be either guarded by `!running`
-    // or in the `finally` that runs once the render has settled -- and there must be both.
+    // says so: every `discardWorker()` in the component is one of three --
+    // - the pause, guarded by `!running`;
+    // - the `finally` that runs once the render has settled;
+    // - the end gate's `discard` (#199, one document per worker), whose rule -- at once if nothing
+    //   renders, on settle, or at `END_DEADLINE_MS` if the render hangs (owner, 2026-10-15) -- is
+    //   `strip-lifecycle.test.ts`'s, with fake timers.
     const discards = [...source.matchAll(/discardWorker\(\)/g)].map((m) => m.index!);
-    expect(discards.length, "the component never releases its engine").toBe(2);
+    expect(discards.length, "a discardWorker() the three rules do not account for").toBe(3);
     const guarded = discards.filter((at) =>
       /if \(!running\) host\.$/.test(source.slice(at - 25, at)),
     );
     const settled = discards.filter((at) =>
-      /finally \{\s*running = false;\s*if \(paused\) host\.$/.test(source.slice(at - 400, at)),
+      /finally \{\s*running = false;\s*if \(paused\) \{\s*host\.$/.test(source.slice(at - 600, at)),
+    );
+    const gated = discards.filter((at) =>
+      /createEndGate\(\{\s*discard: \(\) => host\.$/.test(source.slice(at - 80, at)),
     );
     expect(guarded.length, "the pause terminates the worker without checking for a render").toBe(1);
     expect(settled.length, "nothing releases the engine after an in-flight render settles").toBe(1);
+    expect(gated.length, "the end gate does not own the document-change end").toBe(1);
+    // AND THE GATE IS TOLD WHETHER A RENDER IS IN FLIGHT, and told when it settles.
+    expect(source).toMatch(/ending\.request\(running\)/);
+    expect(source).toMatch(/finally \{[\s\S]{0,600}ending\.settled\(\)/);
+    // AND NOT TWICE: when the pause's own release has just ended the worker, a waiting end is
+    // cancelled rather than carried out on top of it.
+    expect(source).toMatch(
+      /if \(paused\) \{\s*host\.discardWorker\(\);\s*ending\.cancel\(\);\s*\} else \{\s*ending\.settled\(\);\s*\}/,
+    );
+    // And the gate's deadline does not outlive the strip.
+    expect(source).toMatch(/onDestroy\(\(\) => \{[\s\S]{0,200}ending\.cancel\(\)/);
+  });
+
+  it("lets go of a tile's pixels only through releaseTiles, at its four sites (#199, D4)", () => {
+    // What releasing does -- zero, then drop -- is `strip-release.test.ts`'s. What this pins is
+    // that the component goes through it at every one of the four places a tile lets go, and
+    // nowhere zeroes by hand, so a fifth site cannot appear without this count moving.
+    const sites = [...source.matchAll(/releaseTiles\(([^)]*)\)/g)].map((m) => m[1]!);
+    expect(sites.map((args) => /"(\w+)"/.exec(args)?.[1]).sort()).toEqual([
+      "document",
+      "evict",
+      "pagehide",
+      "unmount",
+    ]);
+    // Each at its own place: the document change (untracked), eviction from the window, the
+    // pagehide handler (whose result replaces the tiles), and unmount.
+    expect(source).toMatch(/untrack\(\(\) => releaseTiles\(tiles, "document"\)\)/);
+    expect(source).toMatch(/releaseTiles\(\[stale\], "evict", releasedState\(out, wanted\)\)/);
+    expect(source).toMatch(/tiles = releaseTiles\(tiles, "pagehide"\)/);
+    expect(source).toMatch(/onDestroy\(\(\) => \{[\s\S]{0,200}releaseTiles\(tiles, "unmount"\)/);
+    expect(source, "pixels zeroed by hand, outside releaseTiles").not.toMatch(/\.fill\(0\)/);
+    // PIXELS WITH NOWHERE TO GO, in `accept`: no tile for the page, and a tile redrawn over a
+    // picture it still held (#199, L2 and L3).
+    expect(source).toMatch(/if \(!tile\) \{\s*zeroPixels\(pixels\);\s*return;\s*\}/);
+    expect(source).toMatch(/zeroPixels\(tile\.data\?\.data\);\s*tiles\[page - 1\] = \{/);
+  });
+
+  it("asks for one batch per request, and tells the end gate each page arrived (owner, 2026-10-16)", () => {
+    // What a batch is and what progress does are `strip-lifecycle.test.ts`'s. What this pins is
+    // that the strip uses them: every request is `batchOf` the outstanding pages, and every page
+    // that arrives -- current or stale -- restarts a waiting end's deadline before anything else.
+    expect(source).toMatch(/const pages = batchOf\(outstanding\(\)\);/);
+    expect(
+      [...source.matchAll(/(?<!function )\boutstanding\(\)/g)].length,
+      "a call to outstanding() that is not batched",
+    ).toBe(1);
+    expect(source).toMatch(/onPage: \(page, pixels\) => \{\s*ending\.progress\(\);/);
+  });
+
+  it("zeroes a previous document's picture on arrival and never shows it (#199, D4)", () => {
+    // The stale branch of `onPage`: a render for a document the strip no longer shows is zeroed and
+    // dropped before anything can paint it. `discardStale` is `strip-lifecycle.test.ts`'s.
+    expect(source).toMatch(
+      /if \(mine !== generation\) \{\s*discardStale\(pixels\);\s*return;\s*\}\s*accept\(/,
+    );
+  });
+
+  it("drops a render frozen across the back-forward cache: pagehide moves generation (owner, 2026-10-16, (a))", () => {
+    // A worker frozen with the page mid-render is accepted; what it posts is not. Every page it
+    // delivers -- before the freeze, or after a persisted `pageshow` restores the page -- must
+    // arrive for a generation nobody shows, so the stale branch above zeroes it. `pagehide` always
+    // precedes a back-forward cache entry, so moving `generation` there, first, covers the restore;
+    // `pageshow` only asks again. The behaviour is `e2e/page-thumbnails.spec.ts`'s back-forward
+    // cache test, in three browsers.
+    expect(source).toMatch(/const onPageHide = \(\) => \{\s*hidden = true;\s*generation \+= 1;/);
+    expect(source).toMatch(
+      /const onPageShow = \(\) => \{\s*hidden = false;\s*void pump\(\);\s*\};/,
+    );
   });
 
   it("sends the same LIMITS every other operation sends", () => {

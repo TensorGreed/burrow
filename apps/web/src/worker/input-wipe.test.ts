@@ -10,7 +10,9 @@
 // - merge zeroes each per-file copy when it drops it, and the flat buffer after the call;
 // - each worker asks the bridge to wipe what it handed out;
 // - the bridge zeroes qpdf's own buffer of decoded content before freeing it, and zeroes the copy
-//   it handed to Rust once that copy has been consumed.
+//   it handed to Rust once that copy has been consumed;
+// - the render worker does the same for its input and password, and the PDFium bridge zeroes the
+//   pixel copies it hands to Rust (D4: rendered pixels are decoded content).
 //
 // What it cannot see, stated rather than implied: copies the engine or wasm-bindgen makes
 // elsewhere, the person's own `File`, which is out of scope (#199, 2026-09-26), and Rust's
@@ -20,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { MAIN, REDACT_MAIN, load, replyShape } from "./test-scope";
+import { MAIN, REDACT_MAIN, RENDER_MAIN, load, replyShape } from "./test-scope";
 
 const limits = {
   maxInputBytes: 1,
@@ -384,5 +386,111 @@ describe("#199: the qpdf bridge wipes decoded content", () => {
     expect(zero(out)).toBe(false);
     b.wipe();
     expect(zero(out), "copy_out's hand-out survived the operation's end").toBe(true);
+  });
+});
+
+describe("#199: the render worker zeroes the document and the password", () => {
+  /** A render session that refuses at once, recording what `render_begin` was handed. */
+  function refusingSession(scope: Record<string, unknown>) {
+    const seen: { intactAtCall: boolean; args: unknown[] }[] = [];
+    (scope["wasm_bindgen"] as Record<string, unknown>)["render_begin"] = (...args: unknown[]) => {
+      const arrays = args.filter((a): a is Uint8Array => a instanceof Uint8Array);
+      seen.push({ args, intactAtCall: arrays.every((a) => a.some((b) => b !== 0)) });
+      return { ok: false, begin_reply: () => ({ ...replyShape() }), free: () => {} };
+    };
+    return seen;
+  }
+
+  it("once the page count has returned", async () => {
+    const w = load(RENDER_MAIN);
+    const seen = capture(w.scope, "page_count");
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({
+      id: 1,
+      op: "page_count",
+      blob: input.blob,
+      password: new Uint8Array([7]).buffer,
+      limits,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.intactAtCall).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "the document survived",
+    ).toBe(true);
+    expect(zero(seen[0]!.args[1]), "the password survived").toBe(true);
+    expect(w.wipes()).toBe(1);
+  });
+
+  it("when the page count throws", async () => {
+    const w = load(RENDER_MAIN);
+    capture(w.scope, "page_count", () => {
+      throw new Error("a trap");
+    });
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({ id: 1, op: "page_count", blob: input.blob, limits });
+    expect(w.posted.some((m) => m["kind"] === "Internal")).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "a throwing count left the document",
+    ).toBe(true);
+    expect(w.wipes()).toBe(1);
+  });
+
+  it("once a strip has been drawn, or refused", async () => {
+    const w = load(RENDER_MAIN);
+    const seen = refusingSession(w.scope);
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({
+      id: 1,
+      op: "render",
+      blob: input.blob,
+      pages: [1],
+      boxWidth: 10,
+      boxHeight: 10,
+      password: new Uint8Array([7]).buffer,
+      limits,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.intactAtCall).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "the strip's document survived",
+    ).toBe(true);
+    expect(zero(seen[0]!.args[4]), "the strip's password survived").toBe(true);
+    expect(w.wipes()).toBe(1);
+  });
+});
+
+describe("#199: the PDFium bridge zeroes the pixels it hands to Rust (D4)", () => {
+  const source = ["bridge-common.js", "bridge-pdfium.js"]
+    .map((f) => readFileSync(join(import.meta.dirname, f), "utf8"))
+    .join("\n");
+
+  function bridge() {
+    const heap = new Uint8Array(1 << 12);
+    const module = { HEAPU8: heap };
+    const scope: Record<string, unknown> = {};
+    scope["self"] = scope;
+    runInNewContext(`${source}\n;__burrow_attach(module);`, Object.assign(scope, { module }));
+    const copyOut = (at: number, pixels: number[]) => {
+      heap.set(pixels, at);
+      return (scope["__burrow_pdfium_copy_out"] as (p: number, n: number) => Uint8Array)(
+        at,
+        pixels.length,
+      );
+    };
+    return { copyOut, wipe: () => (scope["__burrow_wipe_handed_out"] as () => void)() };
+  }
+
+  it("zeroes each pixel copy at the next hand-out and at the operation's end", () => {
+    const b = bridge();
+    const first = b.copyOut(64, [9, 8, 7, 6]);
+    expect([...first], "the copy handed to Rust is the pixels").toEqual([9, 8, 7, 6]);
+    const second = b.copyOut(128, [5, 4, 3, 2]);
+    expect(zero(first), "an earlier pixel copy survived the next one").toBe(true);
+    expect(zero(second), "the latest copy was zeroed before Rust could take it").toBe(false);
+    b.wipe();
+    expect(zero(second), "the last pixel copy survived the operation's end").toBe(true);
   });
 });

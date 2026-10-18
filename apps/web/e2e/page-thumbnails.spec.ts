@@ -15,11 +15,12 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Worker } from "@playwright/test";
 
 import { isPinnedArtifact, mark, since } from "./request-log";
 
 import { STRIP_WITHDRAWN } from "../src/components/strip-copy.js";
+import { END_DEADLINE_MS } from "../src/components/strip-lifecycle.js";
 
 // SKIPPED WHENEVER THE STRIP IS WITHDRAWN, AND DERIVED FROM THE FLAG RATHER THAN COMMENTED OUT.
 //
@@ -171,4 +172,219 @@ test("the tool still works when the strip is not there", async ({ page }) => {
     document.querySelector(".strip")?.remove();
   });
   await expect(page.getByRole("button", { name: "Turn pages" })).toBeEnabled();
+});
+
+// ---- #199 for the render worker (D1, D4): one document per worker, pixels zeroed --------------
+
+/**
+ * Hold the render worker's PDFium download, so the strip's first request is known to be in flight
+ * until `release` is called. Later fetches go through.
+ */
+function holdFirstPdfium(page: Page): { arrived: Promise<void>; release: () => Promise<void> } {
+  let held: (() => Promise<void>) | null = null;
+  const arrived = new Promise<void>((resolve) => {
+    void page.route(/\/pdfium\.[0-9a-f]+\.wasm$/, (route) => {
+      if (held !== null) return route.continue();
+      held = () => route.continue();
+      resolve();
+    });
+  });
+  return { arrived, release: () => held!() };
+}
+
+/** Count every `putImageData`, so what was drawn before a worker closed can be read back. */
+async function countPaints(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const original = CanvasRenderingContext2D.prototype.putImageData;
+    const scope = globalThis as unknown as { __paints: number };
+    scope.__paints = 0;
+    CanvasRenderingContext2D.prototype.putImageData = function (
+      this: CanvasRenderingContext2D,
+      ...args: unknown[]
+    ) {
+      scope.__paints += 1;
+      return (original as (...a: unknown[]) => void).apply(this, args);
+    } as typeof original;
+  });
+}
+
+/**
+ * The paint count when `worker`'s `close` reaches the test: before a new worker could have
+ * compiled PDFium and drawn (about 190 ms measured, S5).
+ */
+function paintsWhenItCloses(
+  page: Page,
+  worker: Worker,
+): { paints: Promise<number>; closedYet: () => boolean } {
+  let closed = false;
+  const paints = new Promise<number>((resolve) =>
+    worker.on("close", () => {
+      closed = true;
+      void page
+        .evaluate(() => (globalThis as unknown as { __paints: number }).__paints)
+        .then(resolve);
+    }),
+  );
+  return { paints, closedYet: () => closed };
+}
+
+/**
+ * The page's render worker, found by what its bundle carries: only the render bundle defines the
+ * PDFium bridge. Polled, because the strip builds its worker on first use.
+ */
+async function renderWorker(page: Page): Promise<Worker> {
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    for (const worker of page.workers()) {
+      const isRender = await worker
+        .evaluate(
+          () =>
+            typeof (self as unknown as Record<string, unknown>)["__burrow_pdfium_copy_out"] ===
+            "function",
+        )
+        .catch(() => false);
+      if (isRender) return worker;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error("no render worker appeared");
+}
+
+/** Whether a canvas holds any pixel that is not fully transparent. */
+async function inked(page: Page): Promise<boolean> {
+  return firstCanvas(page).evaluate((node: HTMLCanvasElement) => {
+    const context = node.getContext("2d", { willReadFrequently: true });
+    if (!context || node.width === 0 || node.height === 0) return false;
+    const data = context.getImageData(0, 0, node.width, node.height).data;
+    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return true;
+    return false;
+  });
+}
+
+test("a render worker draws one document: choosing another ends it (#199)", async ({ page }) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect(firstCanvas(page)).toBeVisible({ timeout: 45_000 });
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const first = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => first.on("close", () => resolve()));
+
+  await choose(page, "mixed-rotation-4page.pdf");
+  await closed;
+  // AND THE NEW DOCUMENT IS DRAWN, on a worker of its own.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the second document was drawn by the first document's worker").not.toBe(first);
+});
+
+test("leaving the page ends the render worker and clears every tile's pixels (#199)", async ({
+  page,
+}) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const worker = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => worker.on("close", () => resolve()));
+  // HELD ACROSS THE UNMOUNT: the canvas the tile drew into, so what it keeps after leaving the DOM
+  // can be read.
+  const canvas = await firstCanvas(page).elementHandle();
+  expect(canvas).not.toBeNull();
+
+  // `pagehide` is what a navigation or a back-forward cache entry fires.
+  await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
+  await closed;
+  await expect(page.locator(".strip__canvas")).toHaveCount(0);
+  const kept = await canvas!.evaluate((node: HTMLCanvasElement) => ({
+    width: node.width,
+    height: node.height,
+    connected: node.isConnected,
+  }));
+  expect(kept, "the canvas left the DOM still holding its picture").toEqual({
+    width: 0,
+    height: 0,
+    connected: false,
+  });
+});
+
+test("an operation ends the render worker before it runs (#199)", async ({ page }) => {
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const worker = await renderWorker(page);
+  const closed = new Promise<void>((resolve) => worker.on("close", () => resolve()));
+
+  await page.getByRole("button", { name: "Turn pages" }).click();
+  await closed;
+  await expect(page.locator(".result a.download")).toBeVisible({ timeout: 45_000 });
+});
+
+test("a document chosen while a render is in flight is drawn once it settles, and the old is not (#199)", async ({
+  page,
+}) => {
+  // A RENDER KNOWN TO BE IN FLIGHT, held by the harness rather than hoped for: the render worker's
+  // PDFium download is held, so the strip's first request for `pages-10.pdf` cannot settle until
+  // the test lets it. The document is changed inside that window, which is the path the strip's
+  // `finally` exists for: the end waits for the render to settle (`ending`, never mid-render,
+  // #361), the old pages are discarded as stale, and `pump` is asked again for the new document's
+  // tiles -- nothing else will ask, since their intersection already found `running` set.
+  const { arrived, release } = holdFirstPdfium(page);
+  await countPaints(page);
+
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await arrived;
+  const first = await renderWorker(page);
+  const ended = paintsWhenItCloses(page, first);
+
+  const changed = Date.now();
+  await choose(page, "mixed-rotation-4page.pdf");
+  // The new document's tiles, not yet drawn: the held render is still in flight.
+  await expect(page.locator(".strip__tile")).toHaveCount(4);
+  await expect(page.locator(".strip__canvas")).toHaveCount(0);
+  // RELEASED SHORT OF `END_DEADLINE_MS`, with the old worker still alive: so the end was not
+  // taken while the render was held. Nothing here times the close itself; what this test
+  // distinguishes is that no old page is painted and that the new document is drawn by a worker
+  // of its own (the re-pump), below.
+  await page.waitForTimeout(300);
+  expect(ended.closedYet(), "the old worker ended before its render settled").toBe(false);
+  expect(Date.now() - changed, "the hold ran into the end deadline").toBeLessThan(END_DEADLINE_MS);
+  await release();
+
+  // THE OLD WORKER CLOSES, once its render settled. AND NO OLD TILE SHOWED: every picture the
+  // old worker produced arrived for a document nobody shows any more.
+  const paintsAtClose = await ended.paints;
+  expect(paintsAtClose, "a page of the previous document was painted").toBe(0);
+  // THE NEW DOCUMENT IS DRAWN, on a worker of its own: the re-pump.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the second document was drawn by the first document's worker").not.toBe(first);
+});
+
+test("a render in flight across a back-forward cache hide and restore is never painted (#199)", async ({
+  page,
+}) => {
+  // OWNER, 2026-10-16, (a): a worker frozen with the page is accepted, and what it posts is
+  // dropped -- zeroed, never painted. The render is held across `pagehide` and a persisted
+  // `pageshow`, then released: every page it delivers arrives for a generation nobody shows.
+  const { arrived, release } = holdFirstPdfium(page);
+  await countPaints(page);
+
+  await page.goto("/rotate-pdf/");
+  await choose(page, "pages-10.pdf");
+  await arrived;
+  const first = await renderWorker(page);
+  const ended = paintsWhenItCloses(page, first);
+
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    globalThis.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  expect(ended.closedYet(), "the worker was terminated mid-render (#361)").toBe(false);
+  await release();
+
+  expect(await ended.paints, "a page the frozen render produced was painted").toBe(0);
+  // AND THE RESTORED PAGE DRAWS, on a worker of its own.
+  await expect.poll(() => inked(page), { timeout: 45_000 }).toBe(true);
+  const second = await renderWorker(page);
+  expect(second, "the restored page drew on the frozen page's worker").not.toBe(first);
 });
