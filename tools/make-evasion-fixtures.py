@@ -844,9 +844,9 @@ def _region_rect() -> bytes:
 FULL_BBOX = f"[0 0 {PAGE_W} {PAGE_H}]".encode()
 
 
-# THE PAGE'S TOP-LEFT CORNER, `(0, 0)` to `(10, 10)` from the top in display units: the two-level
-# form fixtures put ink there as well as in `REGION`, so a redaction of a small region at the
-# corner -- the local census's -- reaches it too and reads refused rather than `ok`.
+# THE PAGE'S TOP-LEFT CORNER, `(0, 0)` to `(10, 10)` from the top in display units: the form
+# fixtures (one level and two) put ink there as well as in `REGION`, so a redaction of a small
+# region at the corner -- the local census's -- reaches it too and reads refused rather than `ok`.
 CORNER_INK = (0, PAGE_H - 10, 10, PAGE_H)
 
 
@@ -1057,8 +1057,7 @@ def evade_paths_in_form() -> bytes:
     form = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
         b" /Resources << >>",
-        corner
-        + outline_ops(secret("PATH-FORM"), SECRET_X, SECRET_Y, SECRET_SIZE),
+        corner + outline_ops(secret("PATH-FORM"), SECRET_X, SECRET_Y, SECRET_SIZE),
     )
     content = b"/X1 Do\n" + keep_line_ops()
     res = (
