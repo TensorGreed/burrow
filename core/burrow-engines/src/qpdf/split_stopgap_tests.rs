@@ -781,8 +781,11 @@ fn an_empty_dest_closing_its_link_opens_split_and_an_empty_key_there_refuses() {
 /// dictionary a link holds, or in one a used form's dictionary holds -- at the top level of a used
 /// form's dictionary, which is a stream's, or in an annotation that is not a link, one with no
 /// `/Type`, or a stream whose dictionary reads as a link's, it refuses, before each follower (LF,
-/// and the `>>` closing its dictionary). After an integer value it is the next key, not the value,
-/// and refuses before LF too. The twins, the same value at a link's top level, open.
+/// and the `>>` closing its dictionary). It refuses too in an annotation that is not a link and is
+/// numbered after a link whose empty value is admitted, so every holding object's answer counts, not
+/// only the first. After an integer value it is the next key, not the value, and refuses before LF
+/// too. The twins, the same value at a link's top level, and a named one in the later annotation,
+/// open.
 #[test]
 fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
     const FORM_SHOWN: &str = "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do";
@@ -794,6 +797,17 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
         )]
     };
     let link = |inside: &str| annotation("/Type /Annot /Subtype /Link", inside);
+    // Every holding object's answer counts, not only the first one asked: a link (6) whose empty
+    // value is admitted, then a higher-numbered annotation that is not a link (7).
+    let link_then_text = |in_link: &str, in_text: &str| {
+        let mut both = link(in_link);
+        both.push((
+            7,
+            0,
+            format!("<< /Type /Annot /Subtype /Text /Rect [200 60 260 80] /F 4 {in_text}"),
+        ));
+        both
+    };
     let form = |inside: &str| {
         let drawn = "0 0 m 1 1 l S";
         vec![(
@@ -880,6 +894,14 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
             "after an integer value, before LF: the next key",
             in_link(&link("/Dest 5 /\n6 >>")),
         ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, before LF",
+            in_link(&link_then_text("/Dest /\n>>", "/Dest /\n>>")),
+        ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, before >>",
+            in_link(&link_then_text("/Dest />>", "/Dest />>")),
+        ),
     ] {
         refuses(what, &pdf, "[split-name-read-differently]");
     }
@@ -891,6 +913,14 @@ fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
             in_link(&link("/Dest /\n>>")),
         ),
         ("a link's top level, before >>", in_link(&link("/Dest />>"))),
+        (
+            "a link, then a higher-numbered annotation that is not a link, named, before LF",
+            in_link(&link_then_text("/Dest /\n>>", "/Dest /A\n>>")),
+        ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, named, before >>",
+            in_link(&link_then_text("/Dest />>", "/Dest /A>>")),
+        ),
         (
             "nested in a link, named",
             in_link(&link("/A << /S /GoTo /Dest /A\n>> >>")),
