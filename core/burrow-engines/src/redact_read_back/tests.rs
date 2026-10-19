@@ -69,7 +69,8 @@ impl SecondReading for Fake {
     }
 }
 
-/// A character at `(x, y)` whose box is the point itself, so only its origin can place it.
+/// A character at `(x, y)` whose box is the point itself. Away from the region's edge only its
+/// origin can place it; within the tolerance of the edge its box, which has none, counts.
 fn visible(x: f64, y: f64) -> PlacedChar {
     boxed((x, y), (x, y, x, y))
 }
@@ -196,7 +197,7 @@ fn r1_refuses_a_box_that_straddles_the_regions_edge_from_an_origin_outside_it() 
 #[test]
 fn r1_twin_a_box_wholly_outside_that_touches_the_edge_passes() {
     // THE TWIN: the same character, its box ending exactly on the region's left edge. Touching is
-    // not crossing; nor is reaching within the tolerance of it. Just past the tolerance is.
+    // not crossing.
     let at = |right: f64| {
         Fake::with_chars(vec![
             visible(72.0, 700.0),
@@ -205,14 +206,34 @@ fn r1_twin_a_box_wholly_outside_that_touches_the_edge_passes() {
     };
     assert_eq!(rule_of(verdict(&at(100.0), &agreement(2))), "Ok");
     assert_eq!(
-        rule_of(verdict(&at(100.0 + TOLERANCE_PT * 0.8), &agreement(2))),
-        "Ok",
-        "a box within the tolerance of the edge is agreement"
-    );
-    assert_eq!(
         rule_of(verdict(&at(100.0 + TOLERANCE_PT * 1.2), &agreement(2))),
         "second-reading-glyph-in-region"
     );
+}
+
+#[test]
+fn r1_refuses_a_box_that_crosses_the_edge_by_less_than_the_tolerance() {
+    // THE FIXTURE (owner decision 36, 2026-10-19): the box rule has no tolerance. A box crossing
+    // the edge by less than `TOLERANCE_PT` was measured to paint inside the region, so it is
+    // counted, on every edge. Its twin is the box touching that edge exactly, which passes above
+    // and in `r1_refuses_a_box_across_each_edge`.
+    for fraction in [0.8, 0.4, 0.02] {
+        let by = TOLERANCE_PT * fraction;
+        let cases = [
+            ("left", (90.0, 640.0), (90.0, 635.0, 100.0 + by, 650.0)),
+            ("right", (210.0, 640.0), (200.0 - by, 635.0, 210.0, 650.0)),
+            ("bottom", (150.0, 580.0), (145.0, 580.0, 155.0, 592.0 + by)),
+            ("top", (150.0, 700.0), (145.0, 692.0 - by, 155.0, 705.0)),
+        ];
+        for (edge, origin, across) in cases {
+            let fake = Fake::with_chars(vec![visible(72.0, 700.0), boxed(origin, across)]);
+            assert_eq!(
+                rule_of(verdict(&fake, &agreement(2))),
+                "second-reading-glyph-in-region",
+                "a box across the {edge} edge by {by} pt"
+            );
+        }
+    }
 }
 
 #[test]
@@ -310,10 +331,15 @@ fn a_box_that_is_not_a_number_is_no_answer() {
 
 #[test]
 fn r1_holds_the_tolerance_on_both_sides_of_the_edge() {
-    // The region's left edge is x = 100; it is shrunk by TOLERANCE_PT before the test.
+    // The region's left edge is x = 100; it is shrunk by TOLERANCE_PT before the ORIGIN is tested.
+    // The box has no tolerance, so this character's box is held outside the region, touching its
+    // edge: what is under test is the origin alone.
     let just_inside_tolerance = Fake::with_chars(vec![
         visible(72.0, 700.0),
-        visible(100.0 + TOLERANCE_PT * 0.8, 640.0),
+        boxed(
+            (100.0 + TOLERANCE_PT * 0.8, 640.0),
+            (90.0, 635.0, 100.0, 650.0),
+        ),
     ]);
     assert_eq!(
         rule_of(verdict(&just_inside_tolerance, &agreement(2))),
