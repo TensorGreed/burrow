@@ -63,6 +63,7 @@ pub const RULE_IDS: &[&str] = &[
     "base-encoding-not-a-name",
     "bt-nested",
     "bt-unterminated",
+    "clip-path-in-region",
     "contents-boundary",
     "contents-not-a-stream",
     "contents-offset",

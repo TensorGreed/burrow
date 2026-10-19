@@ -546,6 +546,7 @@ mod tests {
             stroke_reach: (0.0, 0.0),
             drift: 0.0,
             displacement: 1.0,
+            clips: crate::pdfsyntax::geometry::Clips::default(),
             source: GlyphSource {
                 font: crate::pdfsyntax::geometry::ScopedFont::on_page(b"F1".to_vec()),
                 code: 65,

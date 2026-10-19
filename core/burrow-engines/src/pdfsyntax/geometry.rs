@@ -652,6 +652,17 @@ impl Rect {
             && self.bottom < other.top
             && other.bottom < self.top
     }
+
+    /// The rectangle both cover, or `None` where they do not [`intersect`](Self::intersects).
+    #[must_use]
+    pub fn overlap(&self, other: &Self) -> Option<Self> {
+        self.intersects(other).then(|| Self {
+            left: self.left.max(other.left),
+            bottom: self.bottom.max(other.bottom),
+            right: self.right.min(other.right),
+            top: self.top.min(other.top),
+        })
+    }
 }
 
 /// Which way a font lays its glyphs out.
@@ -815,8 +826,238 @@ pub struct Glyph {
     /// `advance` is deliberately **not** this: it is the glyph's own width times the font size,
     /// with no spacing terms, which is what the advance box needs.
     pub displacement: f64,
+    /// Every clipping path (`W`/`W*`) in force where this glyph was drawn, outermost first
+    /// ([`ClipBox`]). Removing the glyph keeps the clip, so a clip that shaped the glyph's ink
+    /// would carry that shape into the output; the redaction refuses `[clip-path-in-region]` then.
+    pub clips: Clips,
     /// Where in the content stream this glyph's code came from.
     pub source: GlyphSource,
+}
+
+/// A clipping path set by `W` or `W*` and painted (usually by `n`), as the walk saw it.
+///
+/// # Why the walk records clips
+///
+/// A redaction removes a glyph and keeps the clipping path it was drawn under, byte for byte. Where
+/// the clip shaped what the reader saw, the kept path carries the outline of the removed ink. So a
+/// removed glyph's clips are recorded, and the redaction refuses where one of them could carry a
+/// shape inside the region ([`Self::shapes`]).
+///
+/// # What is not a clip here
+///
+/// The clip a text rendering mode 4 to 7 adds (glyph outlines as the clip) is not recorded: the
+/// glyphs that make that clip are themselves removed where they meet the region, and are text the
+/// redaction already weighs. A form's `/BBox` is not recorded either.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipBox {
+    /// The page-space box of the clip path's points, which contains the area it admits; `None`
+    /// where it cannot be trusted (a CTM that moved while the path was built, a non-finite box, an
+    /// empty path, or a clip collapsed past [`MAX_CLIPS`] or [`MAX_CLIP_NODES`]), which is read as
+    /// reaching everything.
+    pub extent: Option<Rect>,
+    /// Whether the clip admits exactly [`Self::extent`], up to [`Self::margin`]: a path of one
+    /// `re` under a CTM that maps axis-aligned rectangles to axis-aligned rectangles, with every
+    /// operand and CTM entry within 2^24 in magnitude.
+    pub exact: bool,
+    /// How far a reader that places the path in single precision can move an edge of
+    /// [`Self::extent`], in page units: 2^-20 of the largest page-space term the path is built
+    /// from. The extent is computed in double precision; PDFium and MuPDF parse and transform a
+    /// path in `f32`, which rounds an operand near 2^31 by up to 128 units. So the clip is read as
+    /// reaching an area within this distance of its box, and as admitting an area only where it
+    /// holds the area this far inside its edges (a security review, 2026-10-19, measured a rectangle whose
+    /// double-precision box held the text and whose single-precision edge cut it).
+    pub margin: f64,
+}
+
+impl ClipBox {
+    /// A clip the walk could not bound, which reaches everything.
+    pub const UNKNOWN: Self = Self {
+        extent: None,
+        exact: false,
+        margin: 0.0,
+    };
+
+    /// Whether this clip could have shaped ink inside `area`. Fail closed: `false` only where the
+    /// clip provably admits all of `area` (an [exact](Self::exact) box that contains it with
+    /// [`Self::margin`] to spare) or none of it (a box that, widened by the margin, does not reach
+    /// it). In both cases the clip's boundary does not pass through `area`, so it holds nothing
+    /// about the ink there.
+    ///
+    /// The widened box reaches `area` edges included: a box that only touches the area counts as
+    /// reaching it, so the refusal does not rest on the margin's slack. The test is written as
+    /// "not provably apart", so a NaN edge on either side reads as reaching.
+    #[must_use]
+    pub fn shapes(&self, area: &Rect) -> bool {
+        match self.extent {
+            None => true,
+            Some(extent) => {
+                let reach = widened(&extent, self.margin);
+                let apart = reach.right < area.left
+                    || area.right < reach.left
+                    || reach.top < area.bottom
+                    || area.top < reach.bottom;
+                !apart && !(self.exact && widened(&extent, -self.margin).contains(area))
+            }
+        }
+    }
+}
+
+/// How many clips one graphics state records before collapsing them into one
+/// [`ClipBox::UNKNOWN`]. Each `W ... n` adds one until a `Q` restores the state. Collapsing is
+/// fail-closed: an unknown clip shapes every area. It also bounds a [`Clips`] list's length, so
+/// dropping one never recurses deeper than this.
+pub const MAX_CLIPS: usize = 32;
+
+/// How many clips one walk records, over every graphics state, stream and form draw, before every
+/// further clip is recorded as [`ClipBox::UNKNOWN`] (fail closed).
+///
+/// # Why a walk-wide ceiling as well as [`MAX_CLIPS`]
+///
+/// A clip is one shared node ([`Clips`]), so a glyph costs a reference count, not a copy of the
+/// list. But a node a glyph holds outlives the `Q` that ends its state, so a content stream that
+/// sets a fresh run of clips before each glyph keeps every run alive: memory grew with glyphs
+/// times [`MAX_CLIPS`] before this ceiling, and a 22 KB file reached 570 MB (a security review,
+/// 2026-10-19). Past this, no new node is made at all, so the walk's clips cost at most this many
+/// nodes (a few MiB).
+pub const MAX_CLIP_NODES: usize = 100_000;
+
+/// The clipping paths in force: a persistent list, each node pointing at the state it was added
+/// to, so `q`, a form draw and a glyph share it by reference count, and adding one clip costs one
+/// node.
+///
+/// A list holding a [`ClipBox::UNKNOWN`] shapes every area, so adding to it changes nothing and
+/// makes no node.
+#[derive(Debug, Clone, Default)]
+pub struct Clips(Option<Arc<ClipNode>>);
+
+/// Two lists are equal where they hold the same clips in the same order, shared or not.
+impl PartialEq for Clips {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_vec() == other.to_vec()
+    }
+}
+
+/// One clip and the list it was added to. See [`Clips`].
+#[derive(Debug)]
+struct ClipNode {
+    clip: ClipBox,
+    parent: Clips,
+    /// How many clips the list ending here holds, at most [`MAX_CLIPS`].
+    len: usize,
+    /// Whether this list holds a [`ClipBox::UNKNOWN`].
+    unknown: bool,
+}
+
+impl Clips {
+    /// How many clips are in force.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |node| node.len)
+    }
+
+    /// Whether no clip is in force.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Whether a [`ClipBox::UNKNOWN`] is in force.
+    fn holds_unknown(&self) -> bool {
+        self.0.as_ref().is_some_and(|node| node.unknown)
+    }
+
+    /// The clips in force, outermost first.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<ClipBox> {
+        let mut out = Vec::with_capacity(self.len());
+        let mut at = self.0.as_ref();
+        while let Some(node) = at {
+            out.push(node.clip);
+            at = node.parent.0.as_ref();
+        }
+        out.reverse();
+        out
+    }
+
+    /// The clips in force, outermost first.
+    pub fn iter(&self) -> impl Iterator<Item = ClipBox> {
+        self.to_vec().into_iter()
+    }
+
+    /// The list with `clip` added: collapsed to `unknown` past [`MAX_CLIPS`] in this list or
+    /// past [`MAX_CLIP_NODES`] in the walk (`made` counts the nodes made), and unchanged where
+    /// the list already holds an unknown clip.
+    fn with(&self, clip: ClipBox, made: &mut usize, unknown: &Self) -> Self {
+        if self.holds_unknown() {
+            return self.clone();
+        }
+        if self.len() >= MAX_CLIPS || *made >= MAX_CLIP_NODES {
+            return unknown.clone();
+        }
+        *made = made.saturating_add(1);
+        Self(Some(Arc::new(ClipNode {
+            clip,
+            parent: self.clone(),
+            len: self.len().saturating_add(1),
+            unknown: clip.extent.is_none(),
+        })))
+    }
+
+    /// A list of one [`ClipBox::UNKNOWN`], made once per walk and shared.
+    fn unknown() -> Self {
+        Self(Some(Arc::new(ClipNode {
+            clip: ClipBox::UNKNOWN,
+            parent: Self::default(),
+            len: 1,
+            unknown: true,
+        })))
+    }
+}
+
+/// `rect` moved out by `by` on every side (in, where `by` is negative). Moved in past its centre,
+/// it contains nothing.
+fn widened(rect: &Rect, by: f64) -> Rect {
+    Rect {
+        left: rect.left - by,
+        bottom: rect.bottom - by,
+        right: rect.right + by,
+        top: rect.top + by,
+    }
+}
+
+/// The largest operand or CTM entry an [exact](ClipBox::exact) clip may have: 2^24, past which
+/// single precision no longer holds every integer, and one engine's fixed-point coordinates are
+/// near their range.
+const EXACT_MAGNITUDE: f64 = 16_777_216.0;
+
+/// The relative error [`single_precision_margin`] allows: 2^-20, sixteen times `f32`'s unit
+/// roundoff of 2^-24, for the roundings of each operand, CTM entry, product and sum.
+const SINGLE_PRECISION_SLACK: f64 = 1.0 / 1_048_576.0;
+
+/// How far a reader working in single precision can place a page-space coordinate of a path
+/// whose user-space coordinates are at most `user` in magnitude, under `m`: the magnitude of the
+/// largest page-space term, `2 * max|a..d| * user + max|e, f|`, times
+/// [`SINGLE_PRECISION_SLACK`]. Not a bound on a CTM that a reader composes in single precision
+/// over many `cm` operators: that error grows with their number, as a glyph position's does, which
+/// is #298's class and is not discharged here.
+fn single_precision_margin(user: f64, m: &Matrix) -> f64 {
+    let linear = [m.a, m.b, m.c, m.d]
+        .into_iter()
+        .map(f64::abs)
+        .fold(0.0, f64::max);
+    let translation = m.e.abs().max(m.f.abs());
+    (2.0 * linear * user + translation) * SINGLE_PRECISION_SLACK
+}
+
+/// `clips` with `clip` added, against the walk's [`MAX_CLIP_NODES`]. See [`Clips::with`].
+fn add_clip(clips: &Clips, clip: ClipBox, budget: &mut Budget<'_>) -> Clips {
+    clips.with(clip, &mut budget.clip_nodes, &budget.unknown_clips)
+}
+
+/// Whether `m` sends every axis-aligned rectangle to an axis-aligned rectangle: no rotation other
+/// than a quarter turn, and no shear.
+fn keeps_rectangles_axis_aligned(m: &Matrix) -> bool {
+    (m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0)
 }
 
 /// A font resource name together with the stream that named it.
@@ -2728,7 +2969,15 @@ pub const MAX_FORM_DRAWS: usize = 4096;
 /// How many glyphs one walk will place.
 ///
 /// A page has a knowable maximum. This is far above any real one and far below where `Vec`
-/// growth is the problem: `size_of::<Glyph>()` is 120 bytes, so this bounds `out` at ~24 MiB.
+/// growth is the problem: `size_of::<Glyph>()` is 320 bytes (measured 2026-10-19; this said 120
+/// until then, long stale), so this bounds `out` itself at ~61 MiB.
+///
+/// That is the vector, not everything a glyph holds. Each glyph also owns a heap copy of its font's
+/// resource name ([`ScopedFont`]), at most [`super::ops::MAX_OPERAND_BYTES`] bytes plus the
+/// allocator's overhead, so up to ~51 MiB more across this many glyphs. Its route and its
+/// [`Glyph::clips`] are shared by reference count and cost it nothing: the clip nodes are bounded
+/// for the whole walk by [`MAX_CLIP_NODES`], not per glyph (each glyph copied its clip list until
+/// a security review measured a 22 KB file at 570 MB, 2026-10-19).
 pub const MAX_GLYPHS: usize = 200_000;
 
 /// How many non-text-ink boxes one walk will collect (#125).
@@ -3122,6 +3371,10 @@ struct Budget<'w> {
     /// `Do`, since a renderer parses a form again at each draw. See
     /// [`glyphs_and_marked_work_in`] for who reads it and why it is a sum.
     marked_work: u64,
+    /// How many clip nodes the walk has made; see [`MAX_CLIP_NODES`].
+    clip_nodes: usize,
+    /// The shared one-unknown clip list a collapse yields, so a collapse makes no node.
+    unknown_clips: Clips,
 }
 
 /// A Form XObject, resolved.
@@ -3442,6 +3695,9 @@ struct GraphicsState {
     /// property of the font, so it is derived on the first glyph after a `Tf` and reused until the
     /// next `Tf` clears it. `q`/`Q` carry it with the rest of the state.
     writing_mode: Option<WritingMode>,
+    /// The clipping paths in force, outermost first ([`ClipBox`]). Graphics state: `q`/`Q` save
+    /// and restore it, and a form inherits the caller's.
+    clips: Clips,
 }
 
 /// What drew a non-text-ink box, for the refusal message the caller builds.
@@ -3612,6 +3868,8 @@ fn walk_page(
         marked_depth: 0,
         marked_floor: 0,
         marked_work: 0,
+        clip_nodes: 0,
+        unknown_clips: Clips::unknown(),
     };
     walk(
         content,
@@ -3625,6 +3883,7 @@ fn walk_page(
             miter_limit: 10.0,
             text_render_mode: 0.0,
             writing_mode: None,
+            clips: Clips::default(),
         },
         &mut budget,
         &mut out,
@@ -3800,6 +4059,14 @@ fn walk(
     // paint is not enough (a second security review found that leak).
     let mut path_ctm: Option<Matrix> = None;
     let mut path_ctm_shifted = false;
+    // THE CLIP ([clip-path-in-region]): `W`/`W*` marks the current path as the next clip, which a reader applies
+    // at the paint operator that ends the path. `path_operators` and `path_re` say whether the
+    // path is one `re`, the one shape whose box is exactly the area it admits.
+    let mut clip_pending = false;
+    let mut path_operators: usize = 0;
+    // The operands of the path's last `re`; the path is one `re` where this is set and
+    // `path_operators` is 1.
+    let mut path_re: Option<[f64; 4]> = None;
     // Between a `BI` and its `ID`. See `is_operator_here`.
     let mut in_image_dictionary = false;
 
@@ -3947,6 +4214,14 @@ fn walk(
                 );
             }
             b"Do" => {
+                // A `W` NOT YET PAINTED: no reader is required to clip what is drawn here, and one
+                // may. Recorded as a clip the walk cannot bound (fail closed). It STAYS pending: the
+                // paint that ends the path still records the real clip, in whatever state is
+                // current then. Clearing it here let a `q` ... `Q` around this operator drop the
+                // unknown clip and the later paint record nothing (a security review, 2026-10-19).
+                if clip_pending {
+                    state.clips = add_clip(&state.clips, ClipBox::UNKNOWN, budget);
+                }
                 let Some(Operand::Name { value, .. }) = operation.operands.first() else {
                     return Refusal::FormOperandNotAName
                         .refuse("a 'Do' whose operand is not a name");
@@ -3996,6 +4271,10 @@ fn walk(
                     return Refusal::TextOutsideTextObject
                         .refuse("a text operator outside a 'BT' ... 'ET' text object");
                 };
+                // A `W` NOT YET PAINTED, as at `Do`: unknown here, and still pending.
+                if clip_pending {
+                    state.clips = add_clip(&state.clips, ClipBox::UNKNOWN, budget);
+                }
                 text_operator(
                     content, operation, &mut state, place, resources, budget, out,
                 )?;
@@ -4009,6 +4288,7 @@ fn walk(
             // enclosed box) and the line segments (for a stroke's extent). A curve records
             // segments through its control points, which bound the Bézier (fail closed).
             b"m" => {
+                path_operators = path_operators.saturating_add(1);
                 if *path_ctm.get_or_insert(state.ctm) != state.ctm {
                     path_ctm_shifted = true;
                 }
@@ -4018,6 +4298,7 @@ fn walk(
                 path_points.push(p);
             }
             b"l" => {
+                path_operators = path_operators.saturating_add(1);
                 if *path_ctm.get_or_insert(state.ctm) != state.ctm {
                     path_ctm_shifted = true;
                 }
@@ -4029,6 +4310,7 @@ fn walk(
                 path_points.push(p);
             }
             b"c" | b"v" | b"y" => {
+                path_operators = path_operators.saturating_add(1);
                 if *path_ctm.get_or_insert(state.ctm) != state.ctm {
                     path_ctm_shifted = true;
                 }
@@ -4056,10 +4338,12 @@ fn walk(
                 current = through.last().copied().or(current);
             }
             b"re" => {
+                path_operators = path_operators.saturating_add(1);
                 if *path_ctm.get_or_insert(state.ctm) != state.ctm {
                     path_ctm_shifted = true;
                 }
                 let (x, y, w, h) = (number(0)?, number(1)?, number(2)?, number(3)?);
+                path_re = Some([x, y, w, h]);
                 let (c0, c1, c2, c3) = ((x, y), (x + w, y), (x + w, y + h), (x, y + h));
                 for seg in [[c0, c1], [c1, c2], [c2, c3], [c3, c0]] {
                     path_segments.push(seg);
@@ -4091,7 +4375,7 @@ fn walk(
             // THE CLIP OPERATORS add no geometry and do not end the path; the paint after them
             // does. A fill inks its enclosed box; a stroke inks each segment's inflated box. `n`
             // paints nothing. All of them clear the path.
-            b"W" | b"W*" => {}
+            b"W" | b"W*" => clip_pending = true,
             b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
                 let op = operation.operator.as_slice();
                 let fills = matches!(op, b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*");
@@ -4135,12 +4419,60 @@ fn walk(
                         }
                     }
                 }
+                // THE CLIP, applied here where a reader applies it, boxed as a fill is: the area a
+                // path admits lies within the box of its points.
+                if clip_pending {
+                    let extent = if shifted {
+                        None
+                    } else {
+                        points_box(&path_points)
+                            .map(|box_| box_.transformed(&state.ctm))
+                            .filter(Rect::is_finite)
+                    };
+                    // The largest user-space number the path was built from: its points, and for
+                    // one `re` its width and height too.
+                    let user = path_points
+                        .iter()
+                        .flat_map(|&(x, y)| [x, y])
+                        .chain(path_re.into_iter().flatten())
+                        .map(f64::abs)
+                        .fold(0.0, f64::max);
+                    let margin = single_precision_margin(user, &state.ctm);
+                    let exact = extent.is_some()
+                        && path_operators == 1
+                        && path_re.is_some()
+                        && keeps_rectangles_axis_aligned(&state.ctm)
+                        && user <= EXACT_MAGNITUDE
+                        && [
+                            state.ctm.a,
+                            state.ctm.b,
+                            state.ctm.c,
+                            state.ctm.d,
+                            state.ctm.e,
+                            state.ctm.f,
+                        ]
+                        .into_iter()
+                        .all(|entry| entry.abs() <= EXACT_MAGNITUDE);
+                    let extent = extent.filter(|_| margin.is_finite());
+                    state.clips = add_clip(
+                        &state.clips,
+                        ClipBox {
+                            extent,
+                            exact: exact && extent.is_some(),
+                            margin,
+                        },
+                        budget,
+                    );
+                    clip_pending = false;
+                }
                 path_points.clear();
                 path_segments.clear();
                 current = None;
                 subpath_start = None;
                 path_ctm = None;
                 path_ctm_shifted = false;
+                path_operators = 0;
+                path_re = None;
             }
             // MARKED-CONTENT NESTING, counted for the second reading's ceiling and for nothing
             // else: no glyph is placed or refused by it. (`BDC` naming `/OC` refused above.) An
@@ -4653,6 +4985,7 @@ fn show(
             stroke_reach,
             drift: place.drift,
             displacement,
+            clips: state.clips.clone(),
             source: GlyphSource {
                 font: ScopedFont::new(Arc::clone(shown.route), font.clone()),
                 code,
@@ -4694,13 +5027,13 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        CMap, Encoding, ExtGStateLine, Form, FormUses, FormsReached, Glyph, GlyphMetrics, InkKind,
-        LineParameter, MAX_FORM_DEPTH, MAX_GLYPHS, MAX_INK, Matrix, NamedProperties, Operand,
-        PropertyList, RAISED, Rect, Refusal, Resources, TextPosition, TextState, WATCH_EVERY,
-        Watch, WritingMode, carried_text_edits, check_contents_boundaries, check_form_sharing,
-        check_type_three_image_inside, check_type_three_procedure, check_writing_mode,
-        glyphs_and_ink_in, glyphs_in, remove_glyphs, remove_glyphs_and_carried_text,
-        takes_word_spacing, writing_mode_of,
+        CMap, ClipBox, Encoding, ExtGStateLine, Form, FormUses, FormsReached, Glyph, GlyphMetrics,
+        InkKind, LineParameter, MAX_CLIPS, MAX_FORM_DEPTH, MAX_GLYPHS, MAX_INK, Matrix,
+        NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal, Resources, TextPosition,
+        TextState, WATCH_EVERY, Watch, WritingMode, carried_text_edits, check_contents_boundaries,
+        check_form_sharing, check_type_three_image_inside, check_type_three_procedure,
+        check_writing_mode, glyphs_and_ink_in, glyphs_in, remove_glyphs,
+        remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
     };
 
     /// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
@@ -8590,5 +8923,317 @@ mod tests {
             .map(drop),
             "twenty form draws",
         );
+    }
+
+    // ---- clipping paths a glyph is drawn under ([clip-path-in-region]) -----------
+
+    /// Each glyph's clips, with the single-precision margin set aside; the margin has its own test.
+    fn clips_of(content: &str) -> Vec<Vec<ClipBox>> {
+        placed(content)
+            .iter()
+            .map(|g| {
+                g.clips
+                    .iter()
+                    .map(|clip| ClipBox {
+                        margin: 0.0,
+                        ..clip
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn rect(left: f64, bottom: f64, right: f64, top: f64) -> Rect {
+        Rect {
+            left,
+            bottom,
+            right,
+            top,
+        }
+    }
+
+    #[test]
+    fn a_glyph_carries_the_clip_it_is_drawn_under_and_q_q_scopes_it() {
+        let clips = clips_of(
+            "/F1 10 Tf q 0 0 m 50 0 l 50 20 l h W n BT 0 0 Td (A) Tj ET Q BT 0 0 Td (B) Tj ET",
+        );
+        assert_eq!(clips.len(), 2);
+        assert_eq!(
+            clips[0],
+            vec![ClipBox {
+                extent: Some(rect(0.0, 0.0, 50.0, 20.0)),
+                exact: false,
+                margin: 0.0,
+            }],
+            "a triangle's clip is its box, and not exact"
+        );
+        assert!(
+            clips[1].is_empty(),
+            "the Q restored the state before the clip"
+        );
+    }
+
+    #[test]
+    fn one_re_under_an_axis_preserving_ctm_is_exact_and_anything_else_is_not() {
+        let exact = |content: &str| clips_of(content)[0][0].exact;
+        assert!(exact("0 0 50 20 re W n /F1 10 Tf BT (A) Tj ET"));
+        assert!(exact(
+            "0 1 -1 0 0 0 cm 0 0 50 20 re W* n /F1 10 Tf BT (A) Tj ET"
+        ));
+        assert!(!exact(
+            "1 1 0 1 0 0 cm 0 0 50 20 re W n /F1 10 Tf BT (A) Tj ET"
+        ));
+        assert!(!exact(
+            "0 0 50 20 re 60 0 5 5 re W n /F1 10 Tf BT (A) Tj ET"
+        ));
+        assert!(!exact(
+            "0 0 m 50 0 l 50 20 l 0 20 l h W n /F1 10 Tf BT (A) Tj ET"
+        ));
+    }
+
+    #[test]
+    fn a_form_draws_under_the_callers_clip() {
+        let resources =
+            Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/F1 10 Tf BT 0 0 Td (A) Tj ET");
+        let glyphs = glyphs_in(
+            b"q 0 0 m 50 0 l 50 20 l h W n /Fm0 Do Q",
+            &resources,
+            &unwatched(),
+        )
+        .expect("the fixture should walk");
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(glyphs[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn a_clip_not_yet_painted_when_text_is_shown_is_unknown() {
+        let clips = clips_of("0 0 50 20 re W /F1 10 Tf BT (A) Tj ET n");
+        assert_eq!(clips[0], vec![ClipBox::UNKNOWN]);
+    }
+
+    #[test]
+    fn clips_past_the_ceiling_collapse_to_one_unknown() {
+        let content = format!(
+            "{} /F1 10 Tf BT (A) Tj ET",
+            "0 0 50 20 re W n ".repeat(MAX_CLIPS + 1)
+        );
+        assert_eq!(clips_of(&content)[0], vec![ClipBox::UNKNOWN]);
+        let content = format!(
+            "{} /F1 10 Tf BT (A) Tj ET",
+            "0 0 50 20 re W n ".repeat(MAX_CLIPS)
+        );
+        assert_eq!(clips_of(&content)[0].len(), MAX_CLIPS);
+    }
+
+    #[test]
+    fn a_clip_shapes_an_area_unless_it_admits_all_of_it_or_none_of_it() {
+        let area = rect(10.0, 10.0, 20.0, 20.0);
+        let exact_around = ClipBox {
+            extent: Some(rect(0.0, 0.0, 30.0, 30.0)),
+            exact: true,
+            margin: 0.0,
+        };
+        assert!(!exact_around.shapes(&area), "an exact box holding the area");
+        assert!(
+            ClipBox {
+                exact: false,
+                margin: 0.0,
+                ..exact_around
+            }
+            .shapes(&area),
+            "the same box, not exact: a polygon inside it can cross the area"
+        );
+        let exact_across = ClipBox {
+            extent: Some(rect(15.0, 0.0, 30.0, 30.0)),
+            exact: true,
+            margin: 0.0,
+        };
+        assert!(
+            exact_across.shapes(&area),
+            "an exact box whose edge crosses the area"
+        );
+        let clear = ClipBox {
+            extent: Some(rect(40.0, 40.0, 50.0, 50.0)),
+            exact: false,
+            margin: 0.0,
+        };
+        assert!(!clear.shapes(&area), "a clip that does not reach the area");
+        assert!(ClipBox::UNKNOWN.shapes(&area));
+    }
+
+    #[test]
+    fn a_clip_whose_widened_box_only_touches_the_area_still_shapes_it() {
+        let area = rect(10.0, 10.0, 20.0, 20.0);
+        let touching = ClipBox {
+            extent: Some(rect(20.0, 0.0, 30.0, 30.0)),
+            exact: false,
+            margin: 0.0,
+        };
+        assert!(
+            touching.shapes(&area),
+            "a box sharing the area's right edge"
+        );
+        let touching_by_margin = ClipBox {
+            extent: Some(rect(10.0, 24.0, 20.0, 30.0)),
+            exact: false,
+            margin: 4.0,
+        };
+        assert!(
+            touching_by_margin.shapes(&area),
+            "a box whose margin-widened edge meets the area's top edge"
+        );
+        let apart = ClipBox {
+            extent: Some(rect(10.0, 24.0, 20.0, 30.0)),
+            exact: false,
+            margin: 3.5,
+        };
+        assert!(
+            !apart.shapes(&area),
+            "the near miss: widened by less, the box stops short of the area"
+        );
+        let nan = ClipBox {
+            extent: Some(rect(40.0, 40.0, 50.0, 50.0)),
+            exact: false,
+            margin: f64::NAN,
+        };
+        assert!(nan.shapes(&area), "a NaN margin cannot prove the box apart");
+    }
+
+    #[test]
+    fn a_clip_pending_across_text_inside_q_is_still_recorded_where_it_is_painted() {
+        // The text inside `q` ... `Q` sees an unknown clip; the `Q` drops it; the `n` after it
+        // must still record the real clip in the outer state, over the text that follows.
+        let clips = clips_of(
+            "0 0 m 50 0 l 50 20 l h W q /F1 10 Tf BT 0 0 Td (A) Tj ET Q n /F1 10 Tf BT 0 0 Td (B) Tj ET",
+        );
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0], vec![ClipBox::UNKNOWN]);
+        assert_eq!(
+            clips[1],
+            vec![ClipBox {
+                extent: Some(rect(0.0, 0.0, 50.0, 20.0)),
+                exact: false,
+                margin: 0.0,
+            }],
+            "the paint after the Q records the clip"
+        );
+        // And a text operator with no glyph (the shape the review measured): the clip still lands.
+        let clips = clips_of(
+            "0 0 m 50 0 l 50 20 l h W q /F1 10 Tf BT 0 0 Td ET Q n /F1 10 Tf BT 0 0 Td (B) Tj ET",
+        );
+        assert_eq!(
+            clips,
+            vec![vec![ClipBox {
+                extent: Some(rect(0.0, 0.0, 50.0, 20.0)),
+                exact: false,
+                margin: 0.0,
+            }]]
+        );
+    }
+
+    #[test]
+    fn a_clip_pending_across_a_form_inside_q_is_still_recorded_where_it_is_painted() {
+        let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "");
+        let glyphs = glyphs_in(
+            b"0 0 m 50 0 l 50 20 l h W q /Fm0 Do Q n /F1 10 Tf BT 0 0 Td (B) Tj ET",
+            &resources,
+            &unwatched(),
+        )
+        .expect("the fixture should walk");
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(
+            glyphs[0]
+                .clips
+                .iter()
+                .map(|clip| ClipBox {
+                    margin: 0.0,
+                    ..clip
+                })
+                .collect::<Vec<_>>(),
+            vec![ClipBox {
+                extent: Some(rect(0.0, 0.0, 50.0, 20.0)),
+                exact: false,
+                margin: 0.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_clip_is_read_with_the_margin_single_precision_needs() {
+        let clip = |content: &str| placed(content)[0].clips.to_vec()[0];
+        let text = " W n /F1 10 Tf BT (A) Tj ET";
+
+        // LibreOffice's page clip: page-scale numbers, a margin far below a point, and the page's
+        // text well inside it is admitted.
+        let page = clip(&format!("0 0.028 595.275 841.861 re{text}"));
+        assert!(page.exact);
+        assert!(page.margin > 0.0 && page.margin < 0.01, "{}", page.margin);
+        assert!(!page.shapes(&rect(10.0, 10.0, 20.0, 20.0)));
+        let top = 0.028 + 841.861;
+        assert!(
+            page.shapes(&rect(10.0, top - 5.0, 20.0, top - page.margin / 2.0)),
+            "an area reaching within the margin of an edge is not provably admitted"
+        );
+
+        // Operands that round apart in single precision, whose double-precision box holds the
+        // page (the review's shape): not exact, and a margin of thousands of units.
+        let huge = clip(&format!("0 -2147483456.01 50 2147483656.01 re{text}"));
+        assert!(!huge.exact);
+        assert!(huge.margin > 1000.0, "{}", huge.margin);
+        assert!(huge.shapes(&rect(10.0, 10.0, 20.0, 20.0)));
+
+        // 2^24 is the last magnitude an exact clip may have, in an operand or a CTM entry.
+        assert!(clip(&format!("0 0 16777216 20 re{text}")).exact);
+        assert!(!clip(&format!("0 0 16777217 20 re{text}")).exact);
+        assert!(clip(&format!("1 0 0 1 16777216 0 cm 0 0 50 20 re{text}")).exact);
+        assert!(!clip(&format!("1 0 0 1 16777217 0 cm 0 0 50 20 re{text}")).exact);
+
+        // A box clear of an area by less than the margin reaches it.
+        let far = clip(&format!("1 0 0 1 1048576 0 cm 0 0 50 20 re{text}"));
+        assert!(far.margin > 1.0, "{}", far.margin);
+        assert!(far.shapes(&rect(1_048_574.0, 0.0, 1_048_575.5, 20.0)));
+        assert!(!far.shapes(&rect(1_048_570.0, 0.0, 1_048_574.0, 20.0)));
+    }
+
+    #[test]
+    fn past_the_walk_wide_node_ceiling_every_clip_is_unknown() {
+        use super::MAX_CLIP_NODES;
+        let content = |runs: usize| {
+            format!(
+                "{} 0 0 50 20 re W n /F1 10 Tf BT (A) Tj ET",
+                "q 0 0 50 20 re W n Q ".repeat(runs)
+            )
+        };
+        assert_eq!(
+            clips_of(&content(MAX_CLIP_NODES))[0],
+            vec![ClipBox::UNKNOWN],
+            "the ceiling spent before the clip over the text"
+        );
+        assert_eq!(
+            clips_of(&content(MAX_CLIP_NODES - 1))[0],
+            vec![ClipBox {
+                extent: Some(rect(0.0, 0.0, 50.0, 20.0)),
+                exact: true,
+                margin: 0.0,
+            }],
+            "one node left: the clip over the text is recorded"
+        );
+    }
+
+    #[test]
+    fn a_list_holding_an_unknown_clip_makes_no_node() {
+        use super::Clips;
+        let unknown = Clips::unknown();
+        let mut made = 0;
+        let list = Clips::default().with(ClipBox::UNKNOWN, &mut made, &unknown);
+        assert_eq!(made, 1);
+        let real = ClipBox {
+            extent: Some(rect(0.0, 0.0, 1.0, 1.0)),
+            exact: true,
+            margin: 0.0,
+        };
+        let after = list.with(real, &mut made, &unknown);
+        assert_eq!(made, 1, "no node for a clip added under an unknown one");
+        assert_eq!(after.to_vec(), vec![ClipBox::UNKNOWN]);
     }
 }

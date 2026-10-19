@@ -124,6 +124,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "type-three-image-outside-its-box": "pictures",
   "type-three-procedure-paints": "pictures",
   "too-much-ink": "pictures",
+  "clip-path-in-region": "pictures",
 
   // Annotations and form fields (D3: refused, never silently kept or removed).
   "acroform-field": "annotations",
