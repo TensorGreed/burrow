@@ -1476,8 +1476,7 @@ const NOTE_ICON: f64 = 20.0;
 ///
 /// - **`/Text`**: a stock 20 x 20 point note icon at the `/Rect`'s **first two numbers, as written**
 ///   -- not its normalised lower-left: `[400 500 300 400]` draws at 400..420 x 500..520, outside the
-///   rectangle it normalises to. A note with a `/Rect` smaller than the icon, or written backwards,
-///   was kept, `Ok`, with the icon and its `/Contents` in an area the `/Rect` does not meet.
+///   rectangle it normalises to.
 /// - **`/Ink`**: the `/Rect` inflated by half the border width -- `/BS /W`, else the third item of
 ///   `/Border`, else 1 -- and the strokes clipped there: a width of 40 drew 14.5 points outside.
 ///

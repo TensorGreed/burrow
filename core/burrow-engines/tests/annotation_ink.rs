@@ -296,7 +296,7 @@ fn a_highlight_with_no_appearance_is_drawn_at_its_quadrilaterals_and_refused() {
 fn a_note_without_an_appearance_draws_its_icon_outside_its_rect_and_is_refused() {
     // PDFium BUILDS A NOTE'S MISSING APPEARANCE as a 20-point icon at the `/Rect`'s first corner,
     // whatever the `/Rect`'s size. Here a half-point `/Rect` below the band: the icon rises into it,
-    // and the `/Rect` does not meet it. Kept, `Ok`, before the icon's extent was measured.
+    // and the `/Rect` does not meet it.
     let note = "/Subtype /Text /Rect [20 320 20.5 320.5] /Contents (NOTEINK)";
     let over = page_with_objects("", note, "", &[]);
     let (inside, _) = dark_pixels_with_annotations(&over, 0, BAND);
