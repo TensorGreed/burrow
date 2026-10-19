@@ -123,8 +123,8 @@ const renderTable = [
 // says what that leaves in the "this build" column.
 // `BURROW_SIZE_BASE_REF` names the ref; CI fetches `origin/main` for this step.
 //
-// It REFUSES rather than printing a partial table: when main's file cannot be read, or a line
-// this tree records is not in the build, and "examined 5 of 6" printed under a green build reads
+// It REFUSES, rather than printing a partial table, when main's file cannot be read or a line
+// this tree records is not in the build: "examined 5 of 6" printed under a green build reads
 // as success. A line NEW in this tree (no main recording) is compared and counted as new, so a
 // PR that adds a base line does not fail here. The refusal is about what was examined, never
 // about a size -- the size gate is `size-budget.test.ts`.
