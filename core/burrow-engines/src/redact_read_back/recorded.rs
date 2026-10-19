@@ -416,7 +416,7 @@ pub fn encode_answer(answer: &Answer) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// [`Error::Malformed`] for anything [`decode`] refuses, a length past [`MAX_ANSWER_LEN`], or a
-/// failure that is not exactly [`FAILED_LEN`] bytes naming a known kind, ceiling and stage.
+/// failure that is not exactly `FAILED_LEN` bytes naming a known kind, ceiling and stage.
 pub fn decode_answer(bytes: &[u8]) -> Result<Answer> {
     if bytes.len() > MAX_ANSWER_LEN {
         return Err(malformed());

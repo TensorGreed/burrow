@@ -191,7 +191,7 @@ describe("redaction's refusal categories (#136, S3 and S7)", () => {
     // `RULES` entries are placeholders (see the comment there): what a visitor reads is the kind's
     // sentence, with the rule id kept for a report.
     const ids = engineRules().filter((id) => id.startsWith("second-reading-"));
-    expect(ids, "the engine's list of second-reading ids").toHaveLength(9);
+    expect(ids, "the engine's list of second-reading ids").toHaveLength(10);
     const rejected = messageFor({ kind: "OutputRejected", message: "" });
     expect(rejected.title).toBe("Not Only PDF checked the result and would not hand it over.");
     const categoryTitles = new Set(Object.values(CATEGORIES).map((c) => c.title));

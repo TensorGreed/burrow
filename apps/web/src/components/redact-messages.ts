@@ -266,7 +266,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   //
   // A VISITOR NEVER SEES THESE CATEGORIES. The second reading's refusals arrive as
   // `OutputRejected`, and `messageFor` answers that kind with its own copy ("checked the result and
-  // would not hand it over") whatever the rule, keeping only the rule id; the test holds all nine
+  // would not hand it over") whatever the rule, keeping only the rule id; the test holds all ten
   // to that. The categories below are placeholders, there so every id the engine lists has one,
   // until verification gets its own copy. They are not a choice of what to tell anyone, and four
   // would read wrongly if shown: region-too-small, wrong-page, unavailable and nesting carry next
@@ -279,6 +279,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "second-reading-page-count": "file-structure",
   "second-reading-input-page-count": "file-structure",
   "second-reading-unavailable": "file-structure",
+  "second-reading-other-document": "file-structure",
   "second-reading-nesting": "too-complex",
 
   // Past a ceiling the walk keeps.

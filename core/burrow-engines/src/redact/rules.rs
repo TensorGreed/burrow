@@ -159,6 +159,7 @@ pub const RULE_IDS: &[&str] = &[
     "second-reading-input-page-count",
     "second-reading-nesting",
     "second-reading-no-text",
+    "second-reading-other-document",
     "second-reading-page-count",
     "second-reading-page-size",
     "second-reading-region-too-small",
