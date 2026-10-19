@@ -1,9 +1,10 @@
 // The per-line brotli delta of every BASE line against main (owner, 2026-10-18).
 //
 // A base line is anything a visitor loads (DECISIONS rule 18's 2026-10-18 amendment): a
-// top-level `artifacts` entry of `apps/web/size-budget.json`, or a `render.artifacts` one. The question a reviewer asks of a PR about those lines is "which one moved, by
-// how many bytes, against main" -- and the existing table answers a different one ("against this
-// tree's own recording", in KiB to one decimal, which rounds a 40-byte growth to "+0.0 KiB").
+// top-level `artifacts` entry of `apps/web/size-budget.json`, or a `render.artifacts` one. The
+// question a reviewer asks of a PR about those lines is "which one moved, by how many bytes,
+// against main" -- and the existing table answers a different one ("against this tree's own
+// recording", in KiB to one decimal, which rounds a 40-byte growth to "+0.0 KiB").
 //
 // Pure, so the size test can feed it planted inputs on every run. The REPORT that prints it is
 // `tools/report-size-budget.mjs`; it refuses when the count examined is not the count expected.
@@ -21,12 +22,14 @@
  * @param {Record<string, {measured_brotli: number}>} treeLines this tree's `artifacts`
  * @param {Record<string, {brotli: number}>} live this build's groups, by budget key
  * @returns {{rows: Array<{key: string, main: number|null, recorded: number|null, live: number|null}>,
- *            examined: string[], expected: string[], missing: string[]}}
+ *            examined: string[], expected: string[], added: string[], missing: string[]}}
  */
 export function baseLineDeltas(mainLines, treeLines, live) {
-  // EXPECTED is this tree's base lines: every one of them must be compared with main. A line
-  // new in this tree has no main figure, so it is reported and NOT counted as examined -- which
-  // makes the count say so, rather than a fresh line passing as compared.
+  // EXPECTED is this tree's base lines: every one of them must be compared. A line this tree
+  // records and the build contains is compared; when main has no recording of it, it is NEW --
+  // compared against nothing on main's side, which the table shows as "—" and the count names,
+  // so a PR that adds a base line passes and says so. A recorded line the BUILD lacks is
+  // missing, and the report refuses on it: that line was not compared with anything.
   const expected = Object.keys(treeLines).sort();
   const keys = [...new Set([...expected, ...Object.keys(mainLines), ...Object.keys(live)])].sort();
   const rows = keys.map((key) => ({
@@ -35,11 +38,10 @@ export function baseLineDeltas(mainLines, treeLines, live) {
     recorded: treeLines[key]?.measured_brotli ?? null,
     live: live[key]?.brotli ?? null,
   }));
-  const examined = expected.filter(
-    (key) => mainLines[key] !== undefined && live[key] !== undefined,
-  );
-  const missing = expected.filter((key) => !examined.includes(key));
-  return { rows, examined, expected, missing };
+  const examined = expected.filter((key) => live[key] !== undefined);
+  const added = examined.filter((key) => mainLines[key] === undefined);
+  const missing = expected.filter((key) => live[key] === undefined);
+  return { rows, examined, expected, added, missing };
 }
 
 const signed = (n) => (n === 0 ? "0" : `${n > 0 ? "+" : "−"}${Math.abs(n).toLocaleString("en")}`);

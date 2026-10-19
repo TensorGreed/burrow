@@ -155,6 +155,25 @@ const kb = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
 const runningArch = archName(process.arch);
 const sameArch = runningArch === budget.measured_arch;
 
+// THE REAL CALLS' INPUTS, named so a probe can plant through exactly what the real tests read
+// (round 1 review of this rule: four mutations to the wiring -- dropping `base` from either call,
+// making `archName` the identity, forcing `sameArch` -- each left the suite green, because the
+// probes below fed `driftFindings` their own inputs and never these).
+const baseInputs = {
+  recorded: budget.artifacts,
+  live,
+  notByteReproducible: budget.not_byte_reproducible,
+  tolerance: budget.drift_tolerance,
+  base: { sameArch },
+};
+const renderInputs = {
+  recorded: budget.render.artifacts,
+  live: renderLive,
+  notByteReproducible: budget.render.not_byte_reproducible,
+  tolerance: budget.drift_tolerance,
+  base: { sameArch },
+};
+
 describe("the first-load size budget", () => {
   it("weighs every route in the build, by name", () => {
     // NAMES, NOT A COUNT, and not a comparison against the same reduce that produced the
@@ -662,13 +681,7 @@ describe("the recording describes the build it claims to", () => {
   // nothing failing. M1 PR A corrected the number. A corrected number is not a control.
 
   it("finds no drift against this build", () => {
-    const findings = driftFindings({
-      recorded: budget.artifacts,
-      live,
-      notByteReproducible: budget.not_byte_reproducible,
-      tolerance: budget.drift_tolerance,
-      base: { sameArch },
-    });
+    const findings = driftFindings(baseInputs);
     expect(findings.map(explain)).toEqual([]);
   });
 
@@ -682,15 +695,54 @@ describe("the recording describes the build it claims to", () => {
     // are: they inherit a locally-built `pkg-render/`. `engines/pdfium.wasm` is NOT, and is
     // the control — it is a prebuilt vendored artifact whose bytes match between a local build
     // and CI, so it takes the exact comparison and a drift in it is a real finding.
-    const findings = driftFindings({
-      recorded: budget.render.artifacts,
-      live: renderLive,
-      notByteReproducible: budget.render.not_byte_reproducible,
-      tolerance: budget.drift_tolerance,
-      base: { sameArch },
-    });
+    const findings = driftFindings(renderInputs);
     expect(findings.map(explain)).toEqual([]);
   });
+
+  it("spells the architectures as the budget file does", () => {
+    expect(archName("arm64")).toBe("aarch64");
+    expect(archName("x64")).toBe("x86_64");
+  });
+
+  // THE WIRING PROBE. A hash-only plant through the real calls' own inputs, one line at a time,
+  // in each line class: on the recording's architecture a single brotli byte must be a
+  // `base-drift`; off it, the line's allowance plus one must be a `cross-arch-drift`. Hash-only
+  // is the plant that tells the rules apart -- the held-bundle path would wave it through under
+  // the 64-byte hash-coupling bound. The architecture decision is derived again here from
+  // `process.arch`, not read from `sameArch`, so a wrong `sameArch` cannot agree with itself.
+  for (const [lineClass, inputs] of [
+    ["base", baseInputs],
+    ["render", renderInputs],
+  ] as const) {
+    it(`fails a hash-only plant on every ${lineClass} line through the real call's inputs`, () => {
+      const onRecordingArch = archName(process.arch) === budget.measured_arch;
+      const keys = Object.keys(inputs.recorded).filter((key) => key in inputs.live);
+      expect(keys.length, `no ${lineClass} line to plant on`).toBe(
+        Object.keys(inputs.recorded).length,
+      );
+      for (const key of keys) {
+        const record = inputs.recorded[key];
+        const step = onRecordingArch ? 1 : (record.cross_arch_allowance_brotli ?? 0) + 1;
+        const planted: Live = {
+          ...inputs.live[key],
+          brotli: record.measured_brotli + step,
+          sha256: `planted-${key}`,
+          sha256Normalised: record.measured_sha256_normalised ?? "",
+        };
+        expect(planted.brotli - record.measured_brotli, `the plant on ${key} must apply`).toBe(
+          step,
+        );
+        expect(planted.sha256, `the plant on ${key} must be hash-only`).not.toBe(
+          record.measured_sha256,
+        );
+        const findings = driftFindings({ ...inputs, live: { ...inputs.live, [key]: planted } });
+        expect(
+          findings.filter((f) => f.key === key).map((f) => f.kind),
+          `${lineClass} line ${key}, ${onRecordingArch ? "+1 on" : "allowance+1 off"} the recording's arch`,
+        ).toEqual([onRecordingArch ? "base-drift" : "cross-arch-drift"]);
+      }
+    });
+  }
 
   it("says which architecture it compared on, and which rule that selected", () => {
     expect(budget.measured_arch, "the recording names no architecture").toMatch(
@@ -1308,18 +1360,25 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
     expect(delta.expected).toEqual(expected);
     expect(delta.examined).toEqual(expected);
     expect(delta.missing).toEqual([]);
+    expect(delta.added).toEqual([]);
     // eslint-disable-next-line no-console -- a test reporting what it examined
     console.log(`  base-line delta: ${delta.examined.length} of ${expected.length} compared`);
   });
 
-  it("goes short, naming the line, when main has no recording of it", () => {
+  it("counts a line new in this tree as compared and new, with main's column empty", () => {
+    // A PR that adds a base line has no main recording of it. That is compared (against the
+    // build) and named as new, not refused: refusing would fail CI on every new base line.
     const victim = expected[0];
     const main = { ...asMain };
     delete main[victim];
     expect(Object.keys(main), "the plant must remove a line").toHaveLength(expected.length - 1);
     const delta = baseLineDeltas(main, asMain, allGroups);
-    expect(delta.missing).toEqual([victim]);
-    expect(delta.examined).toHaveLength(expected.length - 1);
+    expect(delta.missing).toEqual([]);
+    expect(delta.examined).toEqual(expected);
+    expect(delta.added).toEqual([victim]);
+    expect(baseLineDeltaTable(delta)).toMatch(
+      new RegExp(`^\\| \`${victim}\` \\| — \\|.*\\| — \\|`, "m"),
+    );
   });
 
   it("goes short, naming the line, when the build does not contain it", () => {
@@ -1327,7 +1386,9 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
     const build = { ...allGroups };
     delete build[victim];
     expect(victim in build, "the plant must remove a group").toBe(false);
-    expect(baseLineDeltas(asMain, asMain, build).missing).toEqual([victim]);
+    const delta = baseLineDeltas(asMain, asMain, build);
+    expect(delta.missing).toEqual([victim]);
+    expect(delta.examined).toHaveLength(expected.length - 1);
   });
 
   it("prints a one-byte growth as +1, which the KiB table rounds away", () => {

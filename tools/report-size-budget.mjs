@@ -118,14 +118,16 @@ const renderTable = [
     `**${verdict(renderMeasurement.total.brotli, budget.render.total.budget_brotli)}** |`,
 ].join("\n");
 
-// EVERY BASE LINE AGAINST MAIN, IN BYTES (owner, 2026-10-18). Main's figures are main's recording, read from git rather than from a build of
-// main -- `tools/size-budget-base-delta.mjs` says what that leaves in the "this build" column.
+// EVERY BASE LINE AGAINST MAIN, IN BYTES (owner, 2026-10-18). Main's figures are main's
+// recording, read from git rather than from a build of main -- `tools/size-budget-base-delta.mjs`
+// says what that leaves in the "this build" column.
 // `BURROW_SIZE_BASE_REF` names the ref; CI fetches `origin/main` for this step.
 //
-// It REFUSES rather than printing a partial table: a base line with no main figure to compare
-// is a line the summary would otherwise show as compared, and "examined 5 of 6" printed under a
-// green build reads as success. The refusal is about what was examined, never about a size --
-// the size gate is `size-budget.test.ts`.
+// It REFUSES rather than printing a partial table: when main's file cannot be read, or a line
+// this tree records is not in the build, and "examined 5 of 6" printed under a green build reads
+// as success. A line NEW in this tree (no main recording) is compared and counted as new, so a
+// PR that adds a base line does not fail here. The refusal is about what was examined, never
+// about a size -- the size gate is `size-budget.test.ts`.
 const baseRef = process.env.BURROW_SIZE_BASE_REF || "origin/main";
 let mainBudget;
 try {
@@ -153,12 +155,13 @@ const baseDelta = baseLineDeltas(
 );
 const baseCount =
   `${baseDelta.examined.length} of ${baseDelta.expected.length} base line(s) compared with ` +
-  `\`${baseRef}\``;
-console.error(`report-size-budget: ${baseCount}: ${baseDelta.examined.join(", ")}`);
+  `\`${baseRef}\`, ${baseDelta.added.length} new` +
+  (baseDelta.added.length > 0 ? `: ${baseDelta.added.join(", ")}` : "");
+console.error(`report-size-budget: ${baseCount}. Compared: ${baseDelta.examined.join(", ")}`);
 if (baseDelta.missing.length > 0) {
   console.error(
     `report-size-budget: REFUSED -- ${baseCount}. Not compared: ${baseDelta.missing.join(", ")} ` +
-      `(no main recording, or not in this build).`,
+      `(recorded in this tree, not in this build).`,
   );
   process.exit(1);
 }
