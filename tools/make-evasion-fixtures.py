@@ -709,6 +709,50 @@ def nearmiss_tounicode_on_a_page_font() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def _tounicode_page(after_sections: bytes) -> bytes:
+    """A page font whose `/ToUnicode` carries `after_sections` between its last section and
+    `endcmap`, drawing `XY` in the region. Shared by #338's evasion and its twin."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n"
+        b"1 begincodespacerange\n<20> <7e>\nendcodespacerange\n"
+        b"2 beginbfchar\n<58> <0058>\n<59> <0059>\nendbfchar\n" + after_sections + b"endcmap\n"
+        b"CMapName currentdict /CMap defineresource pop\nend\nend\n"
+    )
+    tou = pdf.stream(b"", cmap)
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /FF"
+        b" /ToUnicode " + str(tou).encode() + b" 0 R >>"
+    )
+    content = (
+        b"BT /FF " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode() + b"(XY) Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /Helv " + str(helv).encode() + b" 0 R /FF " + str(font).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def evade_tounicode_inline_image_syntax() -> bytes:
+    """A `/ToUnicode` CMap carrying inline-image syntax, which no CMap contains (#338).
+
+    The CMap is lexed with the content-stream lexer, which reads `BI` ... `EI` as an inline image;
+    a CMap reader does not. The writing-mode reader already refuses this (#193). Here the image
+    sits after the last section, a shape that happened to pair codes the same way either way;
+    the rule refuses the syntax, not the shapes where it is known to change the pairing.
+    """
+    return _tounicode_page(b"BI /W 1 /H 1 /BPC 8 /CS /G ID A EI Q\n")
+
+
+def nearmiss_tounicode_letters_as_data() -> bytes:
+    """The same CMap with `BI`, `ID` and `EI` as names and a string -- data, not keywords.
+
+    The twin for `evade-tounicode-inline-image-syntax`: a rule that refused on the letters
+    rather than the keywords would refuse this. MUST redact.
+    """
+    return _tounicode_page(b"/BI /ID /EI pop pop pop\n(BI ID EI) pop\n")
+
+
 def nearmiss_form_carrying_its_own_font() -> bytes:
     """A form with its own `/Resources /Font`, plain text, no Type 3. MUST NOT be refused.
 
@@ -3847,6 +3891,8 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-form-carrying-its-own-font", "Type 3 procedure"),
     ("evade-tounicode-in-a-form-local-font", "font surgery"),
     ("nearmiss-tounicode-on-a-page-font", "font surgery"),
+    ("evade-tounicode-inline-image-syntax", "CMap keywords"),
+    ("nearmiss-tounicode-letters-as-data", "CMap keywords"),
     ("nearmiss-image-outside-region", "image"),
     ("evade-image-in-form-two-levels-down", "image"),
     ("nearmiss-image-in-form-outside-region", "image"),
@@ -4015,6 +4061,8 @@ BUILDERS = {
     "nearmiss-form-carrying-its-own-font": nearmiss_form_carrying_its_own_font,
     "evade-tounicode-in-a-form-local-font": evade_tounicode_in_a_form_local_font,
     "nearmiss-tounicode-on-a-page-font": nearmiss_tounicode_on_a_page_font,
+    "evade-tounicode-inline-image-syntax": evade_tounicode_inline_image_syntax,
+    "nearmiss-tounicode-letters-as-data": nearmiss_tounicode_letters_as_data,
     "nearmiss-image-outside-region": nearmiss_image_outside_region,
     "evade-paths-in-form": evade_paths_in_form,
     "evade-paths-in-type3-glyph": evade_paths_in_type3_glyph,
