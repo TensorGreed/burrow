@@ -469,6 +469,9 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         deadline.checkpoint(clock.as_ref())?;
         let engine = self.0;
         let heap_before = engine.bridge().heap_bytes();
+        // R10: THE SLICE COPIED INTO QPDF'S HEAP, if a verifier named this open.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(bytes);
         let session = Session::open(engine, bytes, options.password, false)?;
         let pages = session.page_count()?;
         Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;

@@ -65,11 +65,11 @@ impl<'a> PdfiumReading<'a> {
             .max(crate::estimate::estimated_open_bytes(size));
         let mut options = OpenOptions::new(limits, Arc::clone(&self.clock));
         options.password = self.password;
-        open_spending(
-            bytes.to_vec().into_boxed_slice(),
-            &options,
-            Some(self.deadline),
-        )
+        let bytes = bytes.to_vec().into_boxed_slice();
+        // R10: THE COPY PDFIUM IS HANDED, under the name its caller gave it.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(&bytes);
+        open_spending(bytes, &options, Some(self.deadline))
     }
 }
 
@@ -81,9 +81,9 @@ impl SecondReading for PdfiumReading<'_> {
         }
         #[cfg(test)]
         crate::redact::hooks::second_reading_begins();
-        // R10: WHAT EACH READING OPENS, by method. See `hooks::record_open`.
+        // R10: WHAT EACH READING OPENS, by method, recorded in `open`. See `hooks::record_open`.
         #[cfg(test)]
-        crate::redact::hooks::record_open(crate::redact::hooks::Opened::PageCount, bytes);
+        crate::redact::hooks::opening(crate::redact::hooks::Opened::PageCount);
         let document = self.open(bytes)?;
         page_count_of(&document).map(Some)
     }
@@ -94,7 +94,7 @@ impl SecondReading for PdfiumReading<'_> {
             return Err(error);
         }
         #[cfg(test)]
-        crate::redact::hooks::record_open(crate::redact::hooks::Opened::ReadPage, bytes);
+        crate::redact::hooks::opening(crate::redact::hooks::Opened::ReadPage);
         let document = self.open(bytes)?;
         let pages = page_count_of(&document)?;
         // A HOOK THAT READS ANOTHER PAGE, for the one question no document asks: is a reading of

@@ -3,8 +3,9 @@
 //! ADR 0006's R10, as amended 2026-09-27 (#206): the bytes verification examines are PROVEN
 //! identical to the bytes that are emitted. `redact::tests` holds the engine half with a fake whose
 //! writes drift; this holds the wiring with the real ones -- qpdf's walk and PDFium's second
-//! reading -- by recording, at each OPEN, the sha256 of the buffer it was handed
-//! (`hooks::record_open`), by method and on the caller's thread.
+//! reading -- by recording, inside each engine's open, the sha256 of the buffer the engine is
+//! handed (`hooks::record_open`), under the name of the verifier that asked for it
+//! (`hooks::opening`), on the caller's thread.
 //!
 //! Engine-internal readings are only observable from here: `cfg(test)` hooks in this crate are not
 //! compiled into the copy `burrow-ops` links, so `redaction_outcomes.rs` can see the operation's
@@ -12,10 +13,11 @@
 //!
 //! # What it runs
 //!
-//! A fixed set of cases from `tests/redaction/outcomes.tsv`, each of which the file records as
-//! `OK`: two producer documents, a Type 3 glyph, a form XObject, a multi-page document covered
-//! whole, plain text and a CID font. Each is run through `Qpdf::redact_page` under the golden
-//! file's own clock and limits, so its output must also be the digest the file pins.
+//! Every case `tests/redaction/outcomes.tsv` records as `OK`, read from the file, with the region
+//! `redaction_outcomes.rs` names by the row's label (the manifest's own, for `manifest`). Each is
+//! run through `Qpdf::redact_page` under the golden file's own clock and limits, so its input must
+//! be the digest the file's `INPUT` line pins and its output the digest the row pins: a region
+//! read differently here would fail by name rather than measure another case.
 //!
 //! # What it asserts, per case
 //!
@@ -25,11 +27,12 @@
 //!
 //! # What it cannot say
 //!
-//! What PDFium reads internally once `PdfiumReading::open` has copied the buffer: the digest is of
-//! what Rust hands over. And only these cases: a path no case here reaches is held by the fakes'
-//! structural tests in `redact::tests`, not by real digests.
+//! What either engine does with the buffer once it holds it: the digest is of the copy Rust hands
+//! over -- the boxed slice qpdf and PDFium are given -- and nothing inside the engine. And only the
+//! corpus's `OK` cases: a path none of them reaches is held by the fakes' structural tests in
+//! `redact::tests`, not by real digests.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,56 +46,94 @@ use crate::redact::hooks::{Opened, start_recording_opens, take_opens};
 /// The golden file the cases are read from, relative to the repository.
 const GOLDEN: &str = "tests/redaction/outcomes.tsv";
 
-/// `(file, page, covered, region label)`, each an `OK` row of the golden file.
-const CASES: &[(&str, usize, &str, &str)] = &[
-    (
-        "tests/redaction/fixtures/producer-latex.pdf",
-        0,
-        "0",
-        "pdfbuild",
-    ),
-    (
-        "tests/redaction/fixtures/producer-writer-untagged.pdf",
-        0,
-        "0",
-        "whole",
-    ),
-    (
-        "tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf",
-        1,
-        "1",
-        "band",
-    ),
-    (
-        "tests/redaction/generated/07-form-xobject.pdf",
-        0,
-        "0",
-        "whole",
-    ),
-    (
-        "tests/conformance/fixtures/pages-10.pdf",
-        0,
-        "0,1,2,3,4,5,6,7,8,9",
-        "whole",
-    ),
-    (
-        "tests/redaction/generated/01-plain-tj.pdf",
-        0,
-        "0",
-        "pdfbuild",
-    ),
-    (
-        "tests/redaction/generated/21-cid-lying-tounicode.pdf",
-        0,
-        "0",
-        "band",
-    ),
-];
+/// The manifest the `manifest` label's regions come from, relative to the repository.
+const MANIFEST: &str = "tests/redaction/manifest.toml";
+
+/// One `OK` row of the golden file: `(file, page, covered, region label, output digest)`.
+struct Row {
+    file: String,
+    page: usize,
+    covered: BTreeSet<usize>,
+    label: String,
+    output: String,
+}
+
+/// Every `OK` row of the golden file, and every `INPUT` line's digest by file.
+fn ok_rows(golden: &str) -> (Vec<Row>, BTreeMap<String, String>) {
+    let mut rows = Vec::new();
+    let mut inputs = BTreeMap::new();
+    for line in golden.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        match fields.as_slice() {
+            ["INPUT", file, sha] => {
+                inputs.insert((*file).to_owned(), (*sha).to_owned());
+            }
+            ["CASE", file, page, covered, label, outcome] => {
+                let Some(rest) = outcome.strip_prefix("OK ") else {
+                    continue;
+                };
+                rows.push(Row {
+                    file: (*file).to_owned(),
+                    page: page.parse().expect("a page"),
+                    covered: covered
+                        .split(',')
+                        .map(|n| n.parse().expect("a page"))
+                        .collect(),
+                    label: (*label).to_owned(),
+                    output: rest.split(' ').next().unwrap_or_default().to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
+    (rows, inputs)
+}
+
+/// The manifest's `region` for each file, keyed as the golden file names documents, read as
+/// `redaction_outcomes.rs` reads them: each `region` precedes its `file` in a `[[fixture]]`.
+fn manifest_regions() -> BTreeMap<String, Region> {
+    let text = std::fs::read_to_string(root().join(MANIFEST)).expect("the manifest");
+    let value_of = |line: &str, key: &str| -> Option<String> {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim().to_owned())
+    };
+    let mut out = BTreeMap::new();
+    let mut region: Option<Region> = None;
+    for line in text.lines().map(str::trim) {
+        if line == "[[fixture]]" {
+            region = None;
+        } else if let Some(value) = value_of(line, "region") {
+            let numbers: Vec<f64> = value
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|n| n.trim().parse().expect("a region number"))
+                .collect();
+            let [left, top, width, height] = numbers[..] else {
+                panic!("a manifest region that is not four numbers: {line}");
+            };
+            region = Some(Region {
+                left,
+                top,
+                width,
+                height,
+            });
+        } else if let Some(file) = value_of(line, "file")
+            && let Some(found) = region.take()
+        {
+            out.insert(format!("tests/redaction/{}", file.trim_matches('"')), found);
+        }
+    }
+    out
+}
 
 /// The regions `redaction_outcomes.rs` names by these labels. Kept equal to it by the golden
 /// digest: a region that differed would produce different bytes and fail the digest below.
-fn region(label: &str) -> Region {
+fn region(label: &str, file: &str, manifest: &BTreeMap<String, Region>) -> Region {
     match label {
+        "manifest" => *manifest
+            .get(file)
+            .unwrap_or_else(|| panic!("{MANIFEST} declares no region for {file}")),
         "pdfbuild" => Region {
             left: 30.0,
             top: 68.0,
@@ -134,45 +175,43 @@ fn options() -> crate::OpenOptions<'static> {
     )
 }
 
-/// The digest the golden file pins for this case, which must be an `OK` row.
-fn golden_digest(golden: &str, file: &str, page: usize, covered: &str, label: &str) -> String {
-    let key = format!("CASE\t{file}\t{page}\t{covered}\t{label}\t");
-    let line = golden
-        .lines()
-        .find(|line| line.starts_with(&key))
-        .unwrap_or_else(|| panic!("{GOLDEN} has no case {key:?}"));
-    let outcome = &line[key.len()..];
-    let Some(rest) = outcome.strip_prefix("OK ") else {
-        panic!("{GOLDEN} records {key:?} as {outcome:?}, not OK");
-    };
-    rest.split(' ').next().unwrap_or_default().to_owned()
-}
-
 #[test]
 fn every_buffer_redaction_verifies_is_the_one_it_returns() {
     let golden = std::fs::read_to_string(root().join(GOLDEN)).expect("the golden file");
-    let mut tally: std::collections::BTreeMap<Opened, usize> = std::collections::BTreeMap::new();
-    for &(file, page, covered, label) in CASES {
+    let (rows, inputs) = ok_rows(&golden);
+    let manifest = manifest_regions();
+    let mut tally: BTreeMap<Opened, usize> = BTreeMap::new();
+    let mut fixtures = BTreeSet::new();
+    for row in &rows {
+        let file = row.file.as_str();
         let input = std::fs::read(root().join(file))
             .unwrap_or_else(|error| panic!("{file}: {error}; run tools/check-redaction-corpus.sh"));
-        let pages: BTreeSet<usize> = covered
-            .split(',')
-            .map(|n| n.parse().expect("a page"))
-            .collect();
+        assert_eq!(
+            Some(&digest(&input)),
+            inputs.get(file),
+            "{file}: the input is not the one the golden file pins"
+        );
+        fixtures.insert(file);
 
         start_recording_opens();
-        let result = Qpdf.redact_page(&input, page, &pages, region(label), &options());
-        let opens = take_opens();
-        let (output, _) = result.unwrap_or_else(|error| panic!("{file}: {error:?}"));
-
-        assert_eq!(
-            digest(&output),
-            golden_digest(&golden, file, page, covered, label),
-            "{file}: the output is not the one the golden file pins"
+        let result = Qpdf.redact_page(
+            &input,
+            row.page,
+            &row.covered,
+            region(&row.label, file, &manifest),
+            &options(),
         );
+        let opens = take_opens();
+        let case = format!("{file} page {} {}", row.page, row.label);
+        let (output, _) = result.unwrap_or_else(|error| panic!("{case}: {error:?}"));
+
         let returned = digest(&output);
+        assert_eq!(
+            returned, row.output,
+            "{case}: the output is not the one the golden file pins"
+        );
         let taken = digest(&input);
-        assert_ne!(returned, taken, "{file}: the output is the input");
+        assert_ne!(returned, taken, "{case}: the output is the input");
         let expected = vec![
             (Opened::Walk, returned.clone()),
             (Opened::PageCount, taken),
@@ -197,7 +236,7 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
         assert_eq!(
             opens,
             expected,
-            "{file}: the verifiers opened [{}]; expected [{}]",
+            "{case}: the verifiers opened [{}]; expected [{}]",
             named(&opens, &expected[0].1, &expected[1].1).join(", "),
             named(&expected, &expected[0].1, &expected[1].1).join(", "),
         );
@@ -206,25 +245,30 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
         }
     }
 
-    // THE COUNTS, AGAINST WHAT THEY SHOULD BE: one of each per case.
+    // THE COUNTS, AGAINST WHAT THEY SHOULD BE: one of each per `OK` row the FILE records, counted
+    // from the file rather than from the loop, so a run over fewer reads as fewer.
+    let recorded = golden
+        .lines()
+        .filter(|line| line.starts_with("CASE\t") && line.contains("\tOK "))
+        .count();
     let count = |which| tally.get(&which).copied().unwrap_or(0);
     println!(
-        "R10 engine readings: {} fixtures; {} walk opens, {} read_page opens, {} page_count opens; \
-         expected {n}, {n}, {n}",
-        CASES.len(),
+        "R10 engine readings: {} OK case(s) over {} fixture(s); {} walk opens, {} read_page \
+         opens, {} page_count opens; expected {recorded} of each (outcomes.tsv's OK rows)",
+        rows.len(),
+        fixtures.len(),
         count(Opened::Walk),
         count(Opened::ReadPage),
         count(Opened::PageCount),
-        n = CASES.len()
     );
-    assert_eq!(CASES.len(), 7, "the fixed set is seven cases");
+    assert!(recorded > 0, "{GOLDEN} records no OK case");
+    assert_eq!(rows.len(), recorded, "OK rows read vs OK rows in the file");
     for which in [Opened::Walk, Opened::ReadPage, Opened::PageCount] {
         assert_eq!(
             count(which),
-            CASES.len(),
-            "{which:?} opened {} buffer(s) over {} cases",
+            recorded,
+            "{which:?} opened {} buffer(s) over {recorded} OK cases",
             count(which),
-            CASES.len()
         );
     }
 }
@@ -234,17 +278,23 @@ fn a_refusal_before_verification_opens_nothing() {
     // THE TWIN: the recorder records only what a verifier opened. A page past the end is refused
     // at the constructor, before any output exists, so nothing is opened -- and a recorder that
     // recorded every open in the operation would say otherwise.
-    let (file, _, _, _) = CASES[0];
-    let input = std::fs::read(root().join(file)).expect("the fixture");
+    let input = std::fs::read(root().join("tests/redaction/fixtures/producer-latex.pdf"))
+        .expect("the fixture");
     start_recording_opens();
     let result = Qpdf.redact_page(
         &input,
         999,
         &BTreeSet::from([999]),
-        region("whole"),
+        region("whole", "", &BTreeMap::new()),
         &options(),
     );
     let opens = take_opens();
-    assert!(result.is_err(), "page 999 does not exist");
+    let Err(error) = result else {
+        panic!("page 999 does not exist");
+    };
+    assert!(
+        format!("{error:?}").contains("[page-out-of-range]"),
+        "refused for another reason: {error:?}"
+    );
     assert!(opens.is_empty(), "a refusal opened {opens:?}");
 }

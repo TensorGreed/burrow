@@ -219,13 +219,31 @@ thread_local! {
     /// Each open, in order: which method, and the sha256 of the buffer it was handed.
     pub(crate) static OPENS: std::cell::RefCell<Vec<(Opened, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The verifier whose buffer the next engine open is, named by [`opening`] and consumed by
+    /// [`record_open`].
+    pub(crate) static OPENING: std::cell::Cell<Option<Opened>> = const { std::cell::Cell::new(None) };
 }
 
-/// Record that `which` was handed `bytes`, if this thread is recording. Called AT THE OPENS --
-/// `Witness::open_output` and the second reading's two methods -- rather than in the closure, so
-/// a mutation that hands any of them the wrong buffer is seen as what that method read (R10's
-/// round 0). On the caller's thread: both readings open there before any engine thread runs.
-pub(crate) fn record_open(which: Opened, bytes: &[u8]) {
+/// Name the next engine open as `which`'s. Called by each verifier just before it hands its
+/// buffer on; the engine then records the buffer it actually opens ([`record_open`]).
+pub(crate) fn opening(which: Opened) {
+    OPENING.with(|slot| slot.set(Some(which)));
+}
+
+/// Record the buffer an engine is about to open, under the name [`opening`] gave it, if this
+/// thread is recording. An open nobody named -- the operation's own open of its input -- is not
+/// recorded, and the name is consumed whether or not anything records, so it labels one open.
+///
+/// CALLED INSIDE THE ENGINE, AT THE BUFFER IT OPENS: in `Qpdf::open_for_redaction` and the web
+/// engine's, on the slice handed to the engine, and in `PdfiumReading::open` on the boxed copy
+/// handed to `open_spending`. Round 1 of R10 measured why not at the verifier: a recorder there
+/// digests the method's ARGUMENT, and a plant that opened a trimmed or padded copy of it, after
+/// the record, survived the whole suite. On the caller's thread: both readings open there before
+/// any engine thread runs.
+pub(crate) fn record_open(bytes: &[u8]) {
+    let Some(which) = OPENING.with(std::cell::Cell::take) else {
+        return;
+    };
     if RECORDING_OPENS.with(std::cell::Cell::get) {
         use sha2::Digest as _;
         let digest = sha2::Sha256::digest(bytes)
@@ -239,6 +257,7 @@ pub(crate) fn record_open(which: Opened, bytes: &[u8]) {
 /// Start recording on this thread, with nothing recorded yet.
 pub(crate) fn start_recording_opens() {
     OPENS.with(|opens| opens.borrow_mut().clear());
+    OPENING.with(|slot| slot.set(None));
     RECORDING_OPENS.with(|flag| flag.set(true));
 }
 
