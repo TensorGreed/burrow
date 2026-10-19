@@ -514,8 +514,9 @@ BYTE_WITNESSES = {
 # raise them to is in the output.
 # 184 since #125 slice 4 added fifteen fixtures, one placement each (2026-10-17); 192 since
 # #125 slice 5 added eight, one placement each (2026-10-18); 201 since its round 1 added nine
-# twins, one placement each (2026-10-18).
-PLACEMENT_FLOOR = 201
+# twins, one placement each (2026-10-18); 203 since #338 added a ToUnicode evasion fixture and
+# its twin (2026-10-19).
+PLACEMENT_FLOOR = 203
 MAX_SILENT_FIXTURES = 2
 
 
