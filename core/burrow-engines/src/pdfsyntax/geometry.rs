@@ -2613,6 +2613,14 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
 /// rounds it once instead of once per term; PDFium also sums consecutive `TJ` numbers itself, so
 /// the kept text after the gap lands where it did before, to well inside the second reading's
 /// tolerance.
+///
+/// # The number is a bounded token
+///
+/// `f64`'s `Display` never uses an exponent, so a sum that cancels to a residue like `1e-250`
+/// would print as some 250 digits -- past [`MAX_TOKEN_BYTES`](super::lexer::MAX_TOKEN_BYTES),
+/// which the re-walk refuses without naming why. A residue below [`NEGLIGIBLE_GAP`] is written as
+/// `0`: no reader resolves it. Anything still longer than a token (a magnitude past ~1e250)
+/// refuses `[adjustment-not-expressible]` here, by name.
 fn flush_gap(out: &mut Vec<u8>, gap: &mut Option<f64>) -> Result<()> {
     let Some(number) = gap.take() else {
         return Ok(());
@@ -2621,9 +2629,27 @@ fn flush_gap(out: &mut Vec<u8>, gap: &mut Option<f64>) -> Result<()> {
         return Refusal::AdjustmentNotExpressible
             .refuse("a run of adjustments whose sum is not a finite 'TJ' number");
     }
-    out.extend_from_slice(format!("{number} ").as_bytes());
+    // `!= 0.0` keeps an exact zero (and `-0`) written as it always was.
+    let number = if number != 0.0 && number.abs() < NEGLIGIBLE_GAP {
+        0.0
+    } else {
+        number
+    };
+    let token = format!("{number}");
+    if token.len() > super::lexer::MAX_TOKEN_BYTES {
+        return Refusal::AdjustmentNotExpressible
+            .refuse("a run of adjustments whose sum is too long to write as one 'TJ' number");
+    }
+    out.extend_from_slice(token.as_bytes());
+    out.push(b' ');
     Ok(())
 }
+
+/// A gap smaller than this, in thousandths of the font size, is written as `0`.
+///
+/// At a 1000-point font it is a millionth of a point: no reader's `f32` position resolves it,
+/// and PDFium's own tolerance in the second reading is 0.05 pt.
+const NEGLIGIBLE_GAP: f64 = 1e-6;
 
 /// The one string operand of a `Tj`, `'` or `"`.
 fn show_operand(operation: &Operation, at: usize) -> Result<&Operand> {
@@ -5498,6 +5524,13 @@ mod tests {
                     }
                     cut(&content, &glyphs[0..2])
                 }),
+                // A run's one number (F-2 L-1): finite, but too long to write as one token.
+                (Invariant, || {
+                    let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+                    glyphs[1].displacement = 1e260;
+                    glyphs[1].scaled_font_size = 1.0;
+                    cut(&content, &glyphs[1..2])
+                }),
             ],
             Refusal::GraphicsStateOperandNotAName => {
                 vec![(Content, || walk("/F1 10 Tf (GS0) gs BT 0 0 Td (A) Tj ET"))]
@@ -7449,6 +7482,47 @@ mod tests {
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         let out = remove_glyphs(&content, None, &glyphs[1..2], &unwatched()).expect("removes");
         assert_eq!(array_numbers(&out), vec![-500.0]);
+    }
+
+    #[test]
+    fn a_run_whose_sum_cancels_to_a_residue_writes_zero_not_a_token_past_the_cap() {
+        // L-1 (F-2 round 1). Two removed glyphs whose adjustments cancel to a residue near
+        // 1e-246. `f64`'s `Display` has no exponent, so the residue printed as some 250 digits --
+        // a token past the lexer's cap, which the re-walk refused without naming why. It is far
+        // below anything a reader resolves, so it is written as `0`.
+        let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABCD) Tj ET");
+        glyphs[1].displacement = 1e-238;
+        glyphs[2].displacement = -1e-238 * (1.0 - 1e-10);
+        // THE FIXTURE DISCRIMINATES: the sum the rewriter forms is non-zero and, written in full,
+        // longer than a token.
+        let raw = super::adjustment_for(&glyphs[1]).expect("finite")
+            + super::adjustment_for(&glyphs[2]).expect("finite");
+        assert!(raw != 0.0, "the residue must not cancel exactly");
+        assert!(
+            format!("{raw}").len() > super::super::lexer::MAX_TOKEN_BYTES,
+            "the residue must print past the token cap: {raw}"
+        );
+        let out = remove_glyphs(&content, None, &glyphs[1..3], &unwatched()).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("[<41> 0 <44> ] TJ"), "{text}");
+        // And the combined pass, which re-walks its own output, accepts it.
+        cut(&content, &glyphs[1..3]).expect("the rewritten stream re-walks");
+    }
+
+    #[test]
+    fn a_run_whose_sum_is_small_but_resolvable_is_written_as_it_is() {
+        // THE NEAR-MISS of the residue test: a sum above the threshold keeps its value.
+        let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABCD) Tj ET");
+        glyphs[1].displacement = 0.5;
+        glyphs[2].displacement = -0.499_9;
+        let out = remove_glyphs(&content, None, &glyphs[1..3], &unwatched()).expect("removes");
+        let numbers = array_numbers(&out);
+        assert_eq!(numbers.len(), 1, "{}", String::from_utf8_lossy(&out));
+        assert!(
+            (numbers[0] + 0.01).abs() < 1e-9,
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
     }
 
     #[test]
