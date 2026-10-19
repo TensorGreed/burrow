@@ -4,7 +4,9 @@
 //! here is the half `burrow-ops` adds — the page count and the `/Rotate` vector — and the two
 //! guards around it. Those cannot be produced by a correct engine, so the engine is a fake.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use burrow_engines::pdfsyntax::region::Region;
@@ -24,6 +26,15 @@ struct Fake {
     rotations: Vec<i64>,
     /// What the READ-BACK reports. `None` is an honest engine.
     read_back: Option<Vec<i64>>,
+    /// How many times `redact_page` ran. Each call's document differs from every other's (R10):
+    /// with a constant document, "verify one call's output and return another's" is an
+    /// equivalent mutation and no test can see it. Shared, because `fresh` clones the fake.
+    calls: Rc<Cell<usize>>,
+    /// Every call returns the SAME document instead: the near-miss twin, where a second call's
+    /// bytes equal the first's and identity by content cannot tell them apart -- by design.
+    same_every_call: bool,
+    /// The sha256 of every buffer the read-back was handed, in order.
+    opened: Rc<RefCell<Vec<String>>>,
 }
 
 impl Fake {
@@ -31,6 +42,9 @@ impl Fake {
         Self {
             rotations: vec![0; pages],
             read_back: None,
+            calls: Rc::new(Cell::new(0)),
+            same_every_call: false,
+            opened: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -48,8 +62,14 @@ impl PageRedactor for Fake {
         _region: Region,
         _options: &OpenOptions<'_>,
     ) -> Result<(Vec<u8>, Report)> {
+        self.calls.set(self.calls.get() + 1);
+        let call = if self.same_every_call {
+            1
+        } else {
+            self.calls.get()
+        };
         Ok((
-            b"%PDF-1.7\n".to_vec(),
+            format!("%PDF-1.7\n%call {call}\n").into_bytes(),
             Report {
                 fonts: Vec::new(),
                 dropped_carried_text: 0,
@@ -74,7 +94,8 @@ impl OutputReader for Fake {
         self.clone()
     }
 
-    fn open_output(&self, _bytes: &[u8], _options: &OpenOptions<'_>) -> Result<Self::Read> {
+    fn open_output(&self, bytes: &[u8], _options: &OpenOptions<'_>) -> Result<Self::Read> {
+        self.opened.borrow_mut().push(digest(bytes));
         Ok(FakeRead {
             // THE LIE LIVES HERE. An honest engine reads back what it wrote.
             rotations: self
@@ -98,6 +119,15 @@ impl OutputReader for Fake {
     }
 }
 
+/// The sha256 of `bytes`, as hex.
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn options() -> OpenOptions<'static> {
     OpenOptions::new(Limits::default(), Arc::new(ManualClock::new(0)))
 }
@@ -113,7 +143,7 @@ fn band() -> Region {
 
 fn run(engine: &Fake, page: usize, redacted: &[usize]) -> Result<super::Redaction> {
     let covered: BTreeSet<usize> = redacted.iter().copied().collect();
-    super::page(engine, b"%PDF", page, &covered, band(), &options())
+    super::page(engine, INPUT, page, &covered, band(), &options())
 }
 
 #[test]
@@ -296,4 +326,97 @@ mod frames {
         // THE NEAR-MISS: the same readings, counted right.
         assert_eq!(run(&Framer(two, Some(2))).expect("counted right").len(), 2);
     }
+}
+
+/// The input every test hands `run`.
+const INPUT: &[u8] = b"%PDF";
+
+#[test]
+fn redact_verify_same_bytes() {
+    // ADR 0006's R10, as amended 2026-09-27 (#206): the bytes verification examines are PROVEN
+    // identical to the bytes that are emitted. This is the test the ADR names, the operation's
+    // half: the frame check `verify::output` runs must read the document `page` returns. Compared
+    // by CONTENT -- the sha256 of every buffer the read-back opened against the sha256 of the
+    // returned document -- which is what the amended rule states (a property, not a mechanism).
+    //
+    // The fake's documents differ on every `redact_page` call, so a check handed another call's
+    // document is observably handed something else.
+    //
+    // KILLS: handing the check the INPUT (M3), a copy one byte different (M3b), or a second
+    // call's document (M4). With the old constant fake, M3 and M4 survived the whole suite.
+    let fake = Fake::honest(3);
+    let done = run(&fake, 0, &[0]).expect("an honest engine is not rejected");
+    let opened = fake.opened.borrow();
+    println!(
+        "R10 ops half: {} redact_page call(s), {} read-back open(s); expected 1 and 1",
+        fake.calls.get(),
+        opened.len()
+    );
+    assert_eq!(fake.calls.get(), 1, "the engine is asked to redact once");
+    assert_eq!(opened.len(), 1, "exactly one read-back per redaction");
+    assert_eq!(
+        opened.first(),
+        Some(&digest(&done.document)),
+        "the read-back opened something other than the document that was returned"
+    );
+    assert!(
+        !opened.contains(&digest(INPUT)),
+        "the read-back opened the input"
+    );
+}
+
+#[test]
+fn redact_verify_same_bytes_is_not_vacuous() {
+    // The fake really does return different bytes per call, and differs from the input: without
+    // this, the equality above would be a claim about one constant.
+    let fake = Fake::honest(3);
+    let opts = options();
+    let covered: BTreeSet<usize> = [0].into_iter().collect();
+    let (first, _) = fake
+        .redact_page(INPUT, 0, &covered, band(), &opts)
+        .expect("redacts");
+    let (second, _) = fake
+        .redact_page(INPUT, 0, &covered, band(), &opts)
+        .expect("redacts");
+    assert_ne!(
+        digest(&first),
+        digest(&second),
+        "the fake's calls must drift"
+    );
+    assert_ne!(
+        digest(&first),
+        digest(INPUT),
+        "the output must not be the input"
+    );
+}
+
+#[test]
+fn a_document_equal_in_content_passes_by_design() {
+    // THE NEAR-MISS TWIN. Two calls returning identical bytes: identity by content cannot tell a
+    // second call's document from the first's, and that is the rule as amended -- a benign clone
+    // of the same bytes is the same document to whoever receives it. So a second, equal call is
+    // not a finding, and the test says so rather than leaving it to be rediscovered as a gap.
+    let mut fake = Fake::honest(3);
+    fake.same_every_call = true;
+    let done = run(&fake, 0, &[0]).expect("an honest engine is not rejected");
+    let covered: BTreeSet<usize> = [0].into_iter().collect();
+    let (again, _) = fake
+        .redact_page(INPUT, 0, &covered, band(), &options())
+        .expect("redacts");
+    assert_eq!(digest(&again), digest(&done.document));
+    assert_eq!(fake.opened.borrow().as_slice(), [digest(&again)]);
+}
+
+#[test]
+fn a_rejected_redaction_reads_back_once_and_returns_nothing() {
+    // A refusal at the frame check still opened exactly the document the engine produced, and
+    // nobody receives it.
+    let mut fake = Fake::honest(3);
+    fake.read_back = Some(vec![0, 0]);
+    run(&fake, 0, &[0]).expect_err("two pages came back from three");
+    assert_eq!(fake.calls.get(), 1);
+    assert_eq!(
+        fake.opened.borrow().as_slice(),
+        [digest(b"%PDF-1.7\n%call 1\n")]
+    );
 }

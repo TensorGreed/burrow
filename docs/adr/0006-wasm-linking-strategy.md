@@ -390,9 +390,10 @@ design requirement:
   write, a copy some glue mis-marshalled. A **hash binding** satisfies the property directly: the
   verifier's copy is digested, the digest is compared with the digest of the emitted bytes in
   the heap that emitted them, and a verdict counts only if the two agree. Running in the
-  emitting heap remains the simplest way to meet it. **What pins that today is an argument, not a
-  test:** `burrow_ops::verify` takes the emitted `&[u8]` and nothing else (`verify.rs`), and the
-  `redact_verify_same_bytes` test named above has not been written.
+  emitting heap remains the simplest way to meet it. **What pinned that, until 2026-10-19, was an
+  argument, not a test:** `burrow_ops::verify` took the emitted `&[u8]` and nothing else
+  (`verify.rs`), and the `redact_verify_same_bytes` test named above had not been written. (It was
+  written 2026-10-19; see below.)
 
   **What this admits, and what it does not.** It admits a *second* reading of the output in a
   sibling heap -- #206's PDFium geometry reading, in the render worker -- provided its input is
@@ -403,6 +404,37 @@ design requirement:
   the emitted bytes by one byte makes the OPERATION refuse -- not merely its verdict ignored,
   since an unbound second opinion is an unanswered one, and ADR 0029's amendment makes that a
   refusal.
+
+  **2026-10-19 (owner): the native tests exist, and R10 is still unmet.** "Emitted" is recorded
+  as **the Rust buffer the operation returns**. Every verifier is held to it by content -- the
+  sha256 of each buffer it opens against the sha256 of what is returned -- with fakes whose every
+  call returns different bytes, so a check handed an earlier write, a later one or a one-byte
+  different copy is observably handed something else: `redact_verify_same_bytes` in
+  `core/burrow-ops` (the frame check), its engine twin over drifting writes (the region check),
+  a real-engine test recording what burrow's walk and PDFium's two reads open, and the
+  operation over every redacted case in `tests/redaction/outcomes.tsv`, gated on that file's
+  count. Each was shown to fail: the mutations that hand a verifier the input, a copy, or another
+  call's document -- M1b, M3, M3b, M4 and M2web -- survived the suite before these tests and
+  failed it after; two more that R10's first review planted, M5 and M6, survived recorders
+  placed at the verifiers and failed once the recorders moved to the buffer each engine opens;
+  and two from its second review, M7 and M8, in which a verifier's named open was followed by
+  another, survived until the recorder kept unnamed opens too and each case was held to its exact
+  sequence of opens. The web build's walk, which no native build compiled, now shares one call
+  site with the native one. They are tests, not a runtime check: up to the returned buffer, every
+  hop is one Rust buffer, moved and borrowed but never copied before it is verified -- except the
+  copies each verifier's engine reads, which the tests digest where Rust hands them over: the
+  boxed copies qpdf and PDFium open natively. **The web slice is not digested.** The web engine's
+  open carries the same recorder, on the slice the walk hands the JS glue, but no test records
+  through it; the web walk is held by the call site it shares with the native one,
+  `Witness::open_output` (M2web, and M5 natively), and by the browser differential. What the glue
+  then copies into qpdf's heap `verify.rs` names among what the tests leave out.
+
+  **What keeps it unmet: the web's final hop.** After the buffer leaves the wasm heap -- the
+  wasm-bindgen copy, the `Blob`, `postMessage`, and the page handing that same `Blob` to
+  `createObjectURL` -- it is guarded only by the browser comparison, which holds the delivered
+  `Blob`'s digest to native's at test time, on the corpus's redacted cases. **R10 stays unmet
+  until #206's web half binds the hash to the delivered output**; that runtime digest, and the
+  conformance case above, are that slice's, and its runtime check goes to the owner with it.
 
 Nothing about the memory ceiling. Spike 0002 is still unadopted, issue #25 is still *mitigated,
 not resolved*, and [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is

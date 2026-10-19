@@ -594,13 +594,20 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         // receives is now observable, which is the only way a test can say it was right.
         #[cfg(test)]
         hooks::record_expectation(&expected);
-        // NATIVELY, A SECOND READING AFTER BURROW'S OWN (#206). `region_is_cleared_twice` runs
-        // `region_is_cleared` first, so every refusal it makes stands, and then PDFium's reading
-        // of where the characters are and how many pages each document has, which can only add
-        // refusals. A build without the native engines has no second reading yet: the web's
-        // redaction worker holds no PDFium, and bringing one is #206's web half. (The web ENGINE
-        // in a native test build, `WebQpdf` over `NativeBridge`, does get one: this is the same
-        // body, and the gate is on the build, not on the engine.)
+        // BURROW'S OWN WALK, IN ONE CALL THAT EVERY BUILD COMPILES (R10, H-1). It used to be two
+        // calls, one per build: natively inside `region_is_cleared_twice`, and on the web a
+        // `region_is_cleared` that no native build compiled -- so a mutation handing the web's walk
+        // the INPUT where the emitted bytes belong survived every native suite (measured by R10's
+        // round 0). One call site, compiled on both, is held by the native tests that hold the
+        // native path. The verdict is unchanged: the walk first, so every refusal it makes stands.
+        let walked =
+            crate::redact_verify::region_is_cleared_reporting(&witness, emitted, &expected)?;
+        // NATIVELY, A SECOND READING AFTER BURROW'S OWN (#206): PDFium's reading of where the
+        // characters are and how many pages each document has, which can only add refusals. A
+        // build without the native engines has no second reading yet: the web's redaction worker
+        // holds no PDFium, and bringing one is #206's web half. (The web ENGINE in a native test
+        // build, `WebQpdf` over `NativeBridge`, does get one: this is the same body, and the gate
+        // is on the build, not on the engine.)
         //
         // The test-only skip is for the twins of older rules whose fixtures PDFium cannot open:
         // with it, a twin still shows its own rule does not refuse; without it, the same input
@@ -612,19 +619,27 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
             target_os = "linux"
         ))]
         if hooks::second_reading_skipped() {
-            return crate::redact_verify::region_is_cleared(&witness, emitted, &expected);
+            return Ok(());
         }
         #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
-        let verdict = crate::redact_read_back::region_is_cleared_twice(
-            &witness,
+        let verdict = crate::redact_read_back::agrees(
             &crate::pdfium::read_back::PdfiumReading::over(options, deadline),
             bytes,
             emitted,
-            &expected,
-            promised_pages,
+            &crate::redact_read_back::Agreement {
+                page: expected.page,
+                region: expected.region,
+                walked,
+                promised_pages,
+            },
         );
         #[cfg(not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")))]
-        let verdict = crate::redact_verify::region_is_cleared(&witness, emitted, &expected);
+        let verdict = {
+            // NO SECOND READING ON THIS BUILD: the walk's refusals, returned above, are the whole
+            // verdict, and what the walk reports is read by the second reading alone.
+            let _unread_without_a_second_reading = walked;
+            Ok(())
+        };
         verdict
     };
     run_reporting(steps, redacted.clone(), &verify, &|report, paths| {
@@ -671,6 +686,10 @@ mod tests {
         lose_paths: bool,
         rewrites: usize,
         streams: Vec<StreamId>,
+        /// How many times the document was written. Every write's bytes differ from every other's
+        /// (R10, #134): with a constant `write`, "verify one write and return another" is an
+        /// equivalent mutation and no test can see it.
+        writes: usize,
     }
 
     impl Fake {
@@ -685,6 +704,7 @@ mod tests {
                     fonts: Vec::new(),
                     lose_paths: false,
                     rewrites: 0,
+                    writes: 0,
                     streams: core::iter::once(StreamId::Page)
                         .chain((1..count).map(StreamId::Object))
                         .collect(),
@@ -776,8 +796,67 @@ mod tests {
 
         fn write(&mut self) -> Result<Vec<u8>> {
             self.note("write");
-            Ok(b"%PDF-1.7\n".to_vec())
+            self.writes += 1;
+            Ok(format!("%PDF-1.7\n%write {}\n", self.writes).into_bytes())
         }
+    }
+
+    /// The sha256 of `bytes`, as hex.
+    fn digest(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn the_check_reads_the_very_bytes_that_are_returned() {
+        // R10 (ADR 0006, amended 2026-09-27): the bytes verification examines are the bytes that
+        // are emitted. Compared by CONTENT, as the amended rule states it: the sha256 of every
+        // buffer the check is handed, against the sha256 of what `run` returns. The fake's writes
+        // differ on every call, so a check handed an earlier write, a later one, or a copy one
+        // byte different is observably handed something else.
+        //
+        // KILLS: verifying one write and returning another (M1), and verifying a copy that
+        // differs from the returned bytes (M1b). The order-log test below also kills M1, by the
+        // second `write` in the log; this one kills it by what the bytes are.
+        let (fake, log) = Fake::with_streams(2);
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&seen);
+        let (bytes, _) = run(fake, page_zero(), &move |emitted: &[u8]| {
+            record.borrow_mut().push(digest(emitted));
+            Ok(())
+        })
+        .expect("a clean run succeeds");
+
+        let writes = log
+            .borrow()
+            .iter()
+            .filter(|entry| *entry == "write")
+            .count();
+        let seen = seen.borrow();
+        println!(
+            "R10 engine half: {writes} write(s), {} buffer(s) checked; expected 1 and 1",
+            seen.len()
+        );
+        assert_eq!(writes, 1, "the document is written once");
+        assert_eq!(seen.len(), 1, "the check is handed exactly one buffer");
+        assert_eq!(
+            seen.first(),
+            Some(&digest(&bytes)),
+            "the buffer the check read is not the buffer that was returned"
+        );
+        // NOT VACUOUS: the fake's writes really do differ, so the equality above is a claim
+        // about which write was checked.
+        let (mut twin, _) = Fake::with_streams(2);
+        let first = twin.write().expect("writes");
+        let second = twin.write().expect("writes");
+        assert_ne!(
+            digest(&first),
+            digest(&second),
+            "the fake's writes must drift"
+        );
     }
 
     #[test]

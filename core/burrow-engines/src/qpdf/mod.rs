@@ -67,6 +67,14 @@ mod web_differential_tests;
 // Every page's frame, per refusal and over the redaction corpus, on both engines (#136).
 #[cfg(test)]
 mod page_frames_tests;
+// R10: every buffer redaction's verification opens is the one it returns, on the real engines.
+#[cfg(all(
+    test,
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+mod same_bytes_tests;
 // qpdf's error text, read in fuzz builds only, against the pinned qpdf (#285).
 #[cfg(all(test, feature = "fuzzing"))]
 mod error_text_tests;

@@ -107,7 +107,6 @@ use burrow_types::{Error, Result};
 
 use crate::pdfsyntax::geometry::Rect;
 use crate::pdfsyntax::region::Region;
-use crate::redact_verify::{Cleared, ClearedWitness, region_is_cleared_reporting};
 
 /// How far PDFium's edge may sit from burrow's and still count as agreement, in PDF points.
 ///
@@ -385,34 +384,6 @@ pub fn agrees<R: SecondReading>(
         )));
     }
     Ok(())
-}
-
-/// [`crate::redact_verify::region_is_cleared`], then [`agrees`]: burrow's verdict first, so its
-/// refusals stand whatever the second reading says, and the second reading's added after.
-///
-/// # Errors
-///
-/// The first refusal of either.
-pub fn region_is_cleared_twice<W: ClearedWitness, R: SecondReading>(
-    witness: &W,
-    reading: &R,
-    input: &[u8],
-    output: &[u8],
-    cleared: &Cleared,
-    promised_pages: u64,
-) -> Result<()> {
-    let walked = region_is_cleared_reporting(witness, output, cleared)?;
-    agrees(
-        reading,
-        input,
-        output,
-        &Agreement {
-            page: cleared.page,
-            region: cleared.region,
-            walked,
-            promised_pages,
-        },
-    )
 }
 
 /// The size tolerance `redact::frame` holds a renderer's page size to: it reports `f32`.

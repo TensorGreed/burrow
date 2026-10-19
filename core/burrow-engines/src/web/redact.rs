@@ -458,6 +458,9 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)> {
+        // R10: the name is consumed before anything can return. See `hooks::take_opening`.
+        #[cfg(test)]
+        let opened = crate::redact::hooks::take_opening();
         // THE NATIVE `open_document`, STEP FOR STEP: every ceiling before the engine, the deadline
         // started, the engine's memory read before the open so the measured check covers the copy
         // into its heap, recovery off, the page ceiling, a drain, and the measured check. The web
@@ -469,6 +472,9 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         deadline.checkpoint(clock.as_ref())?;
         let engine = self.0;
         let heap_before = engine.bridge().heap_bytes();
+        // R10: THE SLICE COPIED INTO QPDF'S HEAP, recorded under the name a verifier gave this open, or Unnamed.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(opened, bytes);
         let session = Session::open(engine, bytes, options.password, false)?;
         let pages = session.page_count()?;
         Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;

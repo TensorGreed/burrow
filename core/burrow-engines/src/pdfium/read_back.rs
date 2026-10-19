@@ -56,6 +56,9 @@ impl<'a> PdfiumReading<'a> {
     /// output a few hundred bytes larger than an input that passed it. `max_pages`,
     /// `max_duration_ms` and the deadline are untouched.
     fn open(&self, bytes: &[u8]) -> Result<PdfiumDocument> {
+        // R10: the name is consumed before anything can return. See `hooks::take_opening`.
+        #[cfg(test)]
+        let opened = crate::redact::hooks::take_opening();
         let size = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("a document length does not fit in u64".to_owned()))?;
         let mut limits = self.limits;
@@ -65,11 +68,11 @@ impl<'a> PdfiumReading<'a> {
             .max(crate::estimate::estimated_open_bytes(size));
         let mut options = OpenOptions::new(limits, Arc::clone(&self.clock));
         options.password = self.password;
-        open_spending(
-            bytes.to_vec().into_boxed_slice(),
-            &options,
-            Some(self.deadline),
-        )
+        let bytes = bytes.to_vec().into_boxed_slice();
+        // R10: THE COPY PDFIUM IS HANDED, under the name its caller gave it.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(opened, &bytes);
+        open_spending(bytes, &options, Some(self.deadline))
     }
 }
 
@@ -81,6 +84,9 @@ impl SecondReading for PdfiumReading<'_> {
         }
         #[cfg(test)]
         crate::redact::hooks::second_reading_begins();
+        // R10: WHAT EACH READING OPENS, by method, recorded in `open`. See `hooks::record_open`.
+        #[cfg(test)]
+        crate::redact::hooks::opening(crate::redact::hooks::Opened::PageCount);
         let document = self.open(bytes)?;
         page_count_of(&document).map(Some)
     }
@@ -90,6 +96,8 @@ impl SecondReading for PdfiumReading<'_> {
         if let Some(error) = crate::redact::hooks::forced_second_reading_failure() {
             return Err(error);
         }
+        #[cfg(test)]
+        crate::redact::hooks::opening(crate::redact::hooks::Opened::ReadPage);
         let document = self.open(bytes)?;
         let pages = page_count_of(&document)?;
         // A HOOK THAT READS ANOTHER PAGE, for the one question no document asks: is a reading of

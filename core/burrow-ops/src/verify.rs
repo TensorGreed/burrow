@@ -21,7 +21,10 @@
 //!
 //! - **It runs on the emitted bytes**, not on a source, a copy, or the engine's in-memory
 //!   state. That is ADR 0006's R10 exactly, and it is why `output` takes `&[u8]` rather than
-//!   a handle.
+//!   a handle. **"Emitted" is the Rust buffer the operation returns** (owner, 2026-10-19), and
+//!   for redaction that is now tested rather than argued: see `Expected::RegionCleared`'s R10
+//!   section for the tests and for what they leave out -- the web's final hop above all, which
+//!   keeps R10 unmet until #206's web half binds the hash to the delivered output.
 //! - **It runs before the caller has the bytes.** The operation returns `Err` and drops the
 //!   buffer, so nothing downstream ever sees an unverified document — R9's property, at the
 //!   core layer where it holds for the native paths too rather than only inside a worker.
@@ -252,6 +255,46 @@ pub enum Expected {
     /// blank, that an annotation intersecting the region is gone, and that text outside the
     /// region is untouched beyond these two numbers. A page whose text reflowed has the same
     /// count and the same rotation.
+    ///
+    /// # R10: the bytes it reads are the bytes returned, and what that leaves out
+    ///
+    /// ADR 0006's R10, as amended: the bytes verification examines are proven identical to the
+    /// bytes that are emitted, where **"emitted" is the Rust buffer the operation returns**.
+    /// Compared by content -- the sha256 of each buffer a verifier opens against the sha256 of
+    /// what is returned -- by `redact::tests::redact_verify_same_bytes` (this check, over a fake
+    /// whose every `redact_page` call returns different bytes), by `burrow_engines`'
+    /// `redact::tests::the_check_reads_the_very_bytes_that_are_returned` (the region check, over
+    /// drifting writes) and `qpdf::same_bytes_tests` (the real walk and PDFium's two reads, by
+    /// method), and by `tests/redaction_outcomes.rs` (this check over every redacted case the
+    /// golden file pins, gated on its count). Tests, not a runtime check: up to the returned
+    /// buffer every hop is one Rust buffer, moved and borrowed, never copied before it is checked.
+    ///
+    /// **Undetectable, or held only elsewhere:**
+    ///
+    /// - **That the verdict is right.** R10 is the identity of the bytes, not the correctness of
+    ///   the predicate; everything listed above stays undetectable.
+    /// - **The input side (#111).** The promise is still read from the operation's own reading of
+    ///   its input.
+    /// - **What either engine reads after Rust hands the buffer over.** PDFium reads the copy
+    ///   `PdfiumReading::open` makes; on the web, qpdf reads the copy the JS glue makes in its own
+    ///   heap (`__burrow_qpdf_copy_in`, then `copyInto` in `bridge-common.js`). The digest is of
+    ///   what Rust hands over -- natively the very boxed copy each engine is given, recorded inside
+    ///   the engine's open rather than at the verifier -- and what the engine does with it after
+    ///   that is the glue's and the engine's contract, not checked.
+    /// - **The web's final hop, at runtime.** The wasm-bindgen copy out of the heap, the `Blob`
+    ///   built from it, `postMessage`, and the page handing that same `Blob` to
+    ///   `createObjectURL` -- the last an identity hop, held by delivery's id-keyed pending map and
+    ///   its refusal of a stale run. The browser comparison holds the delivered `Blob`'s digest to
+    ///   native's at test time, on the corpus's redacted cases; a mis-marshalling that only other
+    ///   inputs reach is not detected in production. **R10 stays unmet until #206's web half binds
+    ///   the hash to the delivered output.**
+    /// - **A sibling-heap reading**, which does not exist yet: #206's web half carries its own
+    ///   binding.
+    /// - **Other platforms.** No mobile redaction binding exists, and a native build other than
+    ///   Linux has no second reading.
+    /// - **Paths the tests do not run.** The real-engine digests cover the golden file's redacted
+    ///   cases and a fixed engine set; a path only another input reaches is held by the fakes'
+    ///   structural tests alone. A sha256 collision is not considered.
     RegionCleared {
         /// Every page's `/Rotate` as written, in page order, read before the redaction.
         rotations: Vec<i64>,

@@ -198,3 +198,84 @@ thread_local! {
 pub(crate) fn sole_referrer_skipped() -> bool {
     SOLE_REFERRER_SKIPPED.with(std::cell::Cell::get)
 }
+
+// ---- R10: which buffer each verifier opens (ADR 0006, amended 2026-09-27) ----------------------
+
+/// A buffer a verification step opened, by the method that opened it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Opened {
+    /// The witness's open for burrow's own walk: `Witness::open_output`.
+    Walk,
+    /// The second reading's input page count: `PdfiumReading::page_count`.
+    PageCount,
+    /// The second reading's page read: `PdfiumReading::read_page`.
+    ReadPage,
+    /// An open no verifier named: the operation's own open of its input, or any open past the one
+    /// a verifier named. Recorded too, so a verifier that opens the right buffer and then another
+    /// shows the second as an open of its own rather than hiding it.
+    Unnamed,
+}
+
+thread_local! {
+    /// Whether this thread records what the verifiers open. Off unless a test turns it on, so
+    /// the rest of the suite pays no digest.
+    pub(crate) static RECORDING_OPENS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Each open, in order: which method (or [`Opened::Unnamed`]), and the sha256 of the buffer
+    /// it was handed.
+    pub(crate) static OPENS: std::cell::RefCell<Vec<(Opened, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The verifier whose buffer the next engine open is, named by [`opening`] and consumed by
+    /// [`take_opening`].
+    pub(crate) static OPENING: std::cell::Cell<Option<Opened>> = const { std::cell::Cell::new(None) };
+}
+
+/// Name the next engine open as `which`'s. Called by each verifier just before it hands its
+/// buffer on; the engine then records the buffer it actually opens ([`record_open`]).
+pub(crate) fn opening(which: Opened) {
+    OPENING.with(|slot| slot.set(Some(which)));
+}
+
+/// Consume the name [`opening`] gave the next engine open, if any. Called FIRST in each engine's
+/// open, before anything that can return early, so a name labels exactly one open: an open that
+/// failed before it recorded cannot leave its name for whichever open comes next.
+pub(crate) fn take_opening() -> Option<Opened> {
+    OPENING.with(std::cell::Cell::take)
+}
+
+/// Record the buffer an engine is about to open, under the name [`take_opening`] returned for
+/// it, if this thread is recording. An open nobody named -- the operation's own open of its input,
+/// or a second open after a named one -- is recorded as [`Opened::Unnamed`], so a test can hold
+/// a run to its exact sequence of opens rather than to the named ones alone (R10's round 2: a
+/// verifier that opened the right buffer, consuming its name, and then read another, survived a
+/// recorder that kept only named opens).
+///
+/// CALLED INSIDE THE ENGINE, AT THE BUFFER IT OPENS: in `Qpdf::open_for_redaction` and the web
+/// engine's, on the slice handed to the engine, and in `PdfiumReading::open` on the boxed copy
+/// handed to `open_spending`. Round 1 of R10 measured why not at the verifier: a recorder there
+/// digests the method's ARGUMENT, and a plant that opened a trimmed or padded copy of it, after
+/// the record, survived the whole suite. On the caller's thread: both readings open there before
+/// any engine thread runs.
+pub(crate) fn record_open(which: Option<Opened>, bytes: &[u8]) {
+    let which = which.unwrap_or(Opened::Unnamed);
+    if RECORDING_OPENS.with(std::cell::Cell::get) {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        OPENS.with(|opens| opens.borrow_mut().push((which, digest)));
+    }
+}
+
+/// Start recording on this thread, with nothing recorded yet.
+pub(crate) fn start_recording_opens() {
+    OPENS.with(|opens| opens.borrow_mut().clear());
+    OPENING.with(|slot| slot.set(None));
+    RECORDING_OPENS.with(|flag| flag.set(true));
+}
+
+/// Stop recording and hand back everything recorded since [`start_recording_opens`].
+pub(crate) fn take_opens() -> Vec<(Opened, String)> {
+    RECORDING_OPENS.with(|flag| flag.set(false));
+    OPENS.with(|opens| std::mem::take(&mut *opens.borrow_mut()))
+}
