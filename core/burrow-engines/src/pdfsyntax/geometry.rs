@@ -7526,6 +7526,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_string_inside_a_removed_run_does_not_end_it() {
+        // L-3 (F-2 round 1). `()` between two removed stretches holds no code, kept or cut, so
+        // it is not a kept code and the run goes on through it: `W`, `i` and `m` are one number.
+        // Flushing on the empty string wrote two, which split the run's width at the `()`.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td [(ABW) () (imCD)] TJ ET");
+        assert_eq!(glyphs.len(), 7, "the empty string draws nothing");
+        let out = remove_glyphs(&content, None, &glyphs[2..5], &unwatched()).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert_eq!(array_numbers(&out), vec![-1500.0], "{text}");
+    }
+
+    #[test]
     fn a_producers_own_kern_is_carried_through_in_place() {
         // The kern sits between glyphs the cut does not touch. Dropping it, or moving it,
         // shifts everything after by a point or two.
