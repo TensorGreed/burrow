@@ -186,3 +186,15 @@ impl Drop for RemovingAnnotations {
         ANNOTATIONS_REMOVED.with(|flag| flag.set(self.previous));
     }
 }
+
+thread_local! {
+    /// Set by a test to take the sole-referrer condition out of the empty `/Dests` key's
+    /// admission, so the part re-scan behind it -- the second line of defence -- can be shown to
+    /// refuse on its own (owner, 2026-10-15).
+    pub(crate) static SOLE_REFERRER_SKIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a test has taken the sole-referrer condition out. See [`SOLE_REFERRER_SKIPPED`].
+pub(crate) fn sole_referrer_skipped() -> bool {
+    SOLE_REFERRER_SKIPPED.with(std::cell::Cell::get)
+}

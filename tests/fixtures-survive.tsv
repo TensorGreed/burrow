@@ -45,11 +45,20 @@ tests/conformance/fixtures/canary.pdf	compress	refused malformed input: qpdf: th
 tests/conformance/fixtures/canary.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
 tests/conformance/fixtures/canary.pdf	redact	refused malformed input: qpdf: the document is damaged
 tests/conformance/fixtures/canary.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/chrome-printed-tagged.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/chrome-printed-tagged.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/chrome-printed-tagged.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["843x596", "843x596"]
+tests/conformance/fixtures/chrome-printed-tagged.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["596x843", "596x843"] output rotations [0, 0] sizes ["596x843", "596x843"]
+tests/conformance/fixtures/chrome-printed-tagged.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
+tests/conformance/fixtures/chrome-printed-tagged.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/chrome-printed-tagged.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/chrome-printed-tagged.pdf	redact	refused unsupported: pdf redaction [name-read-differently]: the document writes a name that readers may read differently, so what the page draws cannot be known
+tests/conformance/fixtures/chrome-printed-tagged.pdf	render	ok [1] into 200x200: page 1 at 141x200
 tests/conformance/fixtures/chrome-printed.pdf	open	ok 2 page(s)
 tests/conformance/fixtures/chrome-printed.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
 tests/conformance/fixtures/chrome-printed.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["843x596", "843x596"]
 tests/conformance/fixtures/chrome-printed.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["596x843", "596x843"] output rotations [0, 0] sizes ["596x843", "596x843"]
-tests/conformance/fixtures/chrome-printed.pdf	split	refused unsupported: split [split-name-read-differently]: the document writes a name that readers may read differently, so what a part would show cannot be known
+tests/conformance/fixtures/chrome-printed.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
 tests/conformance/fixtures/chrome-printed.pdf	compress	ok smaller: output 2 page(s)
 tests/conformance/fixtures/chrome-printed.pdf	merge	ok two copies: output 4 page(s)
 tests/conformance/fixtures/chrome-printed.pdf	redact	refused unsupported: pdf redaction [name-read-differently]: the document writes a name that readers may read differently, so what the page draws cannot be known

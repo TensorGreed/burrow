@@ -698,7 +698,10 @@ fn the_schema_records_a_route_for_every_limit_failure() {
 /// refusal, pinned by its rule id, until lane 1's narrowing lands, rather than as a case asserting
 /// the refusal is correct behaviour. It is targeted at M2 like the others, and closing it lowers
 /// this back to 2.
-const MAX_KNOWN_GAPS: usize = 3;
+///
+/// **Ratcheted 3 -> 2 when #358 closed**, in the diff that made split accept the Chrome-printed
+/// case, for the reason the #26 paragraph gives.
+const MAX_KNOWN_GAPS: usize = 2;
 
 /// A recorded gap needs somewhere to lead, and a deadline to lead there by.
 #[test]

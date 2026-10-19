@@ -1428,32 +1428,142 @@ fn a_hidden_layer_in_an_annotation_appearance_past_the_ceiling_is_refused() {
     }
 }
 
-/// A CHROME-PRINTED DOCUMENT, refused today by the empty-name rule, pinned by its rule id (owner,
-/// 2026-10-15; #358).
+/// A CHROME-PRINTED DOCUMENT SPLITS (#358). It was refused by the empty-name rule from v0.1.6
+/// until the empty-name narrowing landed, and recorded as a known refusal (owner, 2026-10-15).
 ///
-/// Chrome's "Save as PDF" writes `href="#"` as an empty-name destination (`/Dest /`), and split
-/// refuses any empty name as `[split-name-read-differently]`. The fixture is our own two pages,
-/// printed by headless Chromium (`tools/make-chrome-printed-fixture.mjs`). This is a KNOWN
-/// REFUSAL, not a goal: lane 1's empty-name narrowing (#358, an acceptance change) flips it to two
-/// parts, and this test and the conformance `known_gap` change with it. Pinned by the rule id
-/// rather than by `Unsupported`, so a different refusal arriving first reads as the change it is.
+/// Chrome's "Save as PDF" writes `href="#"` as an empty-name destination (`/Dest /`). The
+/// fixture is our own two pages, printed by headless Chromium
+/// (`tools/make-chrome-printed-fixture.mjs`). Split now accepts that shape and returns two parts,
+/// each verified by the operation itself; the conformance case asserts the same, with no
+/// `known_gap`. Asserting the part count rather than only `is_ok` means a regression to one part,
+/// or a new refusal arriving, reads as the change it is.
 #[test]
-fn a_chrome_printed_document_is_refused_today_by_the_empty_name_rule() {
+fn a_chrome_printed_document_splits() {
     let pdf = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/conformance/fixtures/chrome-printed.pdf"),
     )
     .expect("the committed Chrome-printed fixture");
     match split_first(pdf, &[1]) {
-        Err(burrow_types::Error::Unsupported(message)) => assert!(
-            message.contains("[split-name-read-differently]"),
-            "refused, but not by the empty-name rule: {message}"
+        Ok(parts) => {
+            assert_eq!(
+                parts.len(),
+                2,
+                "a split after page 1 of two pages is two parts"
+            );
+            for part in &parts {
+                assert!(part.starts_with(b"%PDF-"), "each part is a PDF");
+            }
+        }
+        Err(error) => panic!("a Chrome-printed document must split (#358); refused: {error}"),
+    }
+}
+
+/// The empty names in `pdf`'s object text, stream bodies cut out: a `/` followed by white space or
+/// a delimiter, which is an empty name wherever it stands in a key or a value. Stream bodies are
+/// binary, and a `/ ` can occur in them by chance, so they are not read; a part that wrote an
+/// object stream would hide its members from this, so one is reported as well.
+fn empty_names(pdf: &[u8]) -> usize {
+    fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        haystack
+            .get(from..)?
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|at| at + from)
+    }
+    let mut text = Vec::new();
+    let mut at = 0;
+    let mut from = 0;
+    while let Some(start) = find(pdf, b"stream", from) {
+        let body = start + b"stream".len();
+        from = body;
+        if start >= 3 && &pdf[start - 3..start] == b"end" {
+            continue;
+        }
+        text.extend_from_slice(&pdf[at..body]);
+        match find(pdf, b"endstream", body) {
+            Some(end) => {
+                at = end;
+                from = end;
+            }
+            None => {
+                at = pdf.len();
+                break;
+            }
+        }
+    }
+    text.extend_from_slice(&pdf[at.min(pdf.len())..]);
+    let delimiter = |byte: u8| b" \t\r\n\x0c\0()<>[]{}/%".contains(&byte);
+    let objstm = usize::from(find(&text, b"/ObjStm", 0).is_some());
+    objstm
+        + text
+            .iter()
+            .enumerate()
+            .filter(|&(i, &byte)| {
+                byte == b'/' && text.get(i + 1).is_none_or(|&next| delimiter(next))
+            })
+            .count()
+}
+
+/// THE PROBE FOR `empty_names`, so a count of zero below is a measurement: it finds the empty key,
+/// both empty values and an object stream, and passes the near-miss twins -- a one-byte name in
+/// each place, and a stream of another type.
+#[test]
+fn the_empty_name_finder_finds_each_shape_and_passes_its_twin() {
+    for (what, found, twin) in [
+        (
+            "an empty key",
+            "<</ [1 0 R /XYZ 0 0 0]>>",
+            "<</A [1 0 R /XYZ 0 0 0]>>",
         ),
-        other => panic!(
-            "a Chrome-printed document is refused by [split-name-read-differently] today; got \
-             {:?}. If lane 1's empty-name narrowing (#358) has landed, flip this test and the \
-             conformance known_gap together.",
-            other.map(|parts| parts.len())
+        (
+            "a value before LF",
+            "<</Dest /\n/F 4>>",
+            "<</Dest /A\n/F 4>>",
         ),
+        ("a value before >>", "<</F 4 /Dest />>", "<</F 4 /Dest /A>>"),
+        (
+            "an object stream, which would hide its members",
+            "<</Type /ObjStm /N 1>>",
+            "<</Type /XRef>>",
+        ),
+    ] {
+        assert_eq!(empty_names(found.as_bytes()), 1, "{what}");
+        assert_eq!(empty_names(twin.as_bytes()), 0, "{what}: twin");
+    }
+    assert_eq!(
+        empty_names(b"stream\n/ / /\nendstream <</A 1>>"),
+        0,
+        "a stream body is not read"
+    );
+}
+
+/// EACH PART OF A CHROME-PRINTED SPLIT carries no empty name: neither the empty `/Dests` key nor an
+/// empty `/Dest` value, in the untagged print (the value closes its dictionary) and the tagged one
+/// (the value is followed by a line break), on top of the part count. The source holds them, so the
+/// finder is shown to see them before it is asked to find none.
+#[test]
+fn the_parts_of_a_chrome_printed_split_carry_no_empty_name() {
+    for name in ["chrome-printed.pdf", "chrome-printed-tagged.pdf"] {
+        let pdf = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/conformance/fixtures")
+                .join(name),
+        )
+        .expect("the committed Chrome-printed fixture");
+        assert!(
+            empty_names(&pdf) >= 3,
+            "{name}: the source should hold the empty key and the empty values, or this \
+             test measures nothing"
+        );
+        let parts = split_first(pdf, &[1]).unwrap_or_else(|e| panic!("{name}: refused: {e}"));
+        assert_eq!(parts.len(), 2, "{name}: a split after page 1 of two pages");
+        for (index, part) in parts.iter().enumerate() {
+            assert_eq!(
+                empty_names(part),
+                0,
+                "{name}: part {index} carries an empty name (or an object stream hides one)"
+            );
+        }
     }
 }

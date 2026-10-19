@@ -35,7 +35,7 @@
 // version into the file. The committed PDF is pinned by sha256 in `expectations.json`; re-running
 // this changes the hash, which is a regeneration to commit deliberately, never a drift to accept.
 //
-// Usage (from the repository root): node tools/make-chrome-printed-fixture.mjs
+// Usage (from the repository root): node tools/make-chrome-printed-fixture.mjs [--tagged]
 // It runs Playwright's Chromium from `apps/web/node_modules`, so `pnpm install` there first.
 
 import { createRequire } from "node:module";
@@ -49,7 +49,17 @@ const webApp = join(repo, "apps", "web");
 const require = createRequire(join(webApp, "package.json"));
 const { chromium } = require("@playwright/test");
 
-const out = join(repo, "tests", "conformance", "fixtures", "chrome-printed.pdf");
+// `--tagged` prints the same page with Chrome's accessibility tags (`tagged: true`), which writes
+// the same empty destination as a link annotation's value followed by a line break rather than by
+// `>>`. Both prints also write an empty `/Dests` key. The default is the untagged shape.
+const tagged = process.argv.includes("--tagged");
+const out = join(
+  repo,
+  "tests",
+  "conformance",
+  "fixtures",
+  tagged ? "chrome-printed-tagged.pdf" : "chrome-printed.pdf",
+);
 // AS A data: URL. A `file://` URL is refused from the `about:blank` page `setContent` makes,
 // measured: the face did not load and the check below refused to print.
 const font = `data:font/woff2;base64,${readFileSync(
@@ -172,7 +182,7 @@ try {
   if (loaded !== 1) {
     throw new Error(`the fixture font did not load (${loaded} face(s) loaded); refusing to print`);
   }
-  const pdf = await page.pdf({ format: "A4", printBackground: true });
+  const pdf = await page.pdf({ format: "A4", printBackground: true, tagged });
   enforce(Buffer.from(pdf));
   writeFileSync(out, pdf);
   console.log(`make-chrome-printed-fixture: wrote ${out} (${pdf.length} bytes) with ${browser.version()}`);

@@ -338,6 +338,639 @@ fn a_name_inside_the_measured_allowlist_opens_for_split() {
     }
 }
 
+/// THE CHROME SHAPE (owner, 2026-10-15): an empty key at the top level of the catalog's `/Dests`
+/// dictionary, which Chrome's print-to-PDF writes for a link to an unnamed anchor, opens for split
+/// when the catalog's `/Dests` entry is that dictionary's **sole referrer**, so nothing a part
+/// receives can reach it; and nowhere else.
+#[test]
+fn an_empty_key_opens_split_only_in_a_dests_the_catalog_alone_refers_to() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>";
+    let dests = |body: &str| vec![(6, 0, body.to_owned())];
+    opens(
+        "an empty key of a /Dests only the catalog names",
+        &classic(&document(DESTS_CATALOG, "", SHOWN, &dests(DESTS))),
+    );
+    opens(
+        "an empty key of a /Dests written in the catalog",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
+            "",
+            SHOWN,
+            &[],
+        )),
+    );
+    let form = "0 0 m 1 1 l S";
+    let form_sharing = vec![
+        (6, 0, DESTS.to_owned()),
+        (
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << /Extra 6 0 R >> \
+                 /Length {} >>\nstream\n{form}\nendstream",
+                form.len()
+            ),
+        ),
+    ];
+    // THE TWINS: the same /Dests also reached another way, one level down, not the catalog's, in
+    // another dictionary, or the catalog itself.
+    for (what, catalog, page_extra, more) in [
+        (
+            "a form's /Resources also names /Dests",
+            DESTS_CATALOG,
+            "/XObject << /X1 7 0 R >>",
+            form_sharing,
+        ),
+        (
+            "the page's /XObject dictionary is /Dests",
+            DESTS_CATALOG,
+            "/XObject 6 0 R",
+            dests(DESTS),
+        ),
+        (
+            "the page's /ExtGState dictionary is /Dests",
+            DESTS_CATALOG,
+            "/ExtGState 6 0 R",
+            dests(DESTS),
+        ),
+        (
+            "a name tree also names /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R /Names << /Dests 7 0 R >> >>",
+            "",
+            vec![
+                (6, 0, DESTS.to_owned()),
+                (7, 0, "<< /Names [(a) 6 0 R] >>".to_owned()),
+            ],
+        ),
+        (
+            "one level down in /Dests",
+            DESTS_CATALOG,
+            "",
+            dests("<< /A << / [3 0 R /XYZ 0 400 0] >> >>"),
+        ),
+        (
+            "/Dests not named by the catalog",
+            PLAIN_CATALOG,
+            "/Extra 6 0 R",
+            dests("<< / [3 0 R /XYZ 0 400 0] >>"),
+        ),
+        (
+            "another dictionary, beside a /Dests",
+            DESTS_CATALOG,
+            "/Extra 7 0 R",
+            vec![
+                (6, 0, "<< /Named [3 0 R /Fit] >>".to_owned()),
+                (7, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned()),
+            ],
+        ),
+        (
+            "the catalog is its own /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 1 0 R / [3 0 R /XYZ 0 400 0] >>",
+            "",
+            Vec::new(),
+        ),
+    ] {
+        refuses(
+            what,
+            &classic(&document(catalog, page_extra, SHOWN, &more)),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
+/// THE CATALOG NAMED BY AN OBJECT a part may copy carries its `/Dests` with it, so an empty key is
+/// admitted only when nothing but a trailer names the catalog (round 2's review). Each shape
+/// refuses at the OPEN -- these tests never extract, so the part re-read cannot be what refused
+/// them -- and for a direct `/Dests` as for an indirect one.
+#[test]
+fn an_empty_dests_key_refuses_at_the_open_when_an_object_names_the_catalog() {
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>";
+    let form = "0 0 m 1 1 l S";
+    for (what, catalog) in [
+        (
+            "an indirect /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>",
+        ),
+        (
+            "a direct /Dests",
+            "<< /Type /Catalog /Pages 2 0 R /Dests << / [3 0 R /XYZ 0 400 0] >> >>",
+        ),
+    ] {
+        for (shape, page_extra, content, more) in [
+            (
+                "a used form's /Resources names the catalog",
+                "/XObject << /X1 7 0 R >>",
+                "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do",
+                vec![(
+                    7,
+                    0,
+                    format!(
+                        "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                         /Resources << /Extra 1 0 R >> /Length {} >>\nstream\n{form}\nendstream",
+                        form.len()
+                    ),
+                )],
+            ),
+            (
+                "a used /ExtGState names the catalog",
+                "/ExtGState << /G 1 0 R >>",
+                "/G gs BT /F1 24 Tf 20 350 Td (KEEP) Tj ET",
+                Vec::new(),
+            ),
+            (
+                "an annotation names the catalog",
+                "/Extra 7 0 R",
+                SHOWN,
+                vec![(
+                    7,
+                    0,
+                    "<< /Type /Annot /Subtype /Text /Rect [200 20 220 40] /Foo 1 0 R >>".to_owned(),
+                )],
+            ),
+        ] {
+            let mut objects = more.clone();
+            objects.push((6, 0, DESTS.to_owned()));
+            refuses(
+                &format!("{what}: {shape}"),
+                &classic(&document(catalog, page_extra, content, &objects)),
+                "[split-name-read-differently]",
+            );
+        }
+    }
+    // A `/Dests` WRITTEN DIRECTLY IN ANOTHER OBJECT'S DICTIONARY is not the catalog's -- beside a
+    // catalog whose own `/Dests` would be admitted, so only the holder tells them apart.
+    refuses(
+        "a direct /Dests in another object",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>",
+            "/Extra 7 0 R",
+            SHOWN,
+            &[
+                (6, 0, DESTS.to_owned()),
+                (7, 0, "<< /Dests << / [3 0 R /Fit] >> >>".to_owned()),
+            ],
+        )),
+        "[split-name-read-differently]",
+    );
+}
+
+/// `/DESTS WRITTEN ONCE`, as the catalog is: a second revision of it in an incremental update, or a
+/// header and an object-stream member both claiming its number, refuses; so does a `/Dests` naming
+/// a generation the file does not head, as a reference to nothing.
+#[test]
+fn an_empty_dests_key_is_admitted_only_when_dests_is_written_once() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    const DESTS: &str = "<< / [3 0 R /XYZ 0 400 0] >>";
+    let base = classic(&document(
+        DESTS_CATALOG,
+        "",
+        SHOWN,
+        &[(6, 0, DESTS.to_owned())],
+    ));
+    refuses(
+        "/Dests rewritten in an incremental update",
+        &with_revision(&base, 6, DESTS),
+        "[split-name-read-differently]",
+    );
+    let direct = document(DESTS_CATALOG, "", SHOWN, &[(6, 0, DESTS.to_owned())]);
+    refuses(
+        "/Dests headed and also an object-stream member",
+        &with_object_stream(&direct, 9, 0, &[(6, DESTS.to_owned())]),
+        "[split-name-read-differently]",
+    );
+    let wrong = classic(&document(
+        "<< /Type /Catalog /Pages 2 0 R /Dests 6 1 R >>",
+        "",
+        SHOWN,
+        &[(6, 0, DESTS.to_owned())],
+    ));
+    // qpdf resolves a generation the file does not head to nothing, so this refuses as such before
+    // the empty key is judged; `written_once`'s generation branch is witnessed by name in
+    // `redact::references::tests`.
+    refuses(
+        "a /Dests at a generation the file does not head",
+        &wrong,
+        "[split-reference-to-nothing]",
+    );
+}
+
+/// `pdf`, a [`classic`] file, with `key` added to its trailer.
+fn with_trailer_key(pdf: &[u8], key: &str) -> Vec<u8> {
+    let text = String::from_utf8(pdf.to_vec()).expect("ASCII");
+    assert!(text.contains("/Root 1 0 R >>"), "the trailer to add to");
+    let out = text.replacen("/Root 1 0 R >>", &format!("/Root 1 0 R {key} >>"), 1);
+    assert_ne!(out, text, "the trailer key was added");
+    out.into_bytes()
+}
+
+/// A TRAILER THAT ALSO NAMES `/Dests` refuses the empty key: the trailer is a referrer, so the
+/// catalog's entry is no longer the dictionary's sole one. The twin names an object that is not the
+/// `/Dests` dictionary, and the same document opens.
+#[test]
+fn an_empty_dests_key_refuses_when_the_trailer_also_names_dests() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let base = classic(&document(
+        DESTS_CATALOG,
+        "",
+        SHOWN,
+        &[(
+            6,
+            0,
+            "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>".to_owned(),
+        )],
+    ));
+    opens("the base document", &base);
+    opens(
+        "the twin: the trailer names another object",
+        &with_trailer_key(&base, "/X 5 0 R"),
+    );
+    refuses(
+        "the trailer also names /Dests",
+        &with_trailer_key(&base, "/X 6 0 R"),
+        "[split-name-read-differently]",
+    );
+}
+
+/// A CROSS-REFERENCE STREAM'S `/Root` counts as an object naming the catalog, so the empty
+/// `/Dests` key refuses in a file whose only `/Root` lives there: a RECORDED OVER-REFUSAL (it fails
+/// closed), pinned so that a later relaxation shows up here as an acceptance. The twins: the same
+/// file with a named key opens, and the same empty key behind a classic trailer opens.
+#[test]
+fn an_empty_dests_key_refuses_behind_an_xref_stream_root_as_a_recorded_over_refusal() {
+    const DESTS_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let file = |dests: &str| {
+        with_object_stream(
+            &document(DESTS_CATALOG, "", SHOWN, &[(6, 0, dests.to_owned())]),
+            9,
+            0,
+            &[(7, "<< /Harmless true >>".to_owned())],
+        )
+    };
+    opens(
+        "the twin: a named key behind an xref stream",
+        &file("<< /A [3 0 R /XYZ 0 400 0] >>"),
+    );
+    opens(
+        "the twin: the empty key behind a classic trailer",
+        &classic(&document(
+            DESTS_CATALOG,
+            "",
+            SHOWN,
+            &[(6, 0, "<< / [3 0 R /XYZ 0 400 0] >>".to_owned())],
+        )),
+    );
+    refuses(
+        "the empty key, /Root in an xref stream",
+        &file("<< / [3 0 R /XYZ 0 400 0] >>"),
+        "[split-name-read-differently]",
+    );
+}
+
+/// `base` with an incremental update rewriting object `number` as `body`.
+fn with_revision(base: &[u8], number: i32, body: &str) -> Vec<u8> {
+    let text = String::from_utf8_lossy(base);
+    let prev: usize = text
+        .rsplit("startxref")
+        .next()
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|digits| digits.parse().ok())
+        .expect("a startxref");
+    let size = text
+        .split("/Size ")
+        .nth(1)
+        .and_then(|tail| tail.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .expect("a /Size");
+    let mut out = base.to_vec();
+    let at = out.len();
+    out.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    let xref = out.len();
+    out.extend_from_slice(
+        format!(
+            "xref\n{number} 1\n{at:010} 00000 n \ntrailer\n<< /Size {size} /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// THE SECOND LINE OF DEFENCE (owner, 2026-10-15): with the sole-referrer condition taken out
+/// under `cfg(test)`, a /Dests a form's resources also name is admitted at the open, and the part
+/// that carries it is refused when it is written, on both engines. No measured shape reaches it
+/// otherwise.
+#[test]
+fn a_part_carrying_an_admitted_empty_key_is_refused_when_written() {
+    let catalog = "<< /Type /Catalog /Pages 2 0 R /Dests 6 0 R >>";
+    let form = "0 0 m 1 1 l S";
+    let more = vec![
+        (
+            6,
+            0,
+            "<< / [3 0 R /XYZ 0 400 0] /Named [3 0 R /Fit] >>".to_owned(),
+        ),
+        (
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << /Extra 6 0 R >> \
+                 /Length {} >>\nstream\n{form}\nendstream",
+                form.len()
+            ),
+        ),
+    ];
+    let pdf = classic(&document(
+        catalog,
+        "/XObject << /X1 7 0 R >>",
+        "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do",
+        &more,
+    ));
+    crate::redact::hooks::SOLE_REFERRER_SKIPPED.with(|flag| flag.set(true));
+    let native = super::Qpdf::new();
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    // THE OPEN ADMITS IT, on both, so the refusal below is the part's and not the open's.
+    let native_source = PageExtractor::open(&native, pdf.clone().into_boxed_slice(), &options());
+    let web_source = PageExtractor::open(&web, pdf.into_boxed_slice(), &options());
+    let native_part = native_source
+        .as_ref()
+        .map_err(ToString::to_string)
+        .map(|source| PageExtractor::extract(&native, source, 0, 1, &options()));
+    let web_part = web_source
+        .as_ref()
+        .map_err(ToString::to_string)
+        .map(|source| PageExtractor::extract(&web, source, 0, 1, &options()));
+    crate::redact::hooks::SOLE_REFERRER_SKIPPED.with(|flag| flag.set(false));
+    let native_part = native_part.unwrap_or_else(|error| panic!("native open refused: {error}"));
+    let web_part = web_part.unwrap_or_else(|error| panic!("web open refused: {error}"));
+    for (engine, part) in [("native", native_part), ("web", web_part)] {
+        match part {
+            Err(error) => assert!(
+                error.to_string().contains("[split-name-read-differently]"),
+                "{engine}: refused, but not by the empty-key re-read: {error}"
+            ),
+            Ok(_) => panic!("{engine}: a part carrying the empty key was written"),
+        }
+    }
+}
+
+/// THE EMPTY NAME AS A VALUE, as Chrome writes it in a link annotation: `/Dest /` and a line break,
+/// admitted; under a key whose value means something, refused (owner, 2026-10-15).
+#[test]
+fn an_empty_dest_in_a_link_opens_split_and_a_meaningful_key_refuses() {
+    let link = |inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside} >>"),
+        )]
+    };
+    opens(
+        "/Dest / in a link",
+        &classic(&document(
+            PLAIN_CATALOG,
+            "",
+            SHOWN,
+            &link("/Dest /\n/Border [0 0 0]"),
+        )),
+    );
+    for (what, inside) in [("/S /", "/S / /Dest /A"), ("/Subtype /", "/Subtype / ")] {
+        refuses(
+            what,
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
+/// THE UNTAGGED CHROME SHAPE (#358, owner 2026-10-16): Chrome writes `/Dest /` as an annotation's
+/// last entry, so the empty value is followed directly by the `>>` that closes it. Admitted. The
+/// near-miss twin, an empty KEY before the same `>>`, refuses, as does any follower Chrome does
+/// not write, and a `>` that does not begin `>>`.
+#[test]
+fn an_empty_dest_closing_its_link_opens_split_and_an_empty_key_there_refuses() {
+    let link = |inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 {inside}"),
+        )]
+    };
+    for inside in ["/Border [0 0 0]\n/Dest />>", "/Dest />>"] {
+        opens(
+            &format!("untagged Chrome: {inside:?}"),
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+        );
+    }
+    for inside in [
+        "/Dest [3 0 R /Fit] />>",
+        "/Dest /> >>",
+        "/Dest / >>",
+        "/Dest /\t>>",
+        "/Dest /\r>>",
+    ] {
+        refuses(
+            &format!("twin: {inside:?}"),
+            &classic(&document(PLAIN_CATALOG, "", SHOWN, &link(inside))),
+            "[split-name-read-differently]",
+        );
+    }
+}
+
+/// WHERE THE EMPTY `/Dest` VALUE MAY STAND (owner, 2026-10-17): at the top level of a link
+/// annotation's own dictionary, where Chrome writes it, and nowhere else. One level down -- in a
+/// dictionary a link holds, or in one a used form's dictionary holds -- at the top level of a used
+/// form's dictionary, which is a stream's, or in an annotation that is not a link, one with no
+/// `/Type`, or a stream whose dictionary reads as a link's, it refuses, before each follower (LF,
+/// and the `>>` closing its dictionary). It refuses too in an annotation that is not a link and is
+/// numbered after a link whose empty value is admitted, so every holding object's answer counts, not
+/// only the first. After an integer value it is the next key, not the value, and refuses before LF
+/// too. The twins, the same value at a link's top level, and a named one in the later annotation,
+/// open.
+#[test]
+fn an_empty_dest_value_opens_split_only_at_a_link_annotations_top_level() {
+    const FORM_SHOWN: &str = "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET /X1 Do";
+    let annotation = |opening: &str, inside: &str| {
+        vec![(
+            6,
+            0,
+            format!("<< {opening} /Rect [200 20 260 40] /F 4 {inside}"),
+        )]
+    };
+    let link = |inside: &str| annotation("/Type /Annot /Subtype /Link", inside);
+    // Every holding object's answer counts, not only the first one asked: a link (6) whose empty
+    // value is admitted, then a higher-numbered annotation that is not a link (7).
+    let link_then_text = |in_link: &str, in_text: &str| {
+        let mut both = link(in_link);
+        both.push((
+            7,
+            0,
+            format!("<< /Type /Annot /Subtype /Text /Rect [200 60 260 80] /F 4 {in_text}"),
+        ));
+        both
+    };
+    let form = |inside: &str| {
+        let drawn = "0 0 m 1 1 l S";
+        vec![(
+            7,
+            0,
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length {} {inside}\n\
+                 stream\n{drawn}\nendstream",
+                drawn.len()
+            ),
+        )]
+    };
+    let in_link = |more: &[Written]| classic(&document(PLAIN_CATALOG, "", SHOWN, more));
+    let in_form = |more: &[Written]| {
+        classic(&document(
+            PLAIN_CATALOG,
+            "/XObject << /X1 7 0 R >>",
+            FORM_SHOWN,
+            more,
+        ))
+    };
+    for (what, pdf) in [
+        (
+            "nested in a link, before LF",
+            in_link(&link("/A << /S /GoTo /Dest /\n>> >>")),
+        ),
+        (
+            "nested in a link, before >>",
+            in_link(&link("/A << /S /GoTo /Dest />> >>")),
+        ),
+        (
+            "nested in a used form, before LF",
+            in_form(&form("/Info << /Dest /\n>> >>")),
+        ),
+        (
+            "nested in a used form, before >>",
+            in_form(&form("/Info << /Dest />> >>")),
+        ),
+        (
+            "a used form's top level, before LF",
+            in_form(&form("/Dest /\n>>")),
+        ),
+        (
+            "a used form's top level, before >>",
+            in_form(&form("/Dest />>")),
+        ),
+        (
+            "an annotation that is not a link, before LF",
+            in_link(&annotation("/Type /Annot /Subtype /Text", "/Dest /\n>>")),
+        ),
+        (
+            "an annotation that is not a link, before >>",
+            in_link(&annotation("/Type /Annot /Subtype /Text", "/Dest />>")),
+        ),
+        (
+            "a link with no /Type, before LF",
+            in_link(&annotation("/Subtype /Link", "/Dest /\n>>")),
+        ),
+        (
+            "a link with no /Type, before >>",
+            in_link(&annotation("/Subtype /Link", "/Dest />>")),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, before LF",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /\n/Length 0 >>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, before >>",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Length 0 /Dest />>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+        (
+            "after an integer value, before LF: the next key",
+            in_link(&link("/Dest 5 /\n6 >>")),
+        ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, before LF",
+            in_link(&link_then_text("/Dest /\n>>", "/Dest /\n>>")),
+        ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, before >>",
+            in_link(&link_then_text("/Dest />>", "/Dest />>")),
+        ),
+    ] {
+        refuses(what, &pdf, "[split-name-read-differently]");
+    }
+    // THE TWINS: the same value at a link's top level, on both followers, and the forms above
+    // with a named /Dest, open.
+    for (what, pdf) in [
+        (
+            "a link's top level, before LF",
+            in_link(&link("/Dest /\n>>")),
+        ),
+        ("a link's top level, before >>", in_link(&link("/Dest />>"))),
+        (
+            "a link, then a higher-numbered annotation that is not a link, named, before LF",
+            in_link(&link_then_text("/Dest /\n>>", "/Dest /A\n>>")),
+        ),
+        (
+            "a link, then a higher-numbered annotation that is not a link, named, before >>",
+            in_link(&link_then_text("/Dest />>", "/Dest /A>>")),
+        ),
+        (
+            "nested in a link, named",
+            in_link(&link("/A << /S /GoTo /Dest /A\n>> >>")),
+        ),
+        (
+            "a used form's top level, named",
+            in_form(&form("/Dest /A\n>>")),
+        ),
+        (
+            "after an integer value before another key, before LF",
+            in_link(&link("/K 5 /Dest /\n>>")),
+        ),
+        (
+            "a stream whose dictionary reads as a link's, named",
+            in_link(&[(
+                6,
+                0,
+                "<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest /A\n/Length 0 >>\n\
+                 stream\n\nendstream"
+                    .to_owned(),
+            )]),
+        ),
+    ] {
+        opens(what, &pdf);
+    }
+}
+
+/// A LINK WRITTEN TWICE is not one whose empty `/Dest` value split admits (round 1's reviews): an
+/// incremental update that writes the same link again leaves two copies of the object, and which
+/// one a reader takes is not something the rule reasons about, so it refuses. The twins open: the
+/// same link written once, and the same link written twice with a named `/Dest`, so it is the empty
+/// value that refuses, not the update.
+#[test]
+fn an_empty_dest_value_opens_split_only_in_a_link_written_once() {
+    let link = |dest: &str| {
+        format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /F 4 /Dest {dest}\n>>")
+    };
+    let once = |dest: &str| classic(&document(PLAIN_CATALOG, "", SHOWN, &[(6, 0, link(dest))]));
+    refuses(
+        "an empty /Dest value in a link written twice",
+        &with_revision(&once("/"), 6, &link("/")),
+        "[split-name-read-differently]",
+    );
+    opens("the twin: the same link written once", &once("/"));
+    opens(
+        "the twin: a named /Dest in a link written twice",
+        &with_revision(&once("/A"), 6, &link("/A")),
+    );
+}
+
 /// THE EMPTY NAME AND A MIXED-CASE ESCAPE refuse at split's open (#329; `name_reads_alike`),
 /// in the page's `/Resources`. The twins open: a one-byte name, and the same escape in one case.
 #[test]
@@ -601,4 +1234,75 @@ fn an_object_numbered_zero_is_never_the_catalog_at_split_s_open() {
         "the twin, with no null",
         &with_object_zero(&text, "<< /Extra 1 >>"),
     );
+}
+
+/// A clock that counts how often it is read and moves a millisecond each time.
+struct Counting(std::sync::atomic::AtomicU64);
+impl Clock for Counting {
+    fn now_ms(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// THE EMPTY-VALUE LOOKUPS READ THE DEADLINE (round 1's security review): split's reference pass
+/// asks the engine about every link annotation holding an empty `/Dest` value, one question per
+/// object, and reads the deadline between them as the reference lookups do. Asked directly, with a
+/// clock that moves a millisecond per read: a document of many such links reads it more often than
+/// its twin holding a number in the same place, and with the budget set between the two counts, the
+/// pass refuses with the time limit -- which, without the reads in that loop, it never could, since
+/// nothing after the loop reads the clock.
+#[test]
+fn the_empty_value_lookups_read_the_deadline() {
+    use crate::redact::graph::OpensForRedaction;
+
+    let links: u32 = 4096;
+    let build = |dest: &str| {
+        let mut more: Vec<Written> = Vec::new();
+        for number in 0..links {
+            more.push((
+                100 + number,
+                0,
+                format!("<< /Type /Annot /Subtype /Link /Rect [200 20 260 40] /Dest {dest}\n>>"),
+            ));
+        }
+        classic(&document(PLAIN_CATALOG, "", SHOWN, &more))
+    };
+    let run = |pdf: &[u8], budget: u64| {
+        let (document, _) = super::Qpdf
+            .open_for_redaction(pdf, &options())
+            .expect("opens");
+        let clock = Counting(std::sync::atomic::AtomicU64::new(0));
+        let mut limits = Limits::default();
+        limits.max_duration_ms = budget;
+        let deadline = burrow_types::Deadline::start(&clock, &limits);
+        let result = crate::redact::references::refuse_references_to_nothing_as(
+            &document,
+            pdf,
+            &deadline,
+            &clock,
+            &crate::prune::SPLIT_REFERENCES,
+        )
+        .map(drop);
+        (result, clock.0.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    let empty = build("/");
+    let twin = build("0");
+    assert_eq!(empty.len(), twin.len(), "the twin is the same length");
+    let (twin_result, twin_reads) = run(&twin, u64::MAX);
+    twin_result.expect("the twin passes");
+    let (empty_result, empty_reads) = run(&empty, u64::MAX);
+    empty_result.expect("links at their top level pass with time to spare");
+    let loop_reads = empty_reads.saturating_sub(twin_reads);
+    assert!(
+        loop_reads >= u64::from(links) / 256,
+        "{loop_reads} more deadline reads over {links} links holding an empty /Dest value: the \
+         lookups must read it every 256 objects"
+    );
+    let budget = twin_reads + loop_reads / 2;
+    match run(&empty, budget).0 {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms");
+        }
+        other => panic!("a deadline that passes inside the lookups: {other:?}"),
+    }
 }

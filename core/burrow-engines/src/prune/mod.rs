@@ -649,7 +649,51 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         syntax: split_syntax_read_differently,
         null_value: Some(split_null_value),
         defer_null_value: false,
+        // AT THE OPEN ONLY (owner, 2026-10-15): the catalog's `/Dests` dictionary may hold an
+        // empty key when the catalog's entry is its sole referrer (or it is written in the
+        // catalog), and when nothing but a trailer names the catalog itself. Split copies pages,
+        // not the trailer, so with no other referrer of either, nothing a part receives reaches the
+        // dictionary. Every part is then also held to `SPLIT_PART_REFERENCES`, which admits no
+        // empty key at all, as a second line no measured shape reaches.
+        admit_dests_empty_key: true,
+        // SPLIT OPTS IN to the empty `/Dest` value Chrome writes (owner, 2026-10-16), and only
+        // where it stands at the top level of a link annotation's own dictionary (owner,
+        // 2026-10-17). Redaction keeps the default, which refuses it.
+        admit_dest_empty_value: true,
     };
+
+/// The same check as [`SPLIT_REFERENCES`], over a part split has written, with no empty key
+/// admitted: whatever reached the part, an empty key in it refuses (#136's Chrome narrowing, round
+/// 1's review). The empty `/Dest` value stays opted in, held to the same link-annotation rule.
+const SPLIT_PART_REFERENCES: crate::redact::references::ReferenceRefusals =
+    crate::redact::references::ReferenceRefusals {
+        admit_dests_empty_key: false,
+        ..SPLIT_REFERENCES
+    };
+
+/// Refuse a part split has written if it carries an empty key: [`SPLIT_PART_REFERENCES`] over the
+/// part as written, object streams decoded as at the open. Called for every part of a source whose
+/// open admitted an empty `/Dests` key ([`refuse_optional_content_document`]'s answer).
+///
+/// # Errors
+///
+/// `[split-name-read-differently]` for an empty key in the part, the reference pass's other
+/// refusals over the part, the deadline, and whatever the engine reports.
+pub(crate) fn refuse_empty_keys_in_part<D: crate::redact::graph::PdfDocument>(
+    part: &D,
+    bytes: &[u8],
+    deadline: &Deadline,
+    clock: &dyn burrow_types::Clock,
+) -> Result<()> {
+    crate::redact::references::refuse_references_to_nothing_as(
+        part,
+        bytes,
+        deadline,
+        clock,
+        &SPLIT_PART_REFERENCES,
+    )
+    .map(drop)
+}
 
 fn split_reference_to_nothing() -> Error {
     Error::Unsupported(
@@ -738,24 +782,28 @@ fn optional_content_document() -> Error {
 /// `[split-reference-to-nothing]`, `[split-reference-unreadable]`,
 /// `[split-name-read-differently]`, `[split-syntax-read-differently]`, `[split-null-value]`,
 /// `[split-optional-content-document]`, the deadline, and whatever the engine reports.
+///
+/// Returns whether an empty `/Dests` key was admitted, in which case every part must pass
+/// [`refuse_empty_keys_in_part`].
 pub(crate) fn refuse_optional_content_document<D: crate::redact::graph::PdfDocument>(
     document: &D,
     bytes: &[u8],
     deadline: &Deadline,
     clock: &dyn burrow_types::Clock,
-) -> Result<()> {
+) -> Result<bool> {
     use crate::name::Name;
     use crate::redact::graph::PdfObject;
     const ROOT: Name = Name::literal(b"/Root\0");
     const OC_PROPERTIES: Name = Name::literal(b"/OCProperties\0");
 
-    crate::redact::references::refuse_references_to_nothing_as(
+    let admitted_empty_keys = crate::redact::references::refuse_references_to_nothing_as(
         document,
         bytes,
         deadline,
         clock,
         &SPLIT_REFERENCES,
-    )?;
+    )?
+    .admitted_empty_keys;
     // A REPAIR THE REFERENCE PASS CAUSED is a repair, and says so: asking qpdf for every object the
     // file names resolves objects split's walk would not have, and one qpdf repairs while resolving
     // it warns here (`evade-font-repaired-during-the-walk.pdf`). Named as the open names a repair,
@@ -785,7 +833,7 @@ pub(crate) fn refuse_optional_content_document<D: crate::redact::graph::PdfDocum
     if present || document.repaired() {
         return Err(optional_content_document());
     }
-    Ok(())
+    Ok(admitted_empty_keys)
 }
 
 /// Refuse a page that references optional content.
