@@ -2572,8 +2572,11 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
     // of the producer's that sits among them -- is summed here and written once, when the next
     // kept code (or the array's end) arrives. One adjustment per glyph was the defect: it wrote
     // each removed glyph's advance as its own number, which is each removed glyph's width in the
-    // clear -- the glyph-position de-redaction class. What is left is the gap's total, which
-    // has to be disclosed, because the kept text after it must not move.
+    // clear -- the glyph-position de-redaction class. What is left is the gap's total. Where
+    // kept text follows in this operation it has to be disclosed, because that text must not
+    // move. A trailing gap (no kept code after it here) is written too, and discloses its width
+    // even where the next operator resets the pen (filed separately). One number per operation
+    // a removal touched is that operation's removed width.
     let mut gap: Option<f64> = None;
     for (at, item) in items {
         match item {
