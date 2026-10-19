@@ -11,8 +11,12 @@ import {
   fractionAt,
   nudged,
   outlineOf,
+  PICTURE_COPY,
+  arrival,
   pictureBox,
+  shownPictureSize,
 } from "./region-picture.js";
+import { FORBIDDEN_CLAIMS } from "../redact-copy.js";
 
 const LETTER = { width: 612, height: 792 };
 const A4 = { width: 595.28, height: 841.89 };
@@ -214,5 +218,82 @@ describe("the keyboard on the picture (#136, S4)", () => {
     }
     // And an arrow does nothing with no area to move.
     expect(nudged(none, LETTER, key("ArrowRight"))).toBeNull();
+  });
+});
+
+describe("a rendered page arriving for the picture (#136, S4; #199, D4)", () => {
+  const box = { width: 716, height: 1074 };
+  const fit = fitInto(LETTER, box);
+  const pixels = (w = fit.width, h = fit.height) => {
+    const buffer = new ArrayBuffer(w * h * 4);
+    new Uint8Array(buffer).fill(7);
+    return buffer;
+  };
+  const zero = (buffer: ArrayBuffer) => new Uint8Array(buffer).every((b) => b === 0);
+  const got = { number: 3, ...fit };
+
+  it("is drawn when it is the page asked for, now, and the shape the frame says", () => {
+    const buffer = pixels();
+    expect(arrival(buffer, got, { page: 3, current: true }, LETTER, box)).toEqual({
+      kind: "draw",
+      ...fit,
+    });
+    expect(zero(buffer), "pixels to be drawn were zeroed").toBe(false);
+  });
+
+  it("is zeroed and never drawn when it arrives for something no longer shown", () => {
+    const late = pixels();
+    expect(arrival(late, got, { page: 3, current: false }, LETTER, box).kind).toBe("stale");
+    expect(zero(late)).toBe(true);
+    const otherPage = pixels();
+    expect(arrival(otherPage, got, { page: 4, current: true }, LETTER, box).kind).toBe("stale");
+    expect(zero(otherPage)).toBe(true);
+  });
+
+  it("is zeroed and never drawn when the aspect guard refuses it", () => {
+    const turned = fitInto(LANDSCAPE, box);
+    const buffer = pixels(turned.width, turned.height);
+    expect(
+      arrival(buffer, { number: 3, ...turned }, { page: 3, current: true }, LETTER, box).kind,
+    ).toBe("mismatch");
+    expect(zero(buffer)).toBe(true);
+  });
+
+  it("is zeroed and never drawn when its bytes are not its stated size", () => {
+    const short = new ArrayBuffer(16);
+    new Uint8Array(short).fill(7);
+    expect(arrival(short, got, { page: 3, current: true }, LETTER, box).kind).toBe("mismatch");
+    expect(zero(short)).toBe(true);
+  });
+});
+
+describe("the picture's words (#136, S4)", () => {
+  it("make none of the page's forbidden claims, and never say burrow", () => {
+    for (const [name, text] of Object.entries(PICTURE_COPY)) {
+      const claims = FORBIDDEN_CLAIMS.filter(({ pattern }) => pattern.test(text)).map(
+        (claim) => claim.name,
+      );
+      expect(claims, `${name}: ${text}`).toEqual([]);
+      expect(text, name).not.toMatch(/burrow/i);
+    }
+  });
+
+  it("say beside the picture that it is not a preview", () => {
+    expect(PICTURE_COPY.notPreview).toMatch(/not a preview/);
+  });
+});
+
+describe("the picture's place on screen, reserved before it is drawn (#136, S4)", () => {
+  it("is the frame's fit at the box's density, and never wider than the space it had", () => {
+    const box = pictureBox(358, 2);
+    const shown = shownPictureSize(LETTER, box, 2, 10_000);
+    expect(shown.width).toBeLessThanOrEqual(358);
+    expect(shown.width / shown.height).toBeCloseTo(LETTER.width / LETTER.height, 2);
+  });
+
+  it("is no taller than it is allowed, keeping its shape", () => {
+    const shown = shownPictureSize({ width: 100, height: 400 }, pictureBox(704, 1), 1, 300);
+    expect(shown.height).toBe(300);
+    expect(shown.width).toBeCloseTo(75, 0);
   });
 });

@@ -83,13 +83,24 @@ export function isPinnedArtifact(url: string, bundles: "base" | "all" = "base"):
  * Requests the HELD redaction page legitimately makes (#136): its own bundle -- the redaction
  * worker and module -- and the two base artifacts it shares, qpdf and the guard control. By exact
  * path, as `isPinnedArtifact`. Not the base worker or the base module, which a redacting page never
- * fetches, and nothing of the render bundle, which it does not use until S4.
+ * fetches.
+ *
+ * THE RENDER BUNDLE ONLY WHEN ASKED (`"with-render"`), for the reason `isPinnedArtifact` gives for
+ * its own default: since S4 the page draws the chosen page through the render worker (D1), and a
+ * test that drives the picture says so; one that admitted it by default would pass a redaction
+ * page that reached for PDFium where nothing asked it to.
  *
  * Redaction's worker recycles after every reply (#199), so every run re-fetches this set; that is
  * a respawn, not an upload.
  */
-export function isRedactionArtifact(url: string): boolean {
+export function isRedactionArtifact(
+  url: string,
+  bundles: "redaction" | "with-render" = "redaction",
+): boolean {
   return (
+    (bundles === "with-render" &&
+      (/^\/engines\/(pdfium|burrow_wasm_render_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
+        /^\/engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/.test(url))) ||
     /^\/engines\/qpdf\.[0-9a-f]{16}\.wasm$/.test(url) ||
     /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url) ||
     /^\/engines\/burrow-redact-worker\.[0-9a-f]{16}\.js$/.test(url) ||

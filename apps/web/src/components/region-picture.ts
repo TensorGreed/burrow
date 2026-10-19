@@ -265,3 +265,87 @@ export function nudged(
   if (width <= 0 || height <= 0 || left < 0 || top < 0) return null;
   return { left: shown(left), top: shown(top), width: shown(width), height: shown(height) };
 }
+
+/** What the page does with one rendered page that arrives for the picture. */
+export type Arrival =
+  { kind: "draw"; width: number; height: number } | { kind: "stale" } | { kind: "mismatch" };
+
+/**
+ * Decide what happens to a rendered page that arrived for the picture, and ZERO ITS PIXELS
+ * unless it is to be drawn (#199, D4: rendered pixels are decoded content).
+ *
+ * - `stale`: it was asked for a document, a page or a showing the picture no longer shows -- a
+ *   different file chosen, a different page typed, the page left -- or it is not the page asked
+ *   for. Never drawn.
+ * - `mismatch`: the aspect guard refused it. Never drawn; the page offers the numbers only.
+ * - `draw`: the page shows it, at the size it came out.
+ */
+export function arrival(
+  pixels: ArrayBuffer,
+  got: { number: number; width: number; height: number },
+  wanted: { page: number; current: boolean },
+  frame: { width: number; height: number },
+  box: { width: number; height: number },
+): Arrival {
+  if (!wanted.current || got.number !== wanted.page) {
+    new Uint8Array(pixels).fill(0);
+    return { kind: "stale" };
+  }
+  if (!aspectAgrees(got, frame, box) || pixels.byteLength !== got.width * got.height * 4) {
+    new Uint8Array(pixels).fill(0);
+    return { kind: "mismatch" };
+  }
+  return { kind: "draw", width: got.width, height: got.height };
+}
+
+/**
+ * The picture's words. Kept here so `region-picture.test.ts` holds them to the page's forbidden
+ * claims (`FORBIDDEN_CLAIMS`) and to "Not Only PDF", never "burrow", as `redact-copy.ts` does.
+ */
+export const PICTURE_COPY = {
+  hint:
+    "Drag across the page to choose the area. Or select the picture and press Enter to start an " +
+    "area, an arrow key to move it, Shift with an arrow to change its size, and Alt for steps of " +
+    "one point. The boxes below show the area in points.",
+  notPreview:
+    "The picture is the page as a viewer draws it, annotations included. It is not a preview of " +
+    "the result.",
+  drawing: "Drawing the page…",
+  mismatch:
+    "The picture of this page did not match the page's measured size, so it is not shown. Type " +
+    "the area in points instead.",
+  failed: "This page could not be drawn. Type the area in points instead.",
+  unavailable: "Page pictures have stopped. Type the area in points instead.",
+  // D9 (owner, 2026-10-14): no after-picture of the result. A re-fed result is a result, so it
+  // gets no picture, until the owner reads D9 otherwise.
+  result: "There is no picture of a result. Type the next area in points.",
+} as const;
+
+/**
+ * The picture's size on screen, in CSS pixels, KNOWN BEFORE IT IS DRAWN: the frame's fit into
+ * the box, at the density the box was taken at, and no taller than `maxCssHeight`.
+ *
+ * So the page reserves the picture's place the moment a page is chosen, and nothing below it --
+ * the four boxes, the run button -- moves when the picture arrives. A control that moves as a
+ * person reaches for it is one they press by mistake (measured: a click on the run button landed
+ * elsewhere when the picture appeared under the pointer).
+ */
+export function shownPictureSize(
+  frame: { width: number; height: number },
+  box: { width: number; height: number },
+  devicePixelRatio: number,
+  maxCssHeight: number,
+): { width: number; height: number } {
+  const dpr =
+    Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+      ? Math.min(devicePixelRatio, PICTURE_MAX_DPR)
+      : 1;
+  const fit = fitInto(frame, box);
+  let width = fit.width / dpr;
+  let height = fit.height / dpr;
+  if (Number.isFinite(maxCssHeight) && maxCssHeight > 0 && height > maxCssHeight) {
+    width = (width * maxCssHeight) / height;
+    height = maxCssHeight;
+  }
+  return { width, height };
+}

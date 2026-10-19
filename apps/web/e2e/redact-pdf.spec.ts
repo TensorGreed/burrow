@@ -204,13 +204,17 @@ test("the page's console stays empty through a run and a refusal", async ({ page
   expect(ours, `the page must add nothing to the console:\n${ours.join("\n")}`).toEqual([]);
 });
 
-test("redacting makes no request beyond redaction's pinned engine artifacts", async ({
+test("redacting makes no request beyond redaction's and the picture's pinned engine artifacts", async ({
   page,
 }, testInfo) => {
   // THE MARKER GOES BEFORE `goto`, so start-up is in the window too: the page must never reach
-  // for the base worker or the render bundle, and a respawn re-fetches only redaction's set.
+  // for the base worker, and a respawn re-fetches only redaction's set. Since S4 the picture is
+  // drawn by the render bundle (D1), which is admitted by name and required below.
   await mark(`redact-page:${testInfo.project.name}`);
   const frame = await open(page, REDACTS);
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawn", {
+    timeout: 45_000,
+  });
   await area(page, "0", "0", String(frame.width), String(frame.height));
   await page.getByTestId("redact-run").click();
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
@@ -223,7 +227,8 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   const site = new URL(page.url()).origin;
   const unexpected = after.filter(
     (entry) =>
-      entry.origin !== site || (!isRedactionArtifact(entry.url) && !isPageAsset(entry.url)),
+      entry.origin !== site ||
+      (!isRedactionArtifact(entry.url, "with-render") && !isPageAsset(entry.url)),
   );
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
@@ -233,6 +238,11 @@ test("redacting makes no request beyond redaction's pinned engine artifacts", as
   expect(
     after.filter((entry) => /burrow_wasm_redact_bg/.test(entry.url)).length,
     "redaction's module was not fetched, so this test watched nothing",
+  ).toBeGreaterThan(0);
+  // AND THE PICTURE'S: the render worker drew it, so the admission above was used.
+  expect(
+    after.filter((entry) => /burrow-render-worker/.test(entry.url)).length,
+    "the render worker was not fetched, so the picture was drawn by something else",
   ).toBeGreaterThan(0);
   expect(
     after.filter((entry) => entry.url === "/redact-pdf/").length,
@@ -540,4 +550,221 @@ test("a §7 note stays through the chain and goes with a genuinely new file (L2)
   await page.getByTestId("redact-run").click();
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
   await expect(notes).toHaveCount(0);
+});
+
+// ---- S4: the selection picture ---------------------------------------------------------------
+
+/** The picture, drawn: its canvas's box on screen. */
+async function drawnPicture(page: Page) {
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawn", {
+    timeout: 45_000,
+  });
+  // IN VIEW FIRST: a pointer at a place off the screen reaches nothing.
+  const canvas = page.getByTestId("redact-picture-canvas");
+  await canvas.scrollIntoViewIfNeeded();
+  const box = await canvas.boundingBox();
+  expect(box, "the picture has no box on screen").not.toBeNull();
+  return box!;
+}
+
+/**
+ * How many render workers the page holds, found by what only the render bundle defines (as
+ * `page-thumbnails.spec.ts` finds one): the PDFium bridge.
+ */
+async function renderWorkers(page: Page): Promise<number> {
+  let count = 0;
+  for (const worker of page.workers()) {
+    const isRender = await worker
+      .evaluate(
+        () =>
+          typeof (self as unknown as Record<string, unknown>)["__burrow_pdfium_copy_out"] ===
+          "function",
+      )
+      .catch(() => false);
+    if (isRender) count += 1;
+  }
+  return count;
+}
+
+/** Drag across the picture from one fraction of it to another. */
+async function drag(
+  page: Page,
+  box: { x: number; y: number; width: number; height: number },
+  from: [number, number],
+  to: [number, number],
+) {
+  await page.mouse.move(box.x + from[0] * box.width, box.y + from[1] * box.height);
+  await page.mouse.down();
+  await page.mouse.move(box.x + to[0] * box.width, box.y + to[1] * box.height, { steps: 5 });
+  await page.mouse.up();
+}
+
+async function boxes(page: Page): Promise<number[]> {
+  return Promise.all(
+    ["redact-left", "redact-top", "redact-width", "redact-height"].map(async (id) =>
+      Number(await page.getByTestId(id).inputValue()),
+    ),
+  );
+}
+
+test("a drag on the picture fills the four boxes, and that area is what the run removes (S4)", async ({
+  page,
+}) => {
+  // 01-plain-tj is 400 x 200 points: the secret line inside [30, 70, 330, 40], the kept line below.
+  await open(page, TWO_LINES, generated);
+  const box = await drawnPicture(page);
+  await drag(page, box, [30 / 400, 70 / 200], [360 / 400, 110 / 200]);
+  const [left, top, width, height] = await boxes(page);
+  // A pointer lands on a CSS pixel, so the boxes are near the corners dragged, never inside them:
+  // the drag is rounded outward to the tenth of a point.
+  for (const [got, want] of [
+    [left, 30],
+    [top, 70],
+    [left! + width!, 360],
+    [top! + height!, 110],
+  ] as const) {
+    expect(Math.abs(got - want), `${got} is not near ${want}`).toBeLessThan(3);
+  }
+  await expect(page.getByTestId("redact-picture-outline")).toBeVisible();
+
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  const out = await downloaded(page, "redact-download");
+  expect(holds(out, "KEEP-THIS-LINE"), "the extractor does not read this fixture").toBe(true);
+  expect(holds(out, "BURROW-SECRET-01"), "the dragged area was not the one removed").toBe(false);
+});
+
+test("the picture is usable by keyboard alone (S4)", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await drawnPicture(page);
+  const surface = page.getByTestId("redact-picture-surface");
+  await surface.focus();
+  await page.keyboard.press("Enter");
+  expect(await boxes(page)).toEqual([0, 0, 72, 36]);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Alt+ArrowDown");
+  await page.keyboard.press("Shift+ArrowRight");
+  expect(await boxes(page)).toEqual([10, 1, 82, 36]);
+  await expect(page.getByTestId("redact-picture-outline")).toBeVisible();
+  // AND TYPING IS THE SAME SOURCE: a box typed moves the outline the keys draw from.
+  await page.getByTestId("redact-left").fill("100");
+  await surface.focus();
+  await page.keyboard.press("ArrowLeft");
+  expect((await boxes(page))[0]).toBe(90);
+});
+
+test("the picture draws the page's annotations, and an area over one refuses (S4, D3)", async ({
+  page,
+}) => {
+  // 11-annotation's only ink in [30, 68, 340, 44] (display frame) is a FreeText annotation's
+  // appearance; the page's own text is lower down. A picture without annotations is white there.
+  await open(page, "11-annotation.pdf", generated);
+  const box = await drawnPicture(page);
+  const dark = await page.getByTestId("redact-picture-canvas").evaluate((node) => {
+    const canvas = node as HTMLCanvasElement;
+    const context = canvas.getContext("2d", { willReadFrequently: true })!;
+    const sx = canvas.width / 400;
+    const sy = canvas.height / 200;
+    const { data } = context.getImageData(30 * sx, 68 * sy, 340 * sx, 44 * sy);
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i]! < 128) count += 1;
+    return count;
+  });
+  expect(dark, "the annotation was not drawn in the picture").toBeGreaterThan(50);
+
+  // D3's condition: an area over a drawn annotation is refused, never kept or removed silently.
+  await drag(page, box, [40 / 400, 75 / 200], [200 / 400, 105 / 200]);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-notice")).toContainText(CATEGORIES.annotations.title, {
+    timeout: 45_000,
+  });
+  await expect(page.getByTestId("redact-notice")).toContainText("annotation-in-region");
+});
+
+test("the render worker is gone before a run and does not come back for it (S4, D1)", async ({
+  page,
+}) => {
+  await open(page, TWO_LINES, generated);
+  await drawnPicture(page);
+  // THE CONTROL: the picture was drawn by a render worker this page holds.
+  expect(await renderWorkers(page), "no render worker drew the picture").toBeGreaterThan(0);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  // GONE BY THE TIME THE RUN IS UNDER WAY: terminated when it began, the picture being idle.
+  await expect.poll(() => renderWorkers(page), { timeout: 10_000 }).toBe(0);
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  expect(await renderWorkers(page), "a render worker came back for the run").toBe(0);
+  // The picture already drawn stays: it is pixels on the page, not the engine.
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawn");
+});
+
+test("a re-fed result gets no picture (S4, D9)", async ({ page }) => {
+  await open(page, TWO_LINES, generated);
+  await drawnPicture(page);
+  await area(page, ...FIRST_LINE);
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("redact-another").click();
+  await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "idle");
+  await expect(page.getByTestId("redact-picture")).toContainText("no picture of a result");
+  await expect(page.getByTestId("redact-picture-canvas")).toHaveCount(0);
+});
+
+test("at 390 px wide the page and its picture fit, with no sideways scroll (S4)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page, REDACTS);
+  const box = await drawnPicture(page);
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow, "the page scrolls sideways at 390 px").toBeLessThanOrEqual(0);
+  // And a drag still chooses an area there.
+  await drag(page, box, [0.1, 0.1], [0.5, 0.3]);
+  expect((await boxes(page))[2]).toBeGreaterThan(0);
+});
+
+test("nothing below the picture moves when it arrives (S4)", async ({ page }) => {
+  // THE RENDER BUNDLE IS HELD BACK, so the picture is seen still drawing: its place must already
+  // be reserved then. Measured without this: a click on the run button landed elsewhere when the
+  // picture appeared under the pointer.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/engines\/burrow-render-worker\./, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await open(page, TWO_LINES, generated);
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawing");
+  const before = await page.getByTestId("redact-run").boundingBox();
+  release();
+  await drawnPicture(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const after = await page.getByTestId("redact-run").boundingBox();
+  expect(before).not.toBeNull();
+  expect(after!.y - before!.y, "the run button moved when the picture arrived").toBe(0);
+});
+
+test("leaving the page lets go of the picture and ends its worker (S4, D1, D4)", async ({
+  page,
+}) => {
+  await open(page, TWO_LINES, generated);
+  await drawnPicture(page);
+  expect(await renderWorkers(page), "no render worker drew the picture").toBeGreaterThan(0);
+  await page.evaluate(() => globalThis.dispatchEvent(new PageTransitionEvent("pagehide")));
+  await expect.poll(() => renderWorkers(page), { timeout: 10_000 }).toBe(0);
+  // THE PIXELS WENT WITH IT: the picture waits to be drawn again, on a page shown again.
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawing");
+  const size = await page
+    .getByTestId("redact-picture-canvas")
+    .evaluate((node) => (node as HTMLCanvasElement).width);
+  expect(size, "the canvas kept the picture's pixels").toBe(0);
+  await page.evaluate(() =>
+    globalThis.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+  );
+  await drawnPicture(page);
 });
