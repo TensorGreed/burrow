@@ -836,6 +836,95 @@ pub(crate) fn refuse_optional_content_document<D: crate::redact::graph::PdfDocum
     Ok(admitted_empty_keys)
 }
 
+/// Split's refusal for a page whose `/Contents` elements are not divided between whole tokens.
+fn split_contents_boundary() -> Error {
+    Error::Unsupported(
+        "split [split-contents-boundary]: a page's content is divided between streams other than \
+         between whole tokens, which readers join differently, so what a part would show cannot \
+         be known"
+            .to_owned(),
+    )
+}
+
+/// Refuse a document with a page whose `/Contents` elements do not each end between tokens, at
+/// split's open (#315; owner, 2026-10-19). Redaction's `[contents-boundary]` rule (#312), applied
+/// to every page of the source.
+///
+/// PDF 32000-1 §7.8.2 divides `/Contents` only between tokens, and readers join the elements
+/// differently: qpdf, whose join split's used-name walk reads, inserts a line feed, and pdf.js
+/// inserts nothing. A token spanning two elements is therefore two tokens to split and one to
+/// pdf.js, so the walk can prune a resource pdf.js's reading of the page uses, and the part then
+/// draws what the source did not. So every element a boundary follows -- empty elements skipped,
+/// since pdf.js joins across them -- must end between tokens, in white space, by
+/// redaction's own test of that (`pdfsyntax::geometry::ends_between_tokens_for_split`), lexed in
+/// split's own mode so that redaction's refusals stay out of the base web module. An element that does not lex on its own refuses here too: that is a boundary inside a
+/// string, an inline image whose end cannot be found, or something the lexer refuses, and split
+/// cannot say how readers join it.
+///
+/// **Wider than the leak, on purpose** (fail closed): a delimiter-adjacent boundary such as `)` |
+/// `Tj`, which every reader reads alike, refuses too, as it does in redaction. Also refused: a
+/// `/Contents` array holding something that is not a stream, and an element whose data the engine
+/// cannot decode -- neither can be shown to end between tokens. A page with one content stream
+/// has no boundary and is not read.
+///
+/// **Every page, not only the pages a part takes**: this runs once, at the open, before the cuts
+/// are known to the engine, and refusing the document is the direction that fails closed. At most
+/// two decoded elements are held at once; the deadline is read before each element.
+///
+/// # Errors
+///
+/// `[split-contents-boundary]`, the deadline, and whatever the engine reports.
+pub(crate) fn refuse_contents_boundaries<D: crate::redact::graph::PdfDocument>(
+    document: &D,
+    deadline: &Deadline,
+    clock: &dyn burrow_types::Clock,
+) -> Result<()> {
+    use crate::name::Name;
+    use crate::redact::graph::PdfObject;
+    const CONTENTS: Name = Name::literal(b"/Contents\0");
+
+    let pages = usize::try_from(document.page_count()?)
+        .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+    for index in 0..pages {
+        deadline.checkpoint(clock)?;
+        let page = document.page(index)?;
+        let contents = page.key(&CONTENTS);
+        page.drained()?;
+        if contents.type_code() != object_type::ARRAY {
+            // One stream, or none: no boundary. Anything else is not this rule's question.
+            contents.drained()?;
+            continue;
+        }
+        let length = contents.array_len();
+        contents.drained()?;
+        // THE PREVIOUS NON-EMPTY ELEMENT, judged only once another non-empty one follows it: the
+        // last element has no boundary after it.
+        let mut previous: Option<Vec<u8>> = None;
+        for at in 0..length {
+            deadline.checkpoint(clock)?;
+            let element = contents.array_item(at);
+            contents.drained()?;
+            if element.type_code() != object_type::STREAM {
+                element.drained()?;
+                return Err(split_contents_boundary());
+            }
+            let Some(body) = element.stream_data()? else {
+                return Err(split_contents_boundary());
+            };
+            if body.is_empty() {
+                continue;
+            }
+            if let Some(before) = previous.take()
+                && crate::pdfsyntax::geometry::ends_between_tokens_for_split(&before) != Some(true)
+            {
+                return Err(split_contents_boundary());
+            }
+            previous = Some(body);
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a page that references optional content.
 ///
 /// See the module header: neither of ADR 0019 §2b's answers is reachable without the destination's

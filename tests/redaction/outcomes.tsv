@@ -1043,6 +1043,33 @@ CASE	tests/conformance/fixtures/chrome-printed.pdf	1	1	pdfbuild	ERR Unsupported(
 CASE	tests/conformance/fixtures/chrome-printed.pdf	1	1	whole	ERR Unsupported("pdf redaction [name-read-differently]: the document writes a name that readers may read differently, so what the page draws cannot be known")
 CASE	tests/conformance/fixtures/chrome-printed.pdf	1	1	band	ERR Unsupported("pdf redaction [name-read-differently]: the document writes a name that readers may read differently, so what the page draws cannot be known")
 CASE	tests/conformance/fixtures/chrome-printed.pdf	0	0,1	whole	ERR Unsupported("pdf redaction [name-read-differently]: the document writes a name that readers may read differently, so what the page draws cannot be known")
+INPUT	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	a2293b5b7114bf2cf91f3fa26d8f056ee94d4d004505ac63c7b1a7ba59623a0c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	0	0	pdfbuild	OK 0190fd700f1960b118b3210310f95a4fccecb23e89280b2a4cd76ebe0d5072df report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	0	0	whole	OK 0190fd700f1960b118b3210310f95a4fccecb23e89280b2a4cd76ebe0d5072df report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	0	0	band	OK e0cb58e5c1a846359bcd5a14a4536f36a48769f9f850fd51f865512387d948f1 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	1	1	pdfbuild	OK 1b0f8ff019011812e8feba15fb4bef6e17dba42d07e1c473c56f938f6a3c3137 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	1	1	whole	OK 1b0f8ff019011812e8feba15fb4bef6e17dba42d07e1c473c56f938f6a3c3137 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	1	1	band	OK e0cb58e5c1a846359bcd5a14a4536f36a48769f9f850fd51f865512387d948f1 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	0	0,1	whole	OK 0190fd700f1960b118b3210310f95a4fccecb23e89280b2a4cd76ebe0d5072df report 58251b3c1d0e2858cd7f02f15865d39c72698516ec7b8312b2c2d06d7c954355
+INPUT	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	ee78a2d16506d19f42a76aea72b2212d9188c042caaa3972f9ba73131e8ceba0
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	0	0	pdfbuild	OK f76e823f0c49caf52c5459ad1bdf7ce065225083441b20642a09945a4a3dc6ad report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	0	0	whole	OK f76e823f0c49caf52c5459ad1bdf7ce065225083441b20642a09945a4a3dc6ad report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	0	0	band	OK 0a31b461296c6af991c6935fe7b589c9a5874aedc541fb4da916338907335789 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	1	1	pdfbuild	OK abacde49babb988e47250f8eb8da049fe6811baef3b83ea4b63b6a9713f881ae report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	1	1	whole	OK abacde49babb988e47250f8eb8da049fe6811baef3b83ea4b63b6a9713f881ae report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	1	1	band	OK 0a31b461296c6af991c6935fe7b589c9a5874aedc541fb4da916338907335789 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	0	0,1	whole	OK f76e823f0c49caf52c5459ad1bdf7ce065225083441b20642a09945a4a3dc6ad report 58251b3c1d0e2858cd7f02f15865d39c72698516ec7b8312b2c2d06d7c954355
+INPUT	tests/conformance/fixtures/contents-token-across-streams.pdf	3d4fe054199e059fa7e9f27620f8e7908a8ec4bf2b14ef4ea177c08e95da4959
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	0	0	pdfbuild	OK b6b37993807abb70f71cc368b528ab36c4e1ef71ce40155c97d8161264537d63 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	0	0	whole	OK b6b37993807abb70f71cc368b528ab36c4e1ef71ce40155c97d8161264537d63 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	0	0	band	OK b7721c6166f83fcbbaaf626cb1ca873b2fd1a5aa364d6bd7048b6dd1fbe3c9a0 report e0f7fad9f9fc0c0e226f405973a560dac0934b88b701653d8ea726bf9effbf6c
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	1	1	pdfbuild	ERR Malformed("pdf geometry [contents-boundary]: a /Contents element that ends inside a token or without white space, which readers join to the next element differently")
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	1	1	whole	ERR Malformed("pdf geometry [contents-boundary]: a /Contents element that ends inside a token or without white space, which readers join to the next element differently")
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	1	1	band	ERR Malformed("pdf geometry [contents-boundary]: a /Contents element that ends inside a token or without white space, which readers join to the next element differently")
+CASE	tests/conformance/fixtures/contents-token-across-streams.pdf	0	0,1	whole	ERR Unsupported("pdf geometry [unknown-operator]: a content stream holds a word that is not a PDF content operator")
 INPUT	tests/conformance/fixtures/encrypted.pdf	12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74
 CASE	tests/conformance/fixtures/encrypted.pdf	0	0	pdfbuild	ERR PasswordRequired
 CASE	tests/conformance/fixtures/encrypted.pdf	0	0	whole	ERR PasswordRequired

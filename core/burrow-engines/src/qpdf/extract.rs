@@ -107,6 +107,12 @@ impl PageExtractor for Qpdf {
             &deadline,
             options.clock.as_ref(),
         )?;
+        // NO TOKEN ACROSS A `/Contents` BOUNDARY (#315), on every page, before the cuts: see
+        // `prune::refuse_contents_boundaries`. A decode here that qpdf repairs is a repair.
+        crate::prune::refuse_contents_boundaries(&document, &deadline, options.clock.as_ref())?;
+        if document.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
         // INSIDE THE OPEN'S OWN DEADLINE, not a fresh one. This is a sweep over every source
         // page, so on a `max_pages`-sized document it is not "one engine call" of overshoot --
         // and `Deadline::start` resets the budget as well as the origin, so making one here

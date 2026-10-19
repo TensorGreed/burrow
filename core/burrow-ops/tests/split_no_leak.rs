@@ -1567,3 +1567,62 @@ fn the_parts_of_a_chrome_printed_split_carry_no_empty_name() {
         }
     }
 }
+
+/// A committed conformance fixture.
+fn conformance_fixture(name: &str) -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/fixtures")
+            .join(name),
+    )
+    .unwrap_or_else(|e| panic!("the committed conformance fixture {name}: {e}"))
+}
+
+/// A TOKEN ACROSS TWO `/Contents` STREAMS refuses the split at its open (#315), pinned by its rule
+/// id. Page 2 sets a graphics state from `/ExtGState`, and its content is divided inside the
+/// resource's name; readers join the streams differently, so which resources the page uses is not
+/// one answer, and a part pruned against split's answer could draw what the source did not.
+#[test]
+fn a_token_across_two_contents_streams_refuses_the_split() {
+    match split_first(
+        conformance_fixture("contents-token-across-streams.pdf"),
+        &[1],
+    ) {
+        Err(Error::Unsupported(message)) => assert!(
+            message.contains("[split-contents-boundary]"),
+            "refused, but not by the contents-boundary rule: {message}"
+        ),
+        other => panic!(
+            "a token across two /Contents streams must refuse [split-contents-boundary]; got {:?}",
+            other.map(|parts| parts.len())
+        ),
+    }
+}
+
+/// THE TWINS: the same page divided between whole tokens, in white space, beside a font name and
+/// beside an XObject name. Each splits into two parts, and the second part keeps the graphics state
+/// page 2 sets -- its `/ExtGState` entry was not pruned -- and the resource beside the boundary.
+#[test]
+fn contents_streams_divided_between_tokens_split_and_keep_their_resources() {
+    for (name, beside) in [
+        (
+            "contents-streams-beside-a-font-name.pdf",
+            "/BaseFont /Helvetica",
+        ),
+        (
+            "contents-streams-beside-an-xobject-name.pdf",
+            "/Subtype /Form",
+        ),
+    ] {
+        let parts = split_first(conformance_fixture(name), &[1])
+            .unwrap_or_else(|error| panic!("{name}: refused, where it must split: {error}"));
+        assert_eq!(parts.len(), 2, "{name}: parts");
+        let second = expanded(&parts[1]);
+        for kept in ["/ca 0.5", beside, "(page two)"] {
+            assert!(
+                contains(&second, kept),
+                "{name}: the second part lost {kept:?}"
+            );
+        }
+    }
+}

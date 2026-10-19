@@ -56,6 +56,9 @@ disagree. See [ADR 0016](../../docs/adr/0016-differential-conformance.md).
 | `object-number-above-int-max.pdf` | an ordinary file carrying `9999999999 0 obj` | 1 page | `Malformed` |
 | `chrome-printed.pdf` | see below — two pages of our own content printed by headless Chromium (`tools/make-chrome-printed-fixture.mjs`) | 2 pages; every operation `Ok` (split: two parts) except redact, which refuses its empty names | same |
 | `chrome-printed-tagged.pdf` | see below — the same page printed with Chrome's tags (`tools/make-chrome-printed-fixture.mjs --tagged`) | the same | same |
+| `contents-token-across-streams.pdf` | two pages; page 2's content divided between two streams inside a token (#315) | 2 pages; **split refused** (`[split-contents-boundary]`) | same |
+| `contents-streams-beside-a-font-name.pdf` | the same page divided between whole tokens, beside a font name | 2 pages; split into 2 parts | same |
+| `contents-streams-beside-an-xobject-name.pdf` | the same page divided between whole tokens, beside an XObject name | 2 pages; split into 2 parts | same |
 | `truncated-mid-object.pdf` | a valid 3-page file cut in half | `Malformed` | `Malformed`, or **1 page** with recovery |
 | `trailer-removed.pdf` | the same file with its trailer removed | `Malformed` | `Malformed`, or **3 pages** with recovery |
 | `canary.pdf` | a damaged file with a canary in every place a parser might quote it | 1 page | `Malformed`, or 1 page with recovery |
