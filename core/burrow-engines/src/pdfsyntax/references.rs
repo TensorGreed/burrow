@@ -130,6 +130,10 @@ pub enum Irregular {
     /// comment, in a hex string, or in an object's header as the scan reads it back -- refused
     /// without a measurement, fail closed (owner, 2026-10-14).
     SyntaxReadDifferently,
+    /// A number written longer than [`MAX_NUMBER_WRITTEN`] bytes: PDFium keeps that many and drops
+    /// the rest, qpdf reads the whole, so the two read different values (#301). Like
+    /// [`Irregular::NameReadDifferently`], a difference between two readers.
+    NumberTooLong,
 }
 
 /// What a scan found.
@@ -356,6 +360,10 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         // could tell it was there (round-2 mutation sweep), so it is not claimed.
         if keyword == b"obj" && vertical_tab_in_header(bytes, start) {
             scan.found.irregular = Some(Irregular::SyntaxReadDifferently);
+            break;
+        }
+        if keyword == b"obj" && long_number_in_header(bytes, start) {
+            scan.found.irregular = Some(Irregular::NumberTooLong);
             break;
         }
         let header = header(bytes, start);
@@ -859,6 +867,11 @@ impl<'c> Scan<'c> {
                 self.found.irregular = Some(Irregular::SyntaxReadDifferently);
                 return Ok(end(false, 0, false));
             }
+            // A NUMBER PDFIUM CUTS SHORT, wherever it is, the token after a value included (#301).
+            if self.judge_names && lexer.long_number {
+                self.found.irregular = Some(Irregular::NumberTooLong);
+                return Ok(end(false, 0, false));
+            }
             if complete {
                 // ONE MORE SIGNIFICANT TOKEN, to see whether a stream follows the value.
                 match token {
@@ -1074,6 +1087,11 @@ impl<'c> Scan<'c> {
                 self.found.irregular = Some(Irregular::SyntaxReadDifferently);
                 return Ok(None);
             }
+            // AN OBJECT STREAM'S HEADER is read by PDFium's same parser, and cut the same way.
+            if self.judge_names && lexer.long_number {
+                self.found.irregular = Some(Irregular::NumberTooLong);
+                return Ok(None);
+            }
             match token {
                 Some(Token::Comment) => {}
                 Some(Token::Integer(text)) => return Ok(value_of(text)),
@@ -1160,6 +1178,8 @@ struct Lexer<'a> {
     at: usize,
     /// Set once a vertical tab has been read outside a literal string.
     vertical_tab: bool,
+    /// Set once a number longer than [`MAX_NUMBER_WRITTEN`] has been read.
+    long_number: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -1168,6 +1188,7 @@ impl<'a> Lexer<'a> {
             bytes,
             at,
             vertical_tab: false,
+            long_number: false,
         }
     }
 
@@ -1235,6 +1256,7 @@ impl<'a> Lexer<'a> {
                 let start = self.at - 1;
                 self.regular_run();
                 let text = self.bytes.get(start..self.at).unwrap_or_default();
+                self.long_number |= is_number_too_long(text);
                 if is_integer(text) {
                     Token::Integer(text)
                 } else {
@@ -1277,6 +1299,50 @@ impl<'a> Lexer<'a> {
             self.at += 1;
         }
     }
+}
+
+/// The longest number PDFium reads whole in object syntax, in bytes as written, a sign and a
+/// decimal point counted (#301).
+///
+/// Measured against the pinned PDFium, raw bytes through `FPDF_LoadMemDocument` and a `/MediaBox`
+/// entry: a token of zeros ending in `1600` reads `1600` at 254, 255 and 256 bytes, `160` at 257
+/// and `16` at 258; with a leading `+` the same, and a real ending `16.25` reads `16.25` at 256 and
+/// `16.2` at 257. PDFium keeps the first 256 bytes of the token and drops the rest without starting
+/// a new token; qpdf reads the whole. One more than the content-stream lexer's
+/// [`crate::pdfsyntax::names::MAX_TOKEN_BYTES`], which is a different parser in PDFium.
+pub const MAX_NUMBER_WRITTEN: usize = 256;
+
+/// Whether a run of regular characters is a number written past [`MAX_NUMBER_WRITTEN`].
+///
+/// "A number" is judged by its first byte -- a digit, a sign or a decimal point -- which every
+/// number qpdf reads begins with. That is wider than qpdf's own number syntax: a run such as `16x`
+/// past the length is refused too, where qpdf would read a keyword and warn. The direction is the
+/// safe one, and no such run was measured in use.
+fn is_number_too_long(text: &[u8]) -> bool {
+    text.len() > MAX_NUMBER_WRITTEN
+        && text
+            .first()
+            .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.'))
+}
+
+/// Whether the number or the generation of the `N G obj` header before `obj_at` is written past
+/// [`MAX_NUMBER_WRITTEN`], read back as [`header`] reads it. Measured: a page object headed by its
+/// number padded with zeros to 257 bytes does not load in PDFium, where 256 does, and qpdf reads it
+/// at either length. A header the walk cannot read -- past
+/// [`MAX_HEADER_WALK`], or split by a comment -- is not judged here, as for the vertical tab.
+fn long_number_in_header(bytes: &[u8], obj_at: usize) -> bool {
+    let mut at = obj_at;
+    for _ in 0..2 {
+        let Some(before) = skip_whitespace_back(bytes, at) else {
+            return false;
+        };
+        let start = regular_run_back(bytes, before);
+        if bytes.get(start..before).is_some_and(is_number_too_long) {
+            return true;
+        }
+        at = start;
+    }
+    false
 }
 
 /// Whether `text` is what qpdf reads as an integer: an optional sign, then one or more digits.
@@ -1858,6 +1924,104 @@ mod tests {
         );
         assert_eq!(
             super::in_value(b"<< /Key 1\x0b/Other 2 >>", &mut || Ok(()))
+                .unwrap()
+                .irregular,
+            None
+        );
+    }
+
+    /// A NUMBER WRITTEN PAST PDFium'S CUT refuses wherever the scan reads one (#301): a value, an
+    /// array item, a real, a signed number, the token after a value, an object's header and an
+    /// object stream's header and member. At exactly [`super::MAX_NUMBER_WRITTEN`] bytes, the sign
+    /// and the point counted, it reads plainly; and qpdf's rewriting, which `in_value` reads, is not
+    /// judged.
+    #[test]
+    fn a_number_past_pdfiums_length_refuses() {
+        use super::MAX_NUMBER_WRITTEN as CUT;
+        let zeros = |n: usize, prefix: &str, tail: &str| {
+            format!(
+                "{prefix}{}{tail}",
+                "0".repeat(n - prefix.len() - tail.len())
+            )
+        };
+        let in_value = |token: &str| format!("1 0 obj\n<< /Rotate {token} >>\nendobj\n");
+        for (what, prefix, tail) in [
+            ("an integer", "", "1600"),
+            ("a signed integer", "+", "1600"),
+            ("a negative integer", "-", "1600"),
+            ("a real", "", "16.25"),
+            ("a real from its point", ".", "5"),
+        ] {
+            assert_eq!(
+                file(in_value(&zeros(CUT + 1, prefix, tail)).as_bytes()).irregular,
+                Some(Irregular::NumberTooLong),
+                "{what}, one byte past"
+            );
+            assert_eq!(
+                file(in_value(&zeros(CUT, prefix, tail)).as_bytes()).irregular,
+                None,
+                "{what}, at the cut"
+            );
+        }
+        let long = zeros(CUT + 1, "", "600");
+        for (what, bytes) in [
+            (
+                "an array item",
+                format!("1 0 obj\n<< /Widths [600 {long} 600] >>\nendobj\n"),
+            ),
+            (
+                "an object's whole value",
+                format!("1 0 obj\n{long}\nendobj\n"),
+            ),
+            (
+                "a trailer's value",
+                format!("trailer\n<< /Size {long} >>\n"),
+            ),
+            (
+                "the token after a value",
+                format!("1 0 obj\n<< /Key 1 >> {long}\nendobj\n"),
+            ),
+            (
+                "an object's number",
+                format!("{} 0 obj\n<< >>\nendobj\n", zeros(CUT + 1, "", "1")),
+            ),
+            (
+                "an object's generation",
+                format!("1 {} obj\n<< >>\nendobj\n", zeros(CUT + 1, "", "0")),
+            ),
+        ] {
+            assert_eq!(
+                file(bytes.as_bytes()).irregular,
+                Some(Irregular::NumberTooLong),
+                "{what}"
+            );
+        }
+        // At the cut, a header still reads, as the number it is.
+        let header = format!("{} 0 obj\n<< >>\nendobj\n", zeros(CUT, "", "1"));
+        let found = file(header.as_bytes());
+        assert_eq!(found.irregular, None);
+        assert!(found.declarations.contains_key(&1));
+        // AN OBJECT STREAM'S MEMBER, and its header's pairs.
+        let member = format!("5 0 << /Rotate {long} >>");
+        assert_eq!(
+            object_stream(member.as_bytes(), 1, 4).irregular,
+            Some(Irregular::NumberTooLong)
+        );
+        let pair = format!("5 {} << /Rotate 0 >>", zeros(CUT + 1, "", "0"));
+        let first = i64::try_from(pair.find("<<").unwrap()).unwrap();
+        assert_eq!(
+            object_stream(pair.as_bytes(), 1, first).irregular,
+            Some(Irregular::NumberTooLong)
+        );
+        // A NAME AND A STRING ARE NOT NUMBERS: a 300-digit string is read as a string, and a name
+        // keeps its own allowlist.
+        let digits = "1".repeat(300);
+        assert_eq!(
+            file(format!("1 0 obj\n<< /Key ({digits}) >>\nendobj\n").as_bytes()).irregular,
+            None
+        );
+        assert_eq!(
+            super::in_value(format!("<< /Rotate {long} >>").as_bytes(), &mut || Ok(()))
                 .unwrap()
                 .irregular,
             None

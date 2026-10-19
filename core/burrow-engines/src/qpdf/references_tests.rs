@@ -1386,3 +1386,53 @@ fn an_object_numbered_zero_is_never_the_catalog() {
         "the twin, with no null",
     );
 }
+
+/// `+`, zeros and `90`, `length` bytes as written: `90` to a reader that keeps it whole.
+fn signed_ninety(length: usize) -> String {
+    format!("+{}90", "0".repeat(length - 3))
+}
+
+/// A NUMBER WRITTEN PAST THE 256 BYTES PDFium READS WHOLE (#301), refused in the file body and in
+/// an object stream's member. PDFium keeps the first 256 bytes of `+0…090` at 257 -- `+0…09`, not a
+/// right angle, so the page stands upright to it -- where qpdf reads `90`; at 256 both turn it.
+/// The twin, at 256, redacts.
+#[test]
+fn a_number_past_pdfiums_length_is_refused_in_the_body_and_in_an_object_stream() {
+    use crate::pdfsyntax::references::MAX_NUMBER_WRITTEN as CUT;
+    let past = classic(&page_objects(&format!(
+        "/Rotate {}",
+        signed_ninety(CUT + 1)
+    )));
+    let at = classic(&page_objects(&format!("/Rotate {}", signed_ninety(CUT))));
+    assert_eq!(
+        pdfium_size(&past),
+        (300.0, 400.0),
+        "PDFium cuts the number and keeps the page upright"
+    );
+    assert_eq!(
+        pdfium_size(&at),
+        (400.0, 300.0),
+        "PDFium reads 256 bytes whole and turns the page"
+    );
+    refused_on_both(&past, "number-token-too-long", "a 257-byte /Rotate");
+    redacts_on_both(&at, "a 256-byte /Rotate");
+
+    let direct: Vec<Written> = page_objects("")
+        .into_iter()
+        .filter(|(number, _, _)| *number != 3)
+        .collect();
+    let member = |length: usize| {
+        with_object_stream(
+            &direct,
+            7,
+            0,
+            &[(3, page(&format!("/Rotate {}", signed_ninety(length))))],
+        )
+    };
+    refused_on_both(
+        &member(CUT + 1),
+        "number-token-too-long",
+        "a member's 257-byte /Rotate",
+    );
+    redacts_on_both(&member(CUT), "a member's 256-byte /Rotate");
+}

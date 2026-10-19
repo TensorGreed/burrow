@@ -1306,3 +1306,20 @@ fn the_empty_value_lookups_read_the_deadline() {
         other => panic!("a deadline that passes inside the lookups: {other:?}"),
     }
 }
+
+/// A NUMBER WRITTEN PAST THE 256 BYTES PDFium READS WHOLE refuses at split's open (#301), the sign
+/// counted; at 256 it opens.
+#[test]
+fn a_number_past_pdfiums_length_refuses_split_s_open() {
+    use crate::pdfsyntax::references::MAX_NUMBER_WRITTEN as CUT;
+    let rotate = |length: usize| format!("/Rotate +{}", "0".repeat(length - 1));
+    refuses(
+        "a 257-byte /Rotate",
+        &classic(&document(PLAIN_CATALOG, &rotate(CUT + 1), SHOWN, &[])),
+        "[split-number-token-too-long]",
+    );
+    opens(
+        "a 256-byte /Rotate",
+        &classic(&document(PLAIN_CATALOG, &rotate(CUT), SHOWN, &[])),
+    );
+}

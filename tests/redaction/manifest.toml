@@ -3183,6 +3183,64 @@ MUST NOT be refused. A comment before a reference is not inside it.
 """
 
 [[fixture]]
+name = "evade-number-past-pdfium-length"
+file = "generated/evade-number-past-pdfium-length.pdf"
+kind = "hand-built"
+probes_refusal = "number too long"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate written as a 257-byte number — evasion"
+  canary = "BURROW-EVADE-NUMBER-PAST-THE-CUT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads the first 256 bytes of a number in object syntax and qpdf the whole (#301). Refused
+for the length, the sign counted; this value is 0 to both.
+"""
+
+[[fixture]]
+name = "evade-number-past-pdfium-length-in-an-object-stream"
+file = "generated/evade-number-past-pdfium-length-in-an-object-stream.pdf"
+kind = "hand-built"
+probes_refusal = "number too long"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same number inside an object stream's member — evasion"
+  canary = "BURROW-EVADE-NUMBER-PAST-THE-CUT-OBJSTM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The number is in a decoded object stream, not the file body (#301).
+"""
+
+[[fixture]]
+name = "nearmiss-number-at-pdfium-length"
+file = "generated/nearmiss-number-at-pdfium-length.pdf"
+kind = "hand-built"
+probes_refusal = "number too long"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate written as a 256-byte number — near-miss twin"
+  canary = "BURROW-EVADE-NUMBER-AT-THE-CUT"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. 256 bytes, the sign counted, is read whole by PDFium and qpdf.
+"""
+
+[[fixture]]
 name = "nearmiss-literal-null-threads"
 file = "generated/nearmiss-literal-null-threads.pdf"
 kind = "hand-built"

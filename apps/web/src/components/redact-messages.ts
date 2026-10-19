@@ -260,6 +260,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "reference-unreadable": "file-structure",
   "subtype-not-a-name": "file-structure",
   "syntax-read-differently": "file-structure",
+  "number-token-too-long": "file-structure",
 
   // The second reading (#206): PDFium reads the redacted page again, and a disagreement with
   // burrow's own reading, or no answer at all, refuses (ADR 0029 §6).

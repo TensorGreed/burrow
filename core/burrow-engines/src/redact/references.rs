@@ -117,6 +117,8 @@ pub(crate) struct ReferenceRefusals {
     pub(crate) name: fn() -> Error,
     /// A byte in object syntax refused fail closed (`Irregular::SyntaxReadDifferently`).
     pub(crate) syntax: fn() -> Error,
+    /// A number written longer than PDFium reads whole (`Irregular::NumberTooLong`, #301).
+    pub(crate) number: fn() -> Error,
     /// A dictionary value qpdf would drop on write -- the literal `null`, or a reference to an
     /// object the file declares `null` -- for the operations that refuse one (split); `None`
     /// where the operation does not (yet) judge it.
@@ -159,6 +161,7 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     undecodable: object_stream_undecodable,
     name: name_read_differently,
     syntax: syntax_read_differently,
+    number: number_token_too_long,
     null_value: Some(null_value),
     defer_null_value: true,
     // REDACTION KEEPS THE CATALOG, so an empty key there would reach the document it hands back,
@@ -187,6 +190,8 @@ pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'
         Irregular::NameReadDifferently => "a name readers may read differently",
         // UNREACHABLE THROUGH `accepted` too, which refuses with `ReferenceRefusals::syntax`.
         Irregular::SyntaxReadDifferently => "a byte in object syntax readers may read differently",
+        // UNREACHABLE THROUGH `accepted` too, which refuses with `ReferenceRefusals::number`.
+        Irregular::NumberTooLong => "a number written longer than readers read alike",
     }
 }
 
@@ -245,6 +250,15 @@ fn syntax_read_differently() -> Error {
     )
 }
 
+/// The refusal for a number written longer than PDFium reads whole (#301).
+fn number_token_too_long() -> Error {
+    Error::Unsupported(
+        "pdf redaction [number-token-too-long]: the document writes a number longer than readers \
+         read alike, so what the page draws cannot be known"
+            .to_owned(),
+    )
+}
+
 /// The refusal for a dictionary value qpdf drops when it writes (owner, 2026-10-14).
 pub(crate) fn null_value() -> Error {
     Error::Unsupported(
@@ -274,7 +288,8 @@ pub(crate) struct Referenced {
 /// # Errors
 ///
 /// `[reference-to-nothing]`, `[reference-unreadable]`, `[name-read-differently]`,
-/// `[syntax-read-differently]`, the deadline, and whatever the engine reports.
+/// `[syntax-read-differently]`, `[number-token-too-long]`, the deadline, and whatever the engine
+/// reports.
 pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     document: &D,
     bytes: &[u8],
@@ -700,6 +715,7 @@ fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
         Some(Irregular::NameReadDifferently) => Err((refusals.name)()),
         Some(Irregular::SyntaxReadDifferently) => Err((refusals.syntax)()),
+        Some(Irregular::NumberTooLong) => Err((refusals.number)()),
         Some(why) => Err((refusals.unreadable)(why)),
         None if !found.empty_values.is_empty() && !refusals.admit_dest_empty_value => {
             Err((refusals.name)())
