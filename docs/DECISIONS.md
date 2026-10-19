@@ -205,6 +205,14 @@ one is decided in an issue, with the same three parts.
     *Does not cover:* the final spec review, which still hunts the whole class, or whether any of
     the three comes back before a later milestone.
 
+    **Amended 2026-10-19: the five-reader twin render.** For any slice that adds a refusal fixture
+    with a twin, the slice's measurement step renders the twin's output in all five readers and
+    records whether they are identical (pixels, extractable text, bytes). The PR body carries the
+    result. The coverage map in `~/burrow-security` is updated from these results per slice; its
+    reader column never reads "checked" from a reading of the code. *Decided:* owner, 2026-10-19
+    (decision 27). *Does not cover:* a slice with no twin, which has nothing to render; nor which
+    five readers, which the slice's brief names; nor the reviewer tiers above, which are unchanged.
+
 18. **A release that closes a live leak may re-record and raise its size budgets to their policy
     minimums without asking, provided the base module's real growth in that PR is under 10%.** The
     before and after numbers are reported in the batch summary. Anything over 10%, or any change to
