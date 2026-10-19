@@ -512,8 +512,9 @@ BYTE_WITNESSES = {
 # Both are floors rather than equalities: a new fixture adds assertions and must not fail the
 # gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
 # raise them to is in the output.
-# 184 since #125 slice 4 added fifteen fixtures, one placement each (2026-10-17).
-PLACEMENT_FLOOR = 184
+# 184 since #125 slice 4 added fifteen fixtures, one placement each (2026-10-17); 187 since #301
+# added two evasions and a twin, one placement each (2026-10-19).
+PLACEMENT_FLOOR = 187
 MAX_SILENT_FIXTURES = 2
 
 
