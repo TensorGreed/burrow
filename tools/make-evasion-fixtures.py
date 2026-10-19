@@ -1293,6 +1293,28 @@ def evade_clip_rectangle_single_precision_rounds() -> bytes:
     )
 
 
+def evade_clip_rectangle_past_exact_magnitude() -> bytes:
+    """One rectangle clip far around the text, from numbers past 2^24 that single precision holds
+    exactly (2^24 + 16 is a multiple of its spacing of 2 there).
+
+    Every edge is millions of units from the text, far beyond the margin of about 32, so only the
+    magnitude bound refuses it: with that bound removed, the clip is exact and holds the text, and
+    the page is accepted. Past 2^24, single precision no longer holds every integer, and one
+    engine's fixed-point coordinates are near their range.
+
+    The twin is `nearmiss_clip_rectangle_under_exact_magnitude`. Refuses `[clip-path-in-region]`."""
+    return _clip_page(b"-8388608 -8388608 16777232 16777232 re", "CLIP-RECT-MAG")
+
+
+def nearmiss_clip_rectangle_under_exact_magnitude() -> bytes:
+    """The same clip from numbers just under 2^24: an exact rectangle that holds the text with
+    millions of units to spare. MUST NOT be refused.
+
+    A magnitude bound set below 2^24, or one that counts a number at the bound as past it,
+    refuses this."""
+    return _clip_page(b"-8388600 -8388600 16777200 16777200 re", "CLIP-MAG-TWIN")
+
+
 def evade_clip_outer_path_inner_rectangle() -> bytes:
     """The text under two clips: the outer one shapes it, the inner one is a rectangle holding
     the whole page. Every clip in force counts, not only the innermost.
@@ -4031,6 +4053,8 @@ CASES: list[tuple[str, str]] = [
     ("evade-clip-pending-across-text-in-q", "vector paths"),
     ("evade-clip-pending-across-form-in-q", "vector paths"),
     ("evade-clip-rectangle-single-precision-rounds", "vector paths"),
+    ("evade-clip-rectangle-past-exact-magnitude", "vector paths"),
+    ("nearmiss-clip-rectangle-under-exact-magnitude", "vector paths"),
     ("evade-clip-outer-path-inner-rectangle", "vector paths"),
     ("nearmiss-clip-path-in-force-clear-of-region", "vector paths"),
     ("evade-widget-on-another-page", "/AcroForm"),
@@ -4308,6 +4332,8 @@ BUILDERS = {
     "evade-clip-pending-across-text-in-q": evade_clip_pending_across_text_in_q,
     "evade-clip-pending-across-form-in-q": evade_clip_pending_across_form_in_q,
     "evade-clip-rectangle-single-precision-rounds": evade_clip_rectangle_single_precision_rounds,
+    "evade-clip-rectangle-past-exact-magnitude": evade_clip_rectangle_past_exact_magnitude,
+    "nearmiss-clip-rectangle-under-exact-magnitude": nearmiss_clip_rectangle_under_exact_magnitude,
     "evade-clip-outer-path-inner-rectangle": evade_clip_outer_path_inner_rectangle,
     "nearmiss-clip-path-in-force-clear-of-region": nearmiss_clip_path_in_force_clear_of_region,
     "evade-widget-ft-on-parent": evade_widget_ft_on_parent,

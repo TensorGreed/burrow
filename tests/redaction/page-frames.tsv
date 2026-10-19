@@ -125,6 +125,8 @@ INPUT	tests/redaction/generated/evade-clip-pending-across-form-in-q.pdf	7a783623
 PAGE	tests/redaction/generated/evade-clip-pending-across-form-in-q.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	5e6353c933c38a74463a00add17e470b478e5e41710272a9d0bff3e2e2707b55
 PAGE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	4c4cdba6e3c0a43024f4784495e18d5a1542d08cd57e9f618e32ade939f06186
+PAGE	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	5b4c7c90dd349aec2e04cb568d154b835dd613bf6b7f1288790e913e0e4675a4
 PAGE	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	ce98848d3ff694dc1d62c01752830bb85026e7fd47b1317d1581de3cb374cc7d
@@ -315,6 +317,8 @@ INPUT	tests/redaction/generated/nearmiss-clip-path-in-force-clear-of-region.pdf	
 PAGE	tests/redaction/generated/nearmiss-clip-path-in-force-clear-of-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	cbbc64353bd77852a55d493409add8695f069334c712e299afc2455b08933bef
 PAGE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	85d3ab70b3d7638dac92b2275dd618f5e9fba2d90022285fbf86e9012eb145b8
+PAGE	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 PAGE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	2844a59246b64171bf1fb06c6179012181c4e8fcc83215cee6d0648ea23814fd

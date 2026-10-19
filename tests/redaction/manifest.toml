@@ -1515,6 +1515,40 @@ pages = 1
   notes = "Refuses [clip-path-in-region]: one exact rectangle clip that holds the text in double precision, with an edge nearer the text than single precision can place it. The twin is nearmiss-clip-rectangle-around-region."
 
 [[fixture]]
+name = "evade-clip-rectangle-past-exact-magnitude"
+file = "generated/evade-clip-rectangle-past-exact-magnitude.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — clip rectangle past the exact magnitude"
+  canary = "BURROW-EVADE-CLIP-RECT-MAG"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: one rectangle clip far around the text, from numbers past 2^24 that single precision holds exactly. Its edges are far beyond the single-precision margin, so only the magnitude bound makes the clip inexact; with that bound removed the page is accepted. The twin is nearmiss-clip-rectangle-under-exact-magnitude."
+
+[[fixture]]
+name = "nearmiss-clip-rectangle-under-exact-magnitude"
+file = "generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-CLIP-MAG-TWIN"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-clip-rectangle-past-exact-magnitude: the same clip from numbers just under 2^24, exact and holding the text with millions of units to spare. A magnitude bound set below 2^24 refuses it."
+
+[[fixture]]
 name = "evade-clip-outer-path-inner-rectangle"
 file = "generated/evade-clip-outer-path-inner-rectangle.pdf"
 kind = "hand-built"

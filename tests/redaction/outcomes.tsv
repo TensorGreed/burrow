@@ -309,6 +309,11 @@ CASE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	1	1	whole
 CASE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
 CASE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	0	0	whole	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
 CASE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	0	0	band	OK dd2801483ec62a517d06028bb7e9a2414c77355e999a4afe4a371cd84db2b74c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	4c4cdba6e3c0a43024f4784495e18d5a1542d08cd57e9f618e32ade939f06186
+CASE	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
+CASE	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	0	0	whole	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
+CASE	tests/redaction/generated/evade-clip-rectangle-past-exact-magnitude.pdf	0	0	band	OK 2376b296e8e24926ca95c7b424ed3663369f08661017cdc408224f0b6941a090 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	5b4c7c90dd349aec2e04cb568d154b835dd613bf6b7f1288790e913e0e4675a4
 CASE	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
@@ -788,6 +793,11 @@ CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	1	1	who
 CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	pdfbuild	OK 07beab2ac7ee35d88810bb1b156d2e6ef83a5ca2c64077c87af0633f63fb41fd report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	whole	OK c7194a5d68200ca5a843d20f940bdc84c2c68b96bb294d46c490c6e3cea3532d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	band	OK 636a8f1d3767e2147f4ac5f3a55c959edb6e4cec506047b48b6e09e004845710 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	85d3ab70b3d7638dac92b2275dd618f5e9fba2d90022285fbf86e9012eb145b8
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	0	0	pdfbuild	OK ef239f74eaa57993bf68fba59fc807c84658b960b4d1b119aaef10bcb3171c9f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	0	0	whole	OK 2d8150e8d3d2c0bdbfa8481d1f42dc96de7a282b6f9a95259e3ffc55a42b1137 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-under-exact-magnitude.pdf	0	0	band	OK 12558521f252d45fd7ac658b24f3a30856072ed609be01981ca81fdcf1fa6ee1 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	pdfbuild	OK d03ffb2c6e8c88266190fd8655e8fa037ba5fcec3b2808cd775664a47fb66f2b report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120

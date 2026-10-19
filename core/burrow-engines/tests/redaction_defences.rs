@@ -3166,7 +3166,7 @@ fn pdfbuild_region() -> Region {
 /// are discharged by a broader rule than the region signal, and say so: a tiling or shading pattern
 /// fill by `pattern-may-draw-text`, a filtered inline image by `inline-image-filtered`, a Type 3
 /// procedure by the Type 3 rules.
-const INK_OUTCOMES: [(&str, Option<&str>); 32] = [
+const INK_OUTCOMES: [(&str, Option<&str>); 34] = [
     ("evade-image-in-form.pdf", Some("image-in-region")),
     (
         "evade-image-in-form-two-levels-down.pdf",
@@ -3248,6 +3248,13 @@ const INK_OUTCOMES: [(&str, Option<&str>); 32] = [
         "evade-clip-rectangle-single-precision-rounds.pdf",
         Some("clip-path-in-region"),
     ),
+    // A rectangle far around the text from numbers past 2^24 that single precision holds: only
+    // the magnitude bound refuses it. Its twin, just under 2^24, redacts.
+    (
+        "evade-clip-rectangle-past-exact-magnitude.pdf",
+        Some("clip-path-in-region"),
+    ),
+    ("nearmiss-clip-rectangle-under-exact-magnitude.pdf", None),
     (
         "evade-clip-outer-path-inner-rectangle.pdf",
         Some("clip-path-in-region"),
