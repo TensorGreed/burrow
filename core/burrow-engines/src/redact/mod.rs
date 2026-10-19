@@ -671,6 +671,10 @@ mod tests {
         lose_paths: bool,
         rewrites: usize,
         streams: Vec<StreamId>,
+        /// How many times the document was written. Every write's bytes differ from every other's
+        /// (R10, #134): with a constant `write`, "verify one write and return another" is an
+        /// equivalent mutation and no test can see it.
+        writes: usize,
     }
 
     impl Fake {
@@ -685,6 +689,7 @@ mod tests {
                     fonts: Vec::new(),
                     lose_paths: false,
                     rewrites: 0,
+                    writes: 0,
                     streams: core::iter::once(StreamId::Page)
                         .chain((1..count).map(StreamId::Object))
                         .collect(),
@@ -776,8 +781,67 @@ mod tests {
 
         fn write(&mut self) -> Result<Vec<u8>> {
             self.note("write");
-            Ok(b"%PDF-1.7\n".to_vec())
+            self.writes += 1;
+            Ok(format!("%PDF-1.7\n%write {}\n", self.writes).into_bytes())
         }
+    }
+
+    /// The sha256 of `bytes`, as hex.
+    fn digest(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn the_check_reads_the_very_bytes_that_are_returned() {
+        // R10 (ADR 0006, amended 2026-09-27): the bytes verification examines are the bytes that
+        // are emitted. Compared by CONTENT, as the amended rule states it: the sha256 of every
+        // buffer the check is handed, against the sha256 of what `run` returns. The fake's writes
+        // differ on every call, so a check handed an earlier write, a later one, or a copy one
+        // byte different is observably handed something else.
+        //
+        // KILLS: verifying one write and returning another (M1), and verifying a copy that
+        // differs from the returned bytes (M1b). The order-log test below also kills M1, by the
+        // second `write` in the log; this one kills it by what the bytes are.
+        let (fake, log) = Fake::with_streams(2);
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&seen);
+        let (bytes, _) = run(fake, page_zero(), &move |emitted: &[u8]| {
+            record.borrow_mut().push(digest(emitted));
+            Ok(())
+        })
+        .expect("a clean run succeeds");
+
+        let writes = log
+            .borrow()
+            .iter()
+            .filter(|entry| *entry == "write")
+            .count();
+        let seen = seen.borrow();
+        println!(
+            "R10 engine half: {writes} write(s), {} buffer(s) checked; expected 1 and 1",
+            seen.len()
+        );
+        assert_eq!(writes, 1, "the document is written once");
+        assert_eq!(seen.len(), 1, "the check is handed exactly one buffer");
+        assert_eq!(
+            seen.first(),
+            Some(&digest(&bytes)),
+            "the buffer the check read is not the buffer that was returned"
+        );
+        // NOT VACUOUS: the fake's writes really do differ, so the equality above is a claim
+        // about which write was checked.
+        let (mut twin, _) = Fake::with_streams(2);
+        let first = twin.write().expect("writes");
+        let second = twin.write().expect("writes");
+        assert_ne!(
+            digest(&first),
+            digest(&second),
+            "the fake's writes must drift"
+        );
     }
 
     #[test]
