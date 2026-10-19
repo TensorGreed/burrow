@@ -632,9 +632,10 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
     // Chrome-printed conformance fixture joined the redaction corpus (#358); 185 since #125
     // slice 3 added `producer-writer-untagged.pdf` (2026-10-16); 200 since #125 slice 4 added
     // fifteen evasion fixtures and twins (2026-10-17); 201 since the tagged Chrome print joined
-    // the conformance fixtures.
+    // the conformance fixtures; 218 since #125 slice 5 added the `/StructParents` evasion and
+    // its twins (seventeen new inputs, 2026-10-18).
     let recorded_cases: usize = cases.values().map(Vec::len).sum();
-    assert_eq!(documents.len(), 201, "the golden's documents");
+    assert_eq!(documents.len(), 218, "the golden's documents");
     assert_eq!(held_to_the_golden, recorded_cases);
 
     // THE PAGE-FRAMES GOLDEN, diffed on every run and re-blessed only on request.
