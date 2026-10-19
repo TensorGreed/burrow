@@ -882,13 +882,21 @@ impl ClipBox {
     /// [`Self::margin`] to spare) or none of it (a box that, widened by the margin, does not reach
     /// it). In both cases the clip's boundary does not pass through `area`, so it holds nothing
     /// about the ink there.
+    ///
+    /// The widened box reaches `area` edges included: a box that only touches the area counts as
+    /// reaching it, so the refusal does not rest on the margin's slack. The test is written as
+    /// "not provably apart", so a NaN edge on either side reads as reaching.
     #[must_use]
     pub fn shapes(&self, area: &Rect) -> bool {
         match self.extent {
             None => true,
             Some(extent) => {
-                widened(&extent, self.margin).intersects(area)
-                    && !(self.exact && widened(&extent, -self.margin).contains(area))
+                let reach = widened(&extent, self.margin);
+                let apart = reach.right < area.left
+                    || area.right < reach.left
+                    || reach.top < area.bottom
+                    || area.top < reach.bottom;
+                !apart && !(self.exact && widened(&extent, -self.margin).contains(area))
             }
         }
     }
@@ -9051,6 +9059,44 @@ mod tests {
         };
         assert!(!clear.shapes(&area), "a clip that does not reach the area");
         assert!(ClipBox::UNKNOWN.shapes(&area));
+    }
+
+    #[test]
+    fn a_clip_whose_widened_box_only_touches_the_area_still_shapes_it() {
+        let area = rect(10.0, 10.0, 20.0, 20.0);
+        let touching = ClipBox {
+            extent: Some(rect(20.0, 0.0, 30.0, 30.0)),
+            exact: false,
+            margin: 0.0,
+        };
+        assert!(
+            touching.shapes(&area),
+            "a box sharing the area's right edge"
+        );
+        let touching_by_margin = ClipBox {
+            extent: Some(rect(10.0, 24.0, 20.0, 30.0)),
+            exact: false,
+            margin: 4.0,
+        };
+        assert!(
+            touching_by_margin.shapes(&area),
+            "a box whose margin-widened edge meets the area's top edge"
+        );
+        let apart = ClipBox {
+            extent: Some(rect(10.0, 24.0, 20.0, 30.0)),
+            exact: false,
+            margin: 3.5,
+        };
+        assert!(
+            !apart.shapes(&area),
+            "the near miss: widened by less, the box stops short of the area"
+        );
+        let nan = ClipBox {
+            extent: Some(rect(40.0, 40.0, 50.0, 50.0)),
+            exact: false,
+            margin: f64::NAN,
+        };
+        assert!(nan.shapes(&area), "a NaN margin cannot prove the box apart");
     }
 
     #[test]
