@@ -410,3 +410,93 @@ fn ink_whose_border_width_no_reader_agrees_on_is_refused() {
         "{refused}"
     );
 }
+
+#[test]
+fn ink_widened_only_by_its_border_array_is_refused() {
+    // NO `/BS`, SO PDFium TAKES THE WIDTH FROM `/Border`'s third item: 30 on a `/Rect` ending at
+    // 320 strokes to 335, five points into the band.
+    let wide = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /Border [0 0 30] \
+         /InkList [[20 320 120 320]]",
+        "",
+        &[],
+    );
+    let (inside, _) = dark_pixels_with_annotations(&wide, 0, BAND);
+    assert!(
+        inside > 100,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&wide, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+
+    // THE TWIN: a third item of 10 reaches 325, below the band.
+    let narrow = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /Border [0 0 10] \
+         /InkList [[20 320 120 320]]",
+        "",
+        &[],
+    );
+    assert_eq!(dark_pixels_with_annotations(&narrow, 0, BAND).0, 0);
+    let output = redact(&narrow, BAND).expect("ink clear of the region redacts");
+    let (inside, total) = dark_pixels_with_annotations(&output, 0, BAND);
+    assert_eq!(inside, 0);
+    assert!(total > 100, "the kept ink is still drawn");
+}
+
+#[test]
+fn ink_whose_border_style_is_a_stream_is_widened_by_its_width() {
+    // `/BS` AS A STREAM: PDFium reads the stream's dictionary as the border style, so its `/W` of
+    // 30 widens the `/Rect` ending at 320 to 335, five points into the band.
+    let wide = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS 7 0 R /InkList [[20 320 120 320]]",
+        "",
+        &[stream("/W 30", "")],
+    );
+    let (inside, _) = dark_pixels_with_annotations(&wide, 0, BAND);
+    assert!(
+        inside > 100,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&wide, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+
+    // THE TWIN: the same stream with a `/W` of 10 reaches 325, below the band.
+    let narrow = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS 7 0 R /InkList [[20 320 120 320]]",
+        "",
+        &[stream("/W 10", "")],
+    );
+    assert_eq!(dark_pixels_with_annotations(&narrow, 0, BAND).0, 0);
+    let output = redact(&narrow, BAND).expect("ink clear of the region redacts");
+    let (inside, total) = dark_pixels_with_annotations(&output, 0, BAND);
+    assert_eq!(inside, 0);
+    assert!(total > 100, "the kept ink is still drawn");
+}
+
+#[test]
+fn ink_with_no_border_width_is_measured_at_a_width_of_one() {
+    // NO `/BS` AND NO `/Border`: PDFium's default width is 1, so the `/Rect` is widened by half a
+    // point. A `/Rect` ending 0.4 points below the band reaches 0.1 into it, and is refused; one
+    // ending 0.6 below reaches 0.1 short of it, and redacts. Too thin to measure in pixels, so this
+    // pins the bound, not a drawing.
+    let reaching = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 329.6] /C [0 0 0] /InkList [[20 329.6 120 329.6]]",
+        "",
+        &[],
+    );
+    let refused = redact(&reaching, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+
+    let short = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 329.4] /C [0 0 0] /InkList [[20 329.4 120 329.4]]",
+        "",
+        &[],
+    );
+    redact(&short, BAND).expect("ink half a point short of the region redacts");
+}
