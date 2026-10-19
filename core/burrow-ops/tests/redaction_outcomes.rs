@@ -51,11 +51,17 @@
 //! # And the bytes verification read are the bytes returned (R10)
 //!
 //! The engine is wrapped in a [`Recorder`] that records the sha256 of every buffer the operation's
-//! frame check opens (`OutputReader::open_output`) and then delegates. For every case that
-//! redacts, that is exactly one buffer, equal to the document returned -- whose digest is the one
-//! the golden file pins; for every refusal raised before the frame check, none. ADR 0006's R10, as
-//! amended 2026-09-27, on real bytes. The count is gated against the golden file: opens equal its
-//! `OK` rows plus its rows refused by the frame check itself (`OutputRejected("redact: ..`).
+//! frame check opens (`OutputReader::open_output`) and then delegates, and notes whether qpdf's
+//! own `redact_page` returned bytes -- which is what makes the operation run its frame check. For
+//! every case that redacts, that is exactly one buffer, equal to the document returned, whose
+//! digest is the one the golden file pins; for a refusal, one if the engine had returned bytes
+//! (the frame check refused them) and none if it had not. ADR 0006's R10, as amended 2026-09-27,
+//! on real bytes. The count is printed against the golden file's `OK` rows plus the refusals this
+//! run saw after the engine returned bytes.
+//!
+//! Decided from the run, not from the refusal's text: the engine raises `OutputRejected("redact:
+//! ..")` itself, from its own verification, before the frame check exists, and a gate that read
+//! the prefix counted those as frame-check refusals (R10 round 1).
 //!
 //! # Blessing
 //!
@@ -127,13 +133,16 @@ const BAND: Region = Region {
     height: 120.0,
 };
 
-/// qpdf, recording the sha256 of every buffer the operation's frame check opens (R10).
+/// qpdf, recording the sha256 of every buffer the operation's frame check opens (R10), and
+/// whether qpdf's `redact_page` returned bytes.
 ///
 /// Delegates everything; records in `open_output` only, the one method `verify::output` reads the
-/// emitted bytes through. `fresh` shares the record, because the frame check opens through a fresh
-/// engine.
+/// emitted bytes through, and records the argument it then passes on unchanged -- what qpdf does
+/// with it after that is the engine's, and `burrow-engines`' `same_bytes_tests` digest that. `fresh`
+/// shares the record, because the frame check opens through a fresh engine.
 struct Recorder {
     opened: std::rc::Rc<RefCell<Vec<String>>>,
+    returned: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl PageRedactor for Recorder {
@@ -149,7 +158,9 @@ impl PageRedactor for Recorder {
         region: Region,
         options: &OpenOptions<'_>,
     ) -> burrow_types::Result<(Vec<u8>, Report)> {
-        Qpdf.redact_page(bytes, page, redacted, region, options)
+        let result = Qpdf.redact_page(bytes, page, redacted, region, options);
+        self.returned.set(result.is_ok());
+        result
     }
 
     fn input_rotations(
@@ -168,6 +179,7 @@ impl OutputReader for Recorder {
     fn fresh(&self) -> Self {
         Self {
             opened: std::rc::Rc::clone(&self.opened),
+            returned: std::rc::Rc::clone(&self.returned),
         }
     }
 
@@ -194,16 +206,12 @@ impl OutputReader for Recorder {
     }
 }
 
-/// What the recorder saw over a run: how many buffers the frame check opened, and every case
-/// where what it opened was not what R10 requires.
-struct ReadBacks {
-    opens: usize,
-    wrong: Vec<String>,
-}
-
-/// Whether a refusal is the operation's frame check's own, which opens the output before refusing.
-fn refused_by_the_frame_check(outcome: &str) -> bool {
-    outcome.starts_with("ERR OutputRejected(\"redact: ")
+/// What the recorder saw in one case.
+struct Seen {
+    /// Whether qpdf's `redact_page` returned bytes, which is what makes the frame check run.
+    returned: bool,
+    /// The sha256 of each buffer the frame check opened, in order.
+    opened: Vec<String>,
 }
 
 fn root() -> PathBuf {
@@ -375,18 +383,16 @@ fn covered_label(covered: &BTreeSet<usize>) -> String {
     all.join(",")
 }
 
-/// Run every case, as the lines the golden file holds, and what the frame check opened.
-fn measure() -> (Vec<String>, usize, ReadBacks) {
+/// Run every case, as the lines the golden file holds, and what the recorder saw in each.
+fn measure() -> (Vec<String>, usize, Vec<Seen>) {
     let manifest = manifest_regions();
     let documents = documents();
     let mut lines = Vec::new();
     let engine = Recorder {
         opened: std::rc::Rc::new(RefCell::new(Vec::new())),
+        returned: std::rc::Rc::new(std::cell::Cell::new(false)),
     };
-    let mut read_backs = ReadBacks {
-        opens: 0,
-        wrong: Vec::new(),
-    };
+    let mut seen = Vec::new();
     let mut matched_regions = 0usize;
     for (name, bytes) in &documents {
         lines.push(format!("INPUT\t{name}\t{}", hex(bytes)));
@@ -399,6 +405,7 @@ fn measure() -> (Vec<String>, usize, ReadBacks) {
         matched_regions += usize::from(region.is_some());
         for case in cases(pages, region) {
             engine.opened.borrow_mut().clear();
+            engine.returned.set(false);
             let result = burrow_ops::redact::page(
                 &engine,
                 bytes,
@@ -407,8 +414,10 @@ fn measure() -> (Vec<String>, usize, ReadBacks) {
                 case.region,
                 &options(),
             );
-            let opened = engine.opened.take();
-            read_backs.opens += opened.len();
+            seen.push(Seen {
+                returned: engine.returned.get(),
+                opened: engine.opened.take(),
+            });
             let label = format!(
                 "{name}\t{}\t{}\t{}",
                 case.page,
@@ -416,36 +425,12 @@ fn measure() -> (Vec<String>, usize, ReadBacks) {
                 case.label
             );
             let outcome = match result {
-                Ok(done) => {
-                    // R10: ONE READ-BACK, OF THE DOCUMENT RETURNED.
-                    if opened != [hex(&done.document)] {
-                        read_backs.wrong.push(format!(
-                            "{label}: redacted, and the frame check's read-back opened {} \
-                             buffer(s), {} of them the returned document",
-                            opened.len(),
-                            opened.iter().filter(|o| **o == hex(&done.document)).count()
-                        ));
-                    }
-                    format!(
-                        "OK {} report {}",
-                        hex(&done.document),
-                        hex(format!("{:?}", done.report).as_bytes())
-                    )
-                }
-                Err(error) => {
-                    let outcome =
-                        format!("ERR {}", format!("{error:?}").replace(['\n', '\t'], " "));
-                    // A REFUSAL BEFORE THE FRAME CHECK OPENS NOTHING: nobody receives those bytes.
-                    let expected = usize::from(refused_by_the_frame_check(&outcome));
-                    if opened.len() != expected {
-                        read_backs.wrong.push(format!(
-                            "{label}: refused, and the frame check's read-back opened {} \
-                             buffer(s); expected {expected}",
-                            opened.len()
-                        ));
-                    }
-                    outcome
-                }
+                Ok(done) => format!(
+                    "OK {} report {}",
+                    hex(&done.document),
+                    hex(format!("{:?}", done.report).as_bytes())
+                ),
+                Err(error) => format!("ERR {}", format!("{error:?}").replace(['\n', '\t'], " ")),
             };
             lines.push(format!("CASE\t{label}\t{outcome}"));
         }
@@ -458,41 +443,83 @@ fn measure() -> (Vec<String>, usize, ReadBacks) {
         "the manifest declares {} regions and {matched_regions} matched a document",
         manifest.len()
     );
-    (lines, documents.len(), read_backs)
+    (lines, documents.len(), seen)
 }
 
-/// R10's gate: the frame check opened one buffer per case the golden file records as redacted or
-/// as refused by the frame check, and each was the right one. Counts from the FILE, not from the
-/// run, so a recorder that records nothing cannot agree with itself.
-fn read_back_gate(recorded: &[String], read_backs: &ReadBacks) -> Result<String, String> {
-    let outcome_of = |line: &String| line.rsplit('\t').next().unwrap_or_default().to_owned();
-    let cases: Vec<String> = recorded
+/// R10's gate, per case: a case the golden file records as `OK` had qpdf return bytes and the
+/// frame check open exactly one buffer, the document whose digest the row pins; a refused case
+/// opened one buffer if the engine had returned bytes and none if it had not. Whether the frame
+/// check ran is read from the RUN (`Seen::returned`), not from the refusal's text; the `OK` rows
+/// and their digests from the FILE, so a recorder that records nothing cannot agree with itself.
+fn read_back_gate(recorded: &[String], seen: &[Seen]) -> Result<String, String> {
+    let cases: Vec<(String, String)> = recorded
         .iter()
         .filter(|l| l.starts_with("CASE\t"))
-        .map(outcome_of)
+        .map(|line| {
+            let (label, outcome) = line
+                .strip_prefix("CASE\t")
+                .and_then(|rest| rest.rsplit_once('\t'))
+                .unwrap_or_default();
+            (label.to_owned(), outcome.to_owned())
+        })
         .collect();
-    let ok = cases.iter().filter(|o| o.starts_with("OK ")).count();
-    let rejected = cases
+    let ok = cases.iter().filter(|(_, o)| o.starts_with("OK ")).count();
+    let refused_after = cases
         .iter()
-        .filter(|o| refused_by_the_frame_check(o))
+        .zip(seen)
+        .filter(|((_, o), s)| o.starts_with("ERR ") && s.returned)
         .count();
+    let opens: usize = seen.iter().map(|s| s.opened.len()).sum();
     let report = format!(
-        "R10 read-backs: {} frame-check open(s) over {} cases; expected {} = {ok} OK row(s) + \
-         {rejected} OutputRejected row(s) in outcomes.tsv",
-        read_backs.opens,
+        "R10 read-backs: {opens} frame-check open(s) over {} cases; expected {} = {ok} OK row(s) \
+         in outcomes.tsv + {refused_after} refusal(s) after the engine returned bytes",
         cases.len(),
-        ok + rejected
+        ok + refused_after
     );
-    if !read_backs.wrong.is_empty() {
+    if ok == 0 {
         return Err(format!(
-            "{report}\nR10: {} case(s) where the read-back opened the wrong buffers:\n{}",
-            read_backs.wrong.len(),
-            read_backs.wrong.join("\n")
+            "{report}\nR10: outcomes.tsv records no redacted case, so nothing was measured"
         ));
     }
-    if ok == 0 || read_backs.opens != ok + rejected {
+    if seen.len() != cases.len() {
         return Err(format!(
-            "{report}\nR10: the read-back opens do not match the golden file's count"
+            "{report}\nR10: the run saw {} case(s) and outcomes.tsv records {}",
+            seen.len(),
+            cases.len()
+        ));
+    }
+    let mut wrong = Vec::new();
+    for ((label, outcome), seen) in cases.iter().zip(seen) {
+        let opened = seen.opened.len();
+        if let Some(rest) = outcome.strip_prefix("OK ") {
+            let pinned = rest.split(' ').next().unwrap_or_default();
+            if !seen.returned {
+                wrong.push(format!(
+                    "{label}: recorded OK, and qpdf's redact_page returned no bytes"
+                ));
+            } else if seen.opened != [pinned] {
+                wrong.push(format!(
+                    "{label}: redacted, and the frame check opened {opened} buffer(s), {} of them \
+                     the returned document",
+                    seen.opened.iter().filter(|o| *o == pinned).count()
+                ));
+            }
+        } else {
+            let expected = usize::from(seen.returned);
+            if opened != expected {
+                let when = if seen.returned { "after" } else { "before" };
+                wrong.push(format!(
+                    "{label}: refused {when} the engine returned bytes, and the frame check \
+                     opened {opened} buffer(s); expected {expected}"
+                ));
+            }
+        }
+    }
+    if !wrong.is_empty() {
+        return Err(format!(
+            "{report}\nR10: {} case(s) where the read-back opened the wrong buffers:\n{}",
+            wrong.len(),
+            wrong.join("\n")
         ));
     }
     Ok(report)
@@ -529,7 +556,7 @@ fn differences(recorded: &[String], computed: &[String]) -> Vec<String> {
 
 #[test]
 fn every_redaction_outcome_in_the_corpus_is_the_recorded_one() {
-    let (computed, documents, read_backs) = measure();
+    let (computed, documents, seen) = measure();
     let path = root().join(GOLDEN);
 
     // BLESSING IS ASKED FOR BY NAME, AND NEVER IN CI. `var_os(..).is_some()` blessed on `=0` or an
@@ -594,7 +621,7 @@ fn every_redaction_outcome_in_the_corpus_is_the_recorded_one() {
     assert_eq!(recorded_inputs, documents);
     assert_eq!(recorded_cases, cases);
 
-    match read_back_gate(&recorded, &read_backs) {
+    match read_back_gate(&recorded, &seen) {
         Ok(report) => println!("{report}"),
         Err(refusal) => panic!("{refusal}"),
     }
@@ -606,48 +633,103 @@ fn the_read_back_gate_names_every_kind_of_failure() {
     let recorded = vec![
         "INPUT\ta.pdf\t00".to_owned(),
         "CASE\ta.pdf\t0\t0\twhole\tOK 11 report 22".to_owned(),
-        "CASE\ta.pdf\t0\t0\tband\tERR OutputRejected(\"redact: x\")".to_owned(),
+        // THE ENGINE'S OWN VERIFICATION, which shares the frame check's prefix and opens nothing.
+        "CASE\ta.pdf\t0\t0\tband\tERR OutputRejected(\"redact: the region is not cleared x\")"
+            .to_owned(),
+        // THE FRAME CHECK'S REFUSAL, after the engine returned bytes.
+        "CASE\ta.pdf\t0\t0\tpdfbuild\tERR OutputRejected(\"redact: burrow produced a document x\")"
+            .to_owned(),
         "CASE\ta.pdf\t1\t1\twhole\tERR Malformed(\"pdf redaction [x]: y\")".to_owned(),
     ];
-    let clean = ReadBacks {
-        opens: 2,
-        wrong: Vec::new(),
+    let seen = |cases: [(bool, &[&str]); 4]| -> Vec<Seen> {
+        cases
+            .iter()
+            .map(|(returned, opened)| Seen {
+                returned: *returned,
+                opened: opened.iter().map(|o| (*o).to_owned()).collect(),
+            })
+            .collect()
     };
-    let report = read_back_gate(&recorded, &clean).expect("two opens for one OK and one rejection");
+    let refuses = |seen: &[Seen], reason: &str| {
+        let refusal = read_back_gate(&recorded, seen).expect_err(reason);
+        assert!(
+            refusal.contains(reason),
+            "expected {reason:?} in:\n{refusal}"
+        );
+    };
+
+    let clean = seen([(true, &["11"]), (false, &[]), (true, &["33"]), (false, &[])]);
+    let report = read_back_gate(&recorded, &clean).expect("one open per OK row and frame check");
     assert!(
-        report.contains("expected 2 = 1 OK row(s) + 1 OutputRejected"),
+        report.contains("expected 2 = 1 OK row(s) in outcomes.tsv + 1 refusal(s) after"),
         "{report}"
     );
 
+    // AN ENGINE-SIDE REJECTION THAT OPENED THE OUTPUT ANYWAY.
+    refuses(
+        &seen([
+            (true, &["11"]),
+            (false, &["44"]),
+            (true, &["33"]),
+            (false, &[]),
+        ]),
+        "a.pdf\t0\t0\tband: refused before the engine returned bytes, and the frame check opened \
+         1 buffer(s); expected 0",
+    );
+    // A FRAME-CHECK REFUSAL THAT OPENED NOTHING.
+    refuses(
+        &seen([(true, &["11"]), (false, &[]), (true, &[]), (false, &[])]),
+        "a.pdf\t0\t0\tpdfbuild: refused after the engine returned bytes, and the frame check \
+         opened 0 buffer(s); expected 1",
+    );
     // A RECORDER THAT RECORDS NOTHING.
-    let silent = ReadBacks {
-        opens: 0,
-        wrong: Vec::new(),
-    };
-    let refusal = read_back_gate(&recorded, &silent).expect_err("no opens recorded");
+    refuses(
+        &seen([(true, &[]), (false, &[]), (true, &["33"]), (false, &[])]),
+        "a.pdf\t0\t0\twhole: redacted, and the frame check opened 0 buffer(s), 0 of them",
+    );
+    // ONE TOO MANY.
+    refuses(
+        &seen([
+            (true, &["11", "11"]),
+            (false, &[]),
+            (true, &["33"]),
+            (false, &[]),
+        ]),
+        "opened 2 buffer(s), 2 of them the returned document",
+    );
+    // THE WRONG BUFFER, with the count right.
+    refuses(
+        &seen([(true, &["99"]), (false, &[]), (true, &["33"]), (false, &[])]),
+        "opened 1 buffer(s), 0 of them the returned document",
+    );
+    // AN OK ROW WHOSE ENGINE NEVER RETURNED.
+    refuses(
+        &seen([
+            (false, &["11"]),
+            (false, &[]),
+            (true, &["33"]),
+            (false, &[]),
+        ]),
+        "recorded OK, and qpdf's redact_page returned no bytes",
+    );
+    // A RUN OVER FEWER CASES THAN THE FILE.
+    let short = clean.into_iter().take(3).collect::<Vec<_>>();
+    refuses(&short, "the run saw 3 case(s) and outcomes.tsv records 4");
+
+    // A GOLDEN FILE WITH NOTHING REDACTED is not a measurement, under its own reason.
+    let none = vec!["CASE\ta.pdf\t1\t1\twhole\tERR Malformed(\"x\")".to_owned()];
+    let refusal = read_back_gate(
+        &none,
+        &[Seen {
+            returned: false,
+            opened: Vec::new(),
+        }],
+    )
+    .expect_err("nothing redacted");
     assert!(
-        refusal.contains("do not match the golden file's count"),
+        refusal.contains("outcomes.tsv records no redacted case"),
         "{refusal}"
     );
-
-    // ONE TOO MANY.
-    let extra = ReadBacks {
-        opens: 3,
-        wrong: Vec::new(),
-    };
-    assert!(read_back_gate(&recorded, &extra).is_err());
-
-    // A CASE THAT OPENED THE WRONG BUFFER, with the count right.
-    let wrong = ReadBacks {
-        opens: 2,
-        wrong: vec!["a.pdf\t0\t0\twhole: wrong".to_owned()],
-    };
-    let refusal = read_back_gate(&recorded, &wrong).expect_err("a wrong buffer");
-    assert!(refusal.contains("opened the wrong buffers"), "{refusal}");
-
-    // A GOLDEN FILE WITH NOTHING REDACTED is not a measurement.
-    let none = vec!["CASE\ta.pdf\t1\t1\twhole\tERR Malformed(\"x\")".to_owned()];
-    assert!(read_back_gate(&none, &silent).is_err());
 }
 
 /// The comparison sees each kind of difference, so a clean run is a measurement.
