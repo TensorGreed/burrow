@@ -5472,8 +5472,8 @@ filed separately and not changed here. What is no longer disclosed is how a run'
 among the removed glyphs, and where a producer kern inside the run marked a word boundary. Also
 still disclosed, and unchanged by this amendment: how many operations a removal touched, and for
 each of them the width removed from it -- a removal spanning several show operations leaves one
-number per operation, and each number is that operation's share of the removed width, not a
-total; the synthetic space PDFium's text layer reports at the gap; and whatever
+number per removed run (usually one per operation), each that run's width plus any producer
+kerns folded into it, not a total; the synthetic space PDFium's text layer reports at the gap; and whatever
 the kept text's positions say about the gap's ends.
 
 **Tests.** `pdfsyntax::geometry`'s unit tests assert the run's one number and its value for three
