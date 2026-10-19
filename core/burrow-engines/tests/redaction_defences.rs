@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 98] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 107] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2688,6 +2688,16 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 98] = [
         None,
     ),
     ("nearmiss-oc-on-another-page.pdf", None),
+    // #125 slice 5, round 1: a one-to-one twin for each evasion above that shared the page-2
+    // twin. Each keeps its evasion's shape and the catalogue's layer, and drops only the page's
+    // reference to it -- the `/OC` key, or the `/OC` mark retagged `/Span` over a plain list.
+    ("nearmiss-annotation-without-a-layer.pdf", None),
+    ("nearmiss-image-without-a-layer.pdf", None),
+    ("nearmiss-property-list-inside-an-unused-pattern.pdf", None),
+    ("nearmiss-appearance-stream-without-a-layer.pdf", None),
+    ("nearmiss-appearance-state-without-a-layer.pdf", None),
+    ("nearmiss-span-over-an-untyped-dictionary.pdf", None),
+    ("nearmiss-span-over-an-untyped-group.pdf", None),
     // A STREAM WHERE A DICTIONARY BELONGS. PDFium reads the stream's dictionary; burrow read it
     // as absent. Three of these were measured leaks returning `Ok`.
     (
@@ -2925,6 +2935,16 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 98] = [
     // on page 2 without a field type, and a field's `/T` and `/V` without `/FT` or `/AcroForm`.
     ("nearmiss-widget-without-a-field-on-another-page.pdf", None),
     ("nearmiss-field-keys-without-a-field-type.pdf", None),
+    // #125 slice 5, round 1: the widget of `evade-field-without-acroform` without its `/FT`, and
+    // the `/Fields` object of `evade-acroform-inline-field` with no catalogue `/AcroForm` naming it.
+    // The widget keeps its evasion's `/Rect`, which this suite's band reaches, so here it refuses
+    // for the annotation, not the form -- the deletion of the `/FT` scan moves its evasion to the
+    // same rule. It is `Ok` under the corpus's `pdfbuild` region (`outcomes.tsv`).
+    (
+        "nearmiss-widget-without-a-field-type.pdf",
+        Some("annotation-in-region"),
+    ),
+    ("nearmiss-fields-the-catalogue-does-not-name.pdf", None),
     // /StructTreeRoot (#125 slice 3): every document with a structure tree refuses, so the
     // page-proxy near-miss refuses too -- a recorded over-refusal. The twins that stay `Ok` (slice
     // 5) carry the page side of a tag -- the `/MCID` marks, `/StructParents` -- and no tree.

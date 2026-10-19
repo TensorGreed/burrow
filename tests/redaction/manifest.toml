@@ -1711,6 +1711,40 @@ pages = 1
   notes = "MUST NOT be refused. The twin of evade-field-with-no-widget: an object with a field's /T and /V and no /FT, reached from the catalogue through /PieceInfo rather than an /AcroForm."
 
 [[fixture]]
+name = "nearmiss-widget-without-a-field-type"
+file = "generated/nearmiss-widget-without-a-field-type.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-FORM-NOFT-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-field-without-acroform: the same widget annotation at the same /Rect outside the region, with its /T and a /V, and no /FT; no catalogue /AcroForm."
+
+[[fixture]]
+name = "nearmiss-fields-the-catalogue-does-not-name"
+file = "generated/nearmiss-fields-the-catalogue-does-not-name.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-FORM-INLINE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-acroform-inline-field: the same /Fields object with its inline field is in the file, but the catalogue carries no /AcroForm naming it, so nothing reaches it."
+
+[[fixture]]
 name = "evade-oc-two-levels-down"
 file = "generated/evade-oc-two-levels-down.pdf"
 kind = "hand-built"
@@ -2353,6 +2387,125 @@ pages = 2
   notes = """
 MUST NOT be refused. The rule is about the page being redacted; a layer on page 2 is not a layer on page 1.
 """
+
+[[fixture]]
+name = "nearmiss-annotation-without-a-layer"
+file = "generated/nearmiss-annotation-without-a-layer.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OC-ANNOT-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-on-an-annotation: the same note at the same /Rect without its /OC; the layer is still declared in the catalogue."
+
+[[fixture]]
+name = "nearmiss-image-without-a-layer"
+file = "generated/nearmiss-image-without-a-layer.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OC-IMAGE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused where the region misses the image. The twin of evade-oc-on-an-image: the same image at the same place without its /OC; the layer is still declared. The whole-page region reaches the image and refuses [image-in-region] by design."
+
+[[fixture]]
+name = "nearmiss-property-list-inside-an-unused-pattern"
+file = "generated/nearmiss-property-list-inside-an-unused-pattern.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OC-PATTERN-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-inside-an-unused-pattern: the same unused tiling pattern, its content marked /Span against an ordinary property list instead of /OC against a membership dictionary; the layer is still declared."
+
+[[fixture]]
+name = "nearmiss-appearance-stream-without-a-layer"
+file = "generated/nearmiss-appearance-stream-without-a-layer.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OCAPP-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-on-an-appearance-stream: the same square annotation and appearance, the stream without its /OC; the layer is still declared."
+
+[[fixture]]
+name = "nearmiss-appearance-state-without-a-layer"
+file = "generated/nearmiss-appearance-state-without-a-layer.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OCSTATE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-on-an-appearance-state: the same named states, the /On stream without its /OC; the layer is still declared."
+
+[[fixture]]
+name = "nearmiss-span-over-an-untyped-dictionary"
+file = "generated/nearmiss-span-over-an-untyped-dictionary.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OC-UNTYPED-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-untyped-membership-dictionary: the same text outside the region marked /Span over an ordinary property list instead of /OC over an untyped membership dictionary; the layer is still declared."
+
+[[fixture]]
+name = "nearmiss-span-over-an-untyped-group"
+file = "generated/nearmiss-span-over-an-untyped-group.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OCGROUP-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-oc-untyped-group: the same text outside the region marked /Span over an ordinary property list instead of /OC over an untyped group; the group is still declared in the catalogue."
 
 [[fixture]]
 name = "evade-oc-inside-an-unused-pattern"

@@ -2599,6 +2599,203 @@ def nearmiss_oc_on_another_page() -> bytes:
 
 
 # ===========================================================================================
+# #125 SLICE 5, ROUND 1 (2026-10-18): a one-to-one twin for each optional-content evasion that
+# shared `nearmiss-oc-on-another-page`, and for the two /AcroForm evasions that had none.
+#
+# The optional-content twins keep the evasion's shape and its document-level layer -- the same
+# `/OCProperties` turning the same group off -- and drop only the PAGE's reference to it: the
+# annotation, image or appearance without its `/OC`, the mark retagged `/Span` over an ordinary
+# property list. The refusal is on what the redacted page reaches, not on the document declaring a
+# layer, so each must stay `Ok`.
+# ===========================================================================================
+
+
+def nearmiss_annotation_without_a_layer() -> bytes:
+    """`evade-oc-on-an-annotation`'s twin: the same note at the same `/Rect`, without its `/OC`;
+    the layer is still declared in the catalogue. MUST NOT be refused."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered note")
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Text /Rect [300 170 320 190] /F 4"
+        b" /Contents " + literal("a note on no layer") + b" >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OC-ANNOT-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
+def nearmiss_image_without_a_layer() -> bytes:
+    """`evade-oc-on-an-image`'s twin: the same image drawn at the same place, without its `/OC`;
+    the layer is still declared in the catalogue. MUST NOT be refused where the region misses the
+    image (the `whole`-page region reaches it and refuses `[image-in-region]` by design)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered image")
+    image = pdf.stream(
+        b"/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray"
+        b" /BitsPerComponent 8",
+        b"\x00",
+    )
+    content = _secret_run("OC-IMAGE-NEAR") + b"q 20 0 0 20 300 170 cm /Im0 Do Q\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Im0 " + str(image).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(ocg))
+
+
+def nearmiss_property_list_inside_an_unused_pattern() -> bytes:
+    """`evade-oc-inside-an-unused-pattern`'s twin: the same unused tiling pattern, its content
+    marked `/Span` against an ordinary property list in its own `/Resources` instead of `/OC`
+    against a membership dictionary; the layer is still declared in the catalogue. MUST NOT be
+    refused: a pattern's `/Properties` existing is not optional content."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer inside a pattern")
+    plain = pdf.add(b"<< /Lang (en-GB) >>")
+    pattern = pdf.stream(
+        b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"
+        b" /XStep 10 /YStep 10 /Resources << /Properties << /L0 " + str(plain).encode()
+        + b" 0 R >> >>",
+        b"/Span /L0 BDC 0 0 5 5 re f EMC\n",
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Pattern << /P0 " + str(pattern).encode() + b" 0 R >>"
+    )
+    return simple_page(
+        pdf, _secret_run("OC-PATTERN-NEAR") + keep_line_ops(), res, catalog_extra=_layer_off(ocg)
+    )
+
+
+def nearmiss_appearance_stream_without_a_layer() -> bytes:
+    """`evade-oc-on-an-appearance-stream`'s twin: the same square annotation and appearance
+    stream, the stream without its `/OC`; the layer is still declared. MUST NOT be refused."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered appearance")
+    appearance = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 20 20]",
+        b"0 0 20 20 re f\n",
+    )
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Square /Rect [300 170 320 190] /F 4"
+        b" /AP << /N " + str(appearance).encode() + b" 0 R >> >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OCAPP-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
+def nearmiss_appearance_state_without_a_layer() -> bytes:
+    """`evade-oc-on-an-appearance-state`'s twin: the same named states, the `/On` stream without
+    its `/OC`; the layer is still declared. MUST NOT be refused."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered appearance state")
+    on = pdf.stream(b"/Type /XObject /Subtype /Form /BBox [0 0 20 20]", b"0 0 20 20 re f\n")
+    off = pdf.stream(b"/Type /XObject /Subtype /Form /BBox [0 0 20 20]", b"")
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Square /Rect [300 170 320 190] /F 4 /AS /On"
+        b" /AP << /N << /On " + str(on).encode() + b" 0 R /Off " + str(off).encode()
+        + b" 0 R >> >> >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OCSTATE-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
+def nearmiss_span_over_an_untyped_dictionary() -> bytes:
+    """`evade-oc-untyped-membership-dictionary`'s twin: the same text outside the region, marked
+    `/Span /OC1 BDC` instead of `/OC /OC1 BDC`, `/OC1` an ordinary property list; the layer is
+    still declared. MUST NOT be refused: `[optional-content-marked]` is on the `/OC` mark, and an
+    untyped dictionary under any other tag is an ordinary property list."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer named by an untyped membership dictionary")
+    content = (
+        _secret_run("OC-UNTYPED-NEAR")
+        + b"/Span /OC1 BDC BT /Helv 10 Tf 40 175 Td " + literal("SHOWN-UNTYPED")
+        + b" Tj ET EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /OC1 << /Lang (en-GB) >> >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(ocg))
+
+
+def nearmiss_span_over_an_untyped_group() -> bytes:
+    """`evade-oc-untyped-group`'s twin: the same text outside the region, marked `/Span /L0 BDC`
+    instead of `/OC /L0 BDC`, `/L0` an ordinary property list; the untyped group is still declared
+    in the catalogue. MUST NOT be refused."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    group = pdf.add(b"<< /Name " + literal("an untyped layer") + b" >>")
+    content = (
+        _secret_run("OCGROUP-NEAR")
+        + b"/Span /L0 BDC BT /Helv 10 Tf 40 175 Td " + literal("SHOWN-UNTYPED-GROUP")
+        + b" Tj ET EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /L0 << /Lang (en-GB) >> >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(group))
+
+
+def nearmiss_widget_without_a_field_type() -> bytes:
+    """`evade-field-without-acroform`'s twin: the same widget annotation on the page, at the same
+    `/Rect` outside the region, with its `/T` and a `/V`, and NO `/FT`; no catalogue `/AcroForm`.
+    The canary is text in the region. MUST NOT be refused -- the `/FT` scan is on a field type, not
+    on a widget carrying a name and a value."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    widget = pdf.add(
+        b"<< /Type /Annot /Subtype /Widget /T " + literal("merged") +
+        b" /V " + utf16_hex("an annotation's own value") +
+        b" /Rect [40 150 240 174] /F 4 >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("FORM-NOFT-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(widget).encode() + b" 0 R]",
+    )
+
+
+def nearmiss_fields_the_catalogue_does_not_name() -> bytes:
+    """`evade-acroform-inline-field`'s twin: the same `/Fields` object with its inline field, in
+    the file, but the catalogue carries no `/AcroForm` naming it -- nothing reaches it. The canary
+    is text in the region. MUST NOT be refused: the refusal is on the catalogue's `/AcroForm`, not
+    on bytes in the file that nothing references."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    pdf.add(
+        b"<< /Fields [ << /FT /Tx /T " + literal("inline") +
+        b" /V " + utf16_hex("an unreferenced value") + b" >> ] /DA (/Helv 0 Tf 0 g) >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("FORM-INLINE-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+    )
+
+
+# ===========================================================================================
 # A STREAM WHERE A DICTIONARY BELONGS. PDFium's `GetDictFor` answers a stream with the stream's
 # own dictionary; burrow read it as absent and inherited or skipped. Found by a security review of
 # #166, three leaks, each returning `Ok`. Refused as `not-a-dictionary-where-one-belongs`.
@@ -3684,6 +3881,8 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-paths-in-type3-glyph-clip-only", "vector paths"),
     ("nearmiss-widget-without-a-field-on-another-page", "/AcroForm"),
     ("nearmiss-field-keys-without-a-field-type", "/AcroForm"),
+    ("nearmiss-widget-without-a-field-type", "/AcroForm"),
+    ("nearmiss-fields-the-catalogue-does-not-name", "/AcroForm"),
     ("evade-oc-two-levels-down", "optional content"),
     ("nearmiss-nested-forms-no-oc", "optional content"),
     ("evade-actualtext-around-a-form", "/ActualText"),
@@ -3714,6 +3913,14 @@ CASES: list[tuple[str, str]] = [
     ("evade-oc-untyped-group", "optional content"),
     ("evade-oc-on-an-appearance-state", "optional content"),
     ("nearmiss-oc-on-another-page", "optional content"),
+    # #125 slice 5, round 1: a one-to-one twin for each evasion that shared the one above.
+    ("nearmiss-annotation-without-a-layer", "optional content"),
+    ("nearmiss-image-without-a-layer", "optional content"),
+    ("nearmiss-property-list-inside-an-unused-pattern", "optional content"),
+    ("nearmiss-appearance-stream-without-a-layer", "optional content"),
+    ("nearmiss-appearance-state-without-a-layer", "optional content"),
+    ("nearmiss-span-over-an-untyped-dictionary", "optional content"),
+    ("nearmiss-span-over-an-untyped-group", "optional content"),
     ("evade-resources-stream-on-the-page", "not a dictionary"),
     ("evade-resources-stream-on-a-form", "not a dictionary"),
     ("evade-font-decoy-behind-a-resources-stream", "not a dictionary"),
@@ -3934,6 +4141,15 @@ BUILDERS = {
     "nearmiss-paths-in-type3-glyph-clip-only": nearmiss_paths_in_type3_glyph_clip_only,
     "nearmiss-widget-without-a-field-on-another-page": nearmiss_widget_without_a_field_on_another_page,
     "nearmiss-field-keys-without-a-field-type": nearmiss_field_keys_without_a_field_type,
+    "nearmiss-annotation-without-a-layer": nearmiss_annotation_without_a_layer,
+    "nearmiss-image-without-a-layer": nearmiss_image_without_a_layer,
+    "nearmiss-property-list-inside-an-unused-pattern": nearmiss_property_list_inside_an_unused_pattern,
+    "nearmiss-appearance-stream-without-a-layer": nearmiss_appearance_stream_without_a_layer,
+    "nearmiss-appearance-state-without-a-layer": nearmiss_appearance_state_without_a_layer,
+    "nearmiss-span-over-an-untyped-dictionary": nearmiss_span_over_an_untyped_dictionary,
+    "nearmiss-span-over-an-untyped-group": nearmiss_span_over_an_untyped_group,
+    "nearmiss-widget-without-a-field-type": nearmiss_widget_without_a_field_type,
+    "nearmiss-fields-the-catalogue-does-not-name": nearmiss_fields_the_catalogue_does_not_name,
 }
 
 

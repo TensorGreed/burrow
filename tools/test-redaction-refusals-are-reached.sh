@@ -16,7 +16,8 @@
 #   shading-in-region     `sh`'s ink box                       evade-shading-sh-in-form
 #   form-route            the ink a nested form draws          the four form evasions, and the shading
 #   acroform-field-ft     the /FT scan                         evade-widget-ft-on-parent, ...
-#   acroform-catalogue    the catalogue /AcroForm key          a direct /Root carrying an /AcroForm
+#   acroform-catalogue    the catalogue /AcroForm key          a direct /Root carrying an /AcroForm,
+#                                                              evade-acroform-inline-field
 #   acroform-field        the whole form-field refusal         evade-widget-on-another-page, ...-no-widget
 #   structure-tree        the whole structure-tree refusal     evade-struct-without-structparents,
 #                                                              evade-structparents-resolving-elsewhere
@@ -270,7 +271,7 @@ run() {
     optional-content)
       require_red "$1" \
         "evade-oc-inside-an-unused-type3-font.pdf: redacted|evade-oc-on-an-annotation.pdf: redacted" \
-        "nearmiss-property-list-inside-an-unused-type3-font.pdf:|nearmiss-nested-forms-no-oc.pdf:" \
+        "nearmiss-property-list-inside-an-unused-type3-font.pdf:|nearmiss-nested-forms-no-oc.pdf:|nearmiss-oc-on-another-page.pdf:|nearmiss-annotation-without-a-layer.pdf:|nearmiss-image-without-a-layer.pdf:|nearmiss-property-list-inside-an-unused-pattern.pdf:|nearmiss-appearance-stream-without-a-layer.pdf:|nearmiss-appearance-state-without-a-layer.pdf:|nearmiss-span-over-an-untyped-dictionary.pdf:|nearmiss-span-over-an-untyped-group.pdf:" \
         $resolved ;;
     split-oc-form-route)
       require_red "$1" "a layer 2 forms down: not refused by the per-page check" "" \
@@ -301,19 +302,27 @@ run() {
       # both fall to `[annotation-in-region]` -- moved off their rule, and named for it.
       require_red "$1" \
         "evade-widget-ft-on-parent.pdf: refused, but not by \`acroform-field\`|evade-field-without-acroform.pdf: refused, but not by \`acroform-field\`" \
-        "nearmiss-annotation-with-a-parent-not-a-field.pdf:" \
+        "nearmiss-annotation-with-a-parent-not-a-field.pdf:|nearmiss-widget-without-a-field-type.pdf:" \
         $resolved ;;
     acroform-field)
       # The two evasions that carry BOTH signals -- a catalogue /AcroForm and an /FT -- survive
       # either single deletion above, so the whole refusal is deleted here to show they reach it.
       require_red "$1" \
         "evade-widget-on-another-page.pdf:|evade-field-with-no-widget.pdf:" \
-        "nearmiss-widget-without-a-field-on-another-page.pdf:|nearmiss-field-keys-without-a-field-type.pdf:|nearmiss-annotation-not-a-widget.pdf:" \
+        "nearmiss-widget-without-a-field-on-another-page.pdf:|nearmiss-field-keys-without-a-field-type.pdf:|nearmiss-annotation-not-a-widget.pdf:|nearmiss-widget-without-a-field-type.pdf:|nearmiss-fields-the-catalogue-does-not-name.pdf:" \
         $resolved ;;
     acroform-catalogue)
       # Its ASSERTION message, not the test's name, which any failure of the test would print.
-      require_red "$1" "a direct /Root catalogue carrying an inline /AcroForm must refuse [acroform-field]" "" \
-        "${defences[@]}" a_direct_root_catalogue_carrying_a_form_is_refused ;;
+      # And the rule-pinning suite beside it (libtest ORs the two filters), so the inline field
+      # this key alone catches is named, and its twin -- the same /Fields object, which no
+      # catalogue /AcroForm names -- can be required not to move. The direct-/Root cases have no
+      # twin that redacts: PDFium cannot open the output, so a direct /Root refuses on the second
+      # reading whatever it carries (#125 slice 5, measured).
+      require_red "$1" \
+        "a direct /Root catalogue carrying an inline /AcroForm must refuse [acroform-field]|evade-acroform-inline-field.pdf:" \
+        "nearmiss-fields-the-catalogue-does-not-name.pdf:" \
+        "${defences[@]}" -- a_direct_root_catalogue_carrying_a_form_is_refused \
+        a_named_property_list_and_a_layer_refuse_for_their_own_reason ;;
     structure-tree)
       # The rule-pinning suite, since #125 slice 5 put the structure-tree group in it: it names
       # each fixture that moved, so the twins without a tree can be required NOT to.
