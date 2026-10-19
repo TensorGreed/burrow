@@ -5409,3 +5409,26 @@ box. The verification re-walks with the same reader and inherits the rule.
   glyphs cut by identity, and that is pinned.
 - The oracle's P3 floor was re-derived as the larger of PDFium's loose box and the envelope:
   against the loose box alone, 145 of 238 real glyphs fail a box that is what the rule asks for.
+
+## Amendment, 2026-10-19 — #136 S4: the render's `flags = 0` is a default now, not a constant
+
+*The render cannot preview a redaction* (above) rests on a premise S4 changed: it cites
+`core/burrow-engines/src/pdfium/ffi.rs` passing `flags = 0`, and that constant is gone. The flags
+are now the caller's choice, `burrow_engines::Annotations`, and `Annotations::render_flags` is the
+one place the number lives.
+
+- **Every thumbnail strip still passes `0`.** `Annotations::Omitted` is the default, and the split
+  and rotate strips and the conformance tests take it. The render fuzz target takes either, from an
+  input bit, so both paths are fuzzed.
+- **Only the redaction page's selection picture passes `FPDF_ANNOT`**, through
+  `Annotations::Drawn`. That is the owner's D3 (2026-10-14): a person choosing an area sees the
+  annotations there.
+- **The selection picture is still not a preview, and the page says so beside it.** The spike's
+  measurement above is the reason it cannot be one: with `FPDF_ANNOT` a FreeText annotation drew
+  its secret, so a picture that draws annotations shows what is on the page *before* a run, never
+  what a run leaves. S4 draws no picture of a result (D9).
+- **What `FPDF_ANNOT` leaves out, and what it adds.** It draws no form widget (burrow creates no
+  form-fill environment) and nothing hidden by its `/F` flags. It also generates an appearance for
+  some annotations that have none, and a generated appearance is not held to the annotation's
+  `/Rect`. `[annotation-in-region]` measures the `/Rect`, so a picture can show annotation ink that
+  the rule does not measure; redaction's handling of generated appearances is tracked separately.

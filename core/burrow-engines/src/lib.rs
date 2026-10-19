@@ -1208,16 +1208,21 @@ impl Raster {
 /// **[`Omitted`](Annotations::Omitted) is the default and every thumbnail strip's choice**:
 /// annotations are not part of the page, and a thumbnail that drew a reviewer's comments would
 /// show content the document's pages do not have. [`Drawn`](Annotations::Drawn) passes PDFium's
-/// `FPDF_ANNOT`, which draws every annotation that has an appearance stream; PDFium still draws
-/// **no form widget** without a form-fill environment, which burrow never creates (spike 0006),
-/// and nothing hidden by its `/F` flags.
+/// `FPDF_ANNOT`, which draws every annotation that has an appearance stream **and generates an
+/// appearance for some annotations that have none** -- and a generated appearance is not held to
+/// the annotation's `/Rect`: it can reach outside it. PDFium still draws **no form widget**
+/// without a form-fill environment, which burrow never creates (spike 0006), and nothing hidden
+/// by its `/F` flags.
 ///
 /// **Drawn is the redaction page's selection picture, and it is not a preview.** The owner's
 /// D3 (2026-10-14) wants a person choosing an area to see the annotations there; it is safe to
 /// show them because redaction refuses any region an annotation's `/Rect` reaches,
 /// `[annotation-in-region]`, drawn or not -- so an annotation the picture leaves out (a widget,
-/// a hidden one) is refused just the same, never silently kept. What a render shows is still not
-/// what a redaction leaves (ADR 0029, *The render cannot preview a redaction*).
+/// a hidden one) is refused just the same, never silently kept. **That rule measures the
+/// `/Rect`, not the drawing**: a generated appearance drawn outside its `/Rect` is outside what
+/// the rule measures, and redaction's handling of generated appearances is tracked separately.
+/// What a render shows is still not what a redaction leaves (ADR 0029, *The render cannot preview
+/// a redaction*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Annotations {
