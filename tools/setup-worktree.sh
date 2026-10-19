@@ -36,8 +36,8 @@
 # Usage: tools/setup-worktree.sh <worktree> [--refresh-engines] [--no-build]
 #   --no-build   copy and link only; skip pnpm and wasm-pack (the self-test uses this).
 #
-# Ports: Playwright's are fixed (4321, 4322). `ci-local.py` serialises Playwright jobs across every
-# checkout with a machine-wide lock; a `pnpm e2e` started by hand does not take it.
+# Ports: `ci-local.py` runs Playwright jobs in slots, each on its own ports (slot 0 is 4321-4323),
+# and one run per checkout; a `pnpm e2e` started by hand takes no slot, and its ports are passed over.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

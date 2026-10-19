@@ -46,11 +46,17 @@ Usage:
   tools/ci-local.py --check      parity check only; run nothing
   tools/ci-local.py --list       print the coverage table and exit
   tools/ci-local.py --only NAME  run one local job (parity is still checked first)
+
+  --playwright-slots N   concurrent Playwright runs per machine, each on its own ports
+                         (default 3; or BURROW_PLAYWRIGHT_SLOTS)
+  --playwright-wait S    how long a Playwright job waits for a slot (default 3600;
+                         or BURROW_PLAYWRIGHT_WAIT_S)
 """
 
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -1199,6 +1205,10 @@ def verify_parser() -> list[str]:
     # A SPLICED PATH'S LEADING SLASH is dropped before resolving (`${REPO}/docs/...`).
     if _path_tokens("`${REPO}/docs/x.md`", "x.md") != ["docs/x.md"]:
         problems.append("a leading slash survived into a token, which resolves to the filesystem root")
+    # A SLOT'S PORTS ARE DISJOINT FROM EVERY OTHER SLOT'S only while the suite needs fewer ports
+    # than the stride between slots.
+    if len(PLAYWRIGHT_PORT_ENV) > PLAYWRIGHT_PORT_STRIDE:
+        problems.append("the e2e suite needs more ports than a Playwright slot's stride, so slots overlap")
     for text, exp in PLAYWRIGHT_CASES:
         if bool(PLAYWRIGHT_RUN.search(text)) != exp:
             problems.append(f"playwright run in {text!r}: expected {exp}")
@@ -2085,29 +2095,90 @@ def qpdf_cli() -> tuple[str | None, str]:
     return None, "not found"
 
 
-# ONE PLAYWRIGHT RUN PER MACHINE, WHICHEVER TREE IT COMES FROM. The e2e suite serves the build on
-# fixed ports (`playwright.config.ts`: 4321 for the site, 4322 for the foreign logger), and the
-# harness build bakes the site's origin into its CSP. Two sweeps in two worktrees at once -- the
-# five-lane plan of 2026-10-15 -- would both bind them: the second fails on `EADDRINUSE`, a
-# failure that reads as the change's. So a job that runs Playwright takes a lock first, the same
-# file for every checkout of every branch, and waits for it, bounded, saying whose run it waits
-# behind. The wait is bounded because an `until` that cannot end is the failure CLAUDE.md names.
+# ONE PLAYWRIGHT RUN PER SLOT, AND N SLOTS PER MACHINE (2026-10-19, lane 4d). The e2e suite serves
+# the build on three ports -- the site, the foreign logger and origin-guard's mismatch server
+# (`playwright.config.ts`, `e2e/global-setup.mjs`, `e2e/origin-guard.spec.ts`) -- and the harness
+# build bakes the site's origin into its CSP. Two runs on the same ports collide: the second fails
+# on `EADDRINUSE`, a failure that reads as the change's. Until this date every Playwright run on the
+# machine took ONE lock for that reason, and with seven lanes sweeping, a sweep waited an hour or
+# two behind the others and `web-e2e` timed out -- "not run", which breaks the one-complete-run rule.
 #
-# AND THE PORTS THEMSELVES, after the lock: a runner from before this lock (a branch not yet
-# rebased) or a `pnpm e2e` started by hand takes no lock, so the holder of it also waits, bounded,
-# until the suite's ports (4321 site, 4322 foreign logger, 4323 origin-guard's mismatch) can be
-# bound. That leaves a race of the moment between this check and Playwright's own `listen`, which
-# is stated rather than closed: the failure it allows is the loud `EADDRINUSE` this exists to avoid,
-# never a run against another tree's server.
-PLAYWRIGHT_PORTS = (4321, 4322, 4323)
-# ONE FIXED PATH for every shell of this user: `XDG_RUNTIME_DIR` differs between a desktop session
-# and an ssh one, and two lock files are no lock (code review of the enabler).
-PLAYWRIGHT_LOCK = Path(tempfile.gettempdir()) / f"burrow-playwright-{os.getuid()}.lock"
+# WHAT A SLOT OWNS: its own lock file and its own three ports, `PLAYWRIGHT_BASE_PORT + 10 * slot`
+# onward, handed to Playwright as `BURROW_TEST_PORT`, `BURROW_FOREIGN_PORT` and
+# `BURROW_MISMATCH_PORT` -- the names those three files already read, checked before every run
+# (`slot_env_unread`), so a renamed variable fails loudly instead of putting every slot back on
+# 4321. The harness build is origin-bound to the slot's site port by `global-setup.mjs` itself.
+#
+# WHAT STAYS SERIALISED, and how narrowly: everything else the suite writes is inside the checkout
+# -- `apps/web/dist`, `apps/web/public` (staged engines), `apps/web/test-results` -- so two runs in
+# DIFFERENT checkouts share nothing but the browsers Playwright installed, which it only reads. Two
+# runs in the SAME checkout would rebuild one `dist/` under each other, so a per-checkout lock
+# (`playwright_tree_lock`) is taken first. Nothing else is held machine-wide.
+#
+# SLOT 0 IS THE OLD LOCK. Its file is the path the single lock used and its ports are 4321-4323, so
+# a runner from before this change (a branch not yet rebased) and slot 0 of this one exclude each
+# other, and neither can bind the other's ports. A `pnpm e2e` started by hand takes no lock; its
+# ports are checked before a slot is used, and a slot whose ports something else holds is passed
+# over for the next. Only when NO slot is held by a sweep and every slot's ports stay bound does the
+# short port limit end the wait, naming the listeners -- a `pnpm dev` left running should fail fast.
+# The race of the moment between that check and Playwright's own `listen` is stated rather than
+# closed: what it allows is the loud `EADDRINUSE`, never a run against another tree's server.
+#
+# ONE FIXED DIRECTORY for every shell of this user: `XDG_RUNTIME_DIR` differs between a desktop
+# session and an ssh one, and two lock files are no lock (code review of the enabler).
+PLAYWRIGHT_LOCK_DIR = Path(tempfile.gettempdir())
+PLAYWRIGHT_LOCK = PLAYWRIGHT_LOCK_DIR / f"burrow-playwright-{os.getuid()}.lock"
+PLAYWRIGHT_BASE_PORT = 4321
+PLAYWRIGHT_PORT_STRIDE = 10
+PLAYWRIGHT_PORT_ENV = ("BURROW_TEST_PORT", "BURROW_FOREIGN_PORT", "BURROW_MISMATCH_PORT")
+PLAYWRIGHT_PORTS = tuple(PLAYWRIGHT_BASE_PORT + i for i in range(len(PLAYWRIGHT_PORT_ENV)))
+# Configurable, by `--playwright-slots N` / `--playwright-wait S` or the environment; the flags win.
+PLAYWRIGHT_SLOTS_DEFAULT = 3
+PLAYWRIGHT_SLOTS_MAX = 10
 PLAYWRIGHT_LOCK_WAIT_S = 3600.0
-# THE PORTS GET THEIR OWN, SHORT LIMIT. Waiting an hour for a lock another sweep holds is right;
-# waiting an hour for a port held by a `pnpm dev` left running is not -- that used to fail at once,
+# THE PORTS GET THEIR OWN, SHORT LIMIT. Waiting an hour for a slot another sweep holds is right;
+# waiting an hour for ports held by a `pnpm dev` left running is not -- that used to fail at once,
 # on `EADDRINUSE`, and it should still fail fast, naming who holds the port.
 PLAYWRIGHT_PORT_WAIT_S = 120.0
+
+
+def playwright_slot_count() -> int:
+    """`BURROW_PLAYWRIGHT_SLOTS`, or the default; `main` overrides it from `--playwright-slots`."""
+    return int(os.environ.get("BURROW_PLAYWRIGHT_SLOTS", PLAYWRIGHT_SLOTS_DEFAULT))
+
+
+def playwright_wait_s() -> float:
+    """`BURROW_PLAYWRIGHT_WAIT_S`, or the default; `main` overrides it from `--playwright-wait`."""
+    return float(os.environ.get("BURROW_PLAYWRIGHT_WAIT_S", PLAYWRIGHT_LOCK_WAIT_S))
+
+
+def slot_ports(index: int, base: int | None = None) -> tuple[int, ...]:
+    """The ports slot `index` owns, in `PLAYWRIGHT_PORT_ENV` order. Disjoint while the suite uses
+    fewer than `PLAYWRIGHT_PORT_STRIDE` ports, which `verify_parser` checks on every run."""
+    start = (PLAYWRIGHT_BASE_PORT if base is None else base) + PLAYWRIGHT_PORT_STRIDE * index
+    return tuple(start + i for i in range(len(PLAYWRIGHT_PORT_ENV)))
+
+
+def slot_lock_path(index: int, directory: Path | None = None) -> Path:
+    """Slot 0 is the single lock's old path, so an unrebased runner excludes it (see above)."""
+    directory = directory or PLAYWRIGHT_LOCK_DIR
+    suffix = "" if index == 0 else f".slot{index}"
+    return directory / f"burrow-playwright-{os.getuid()}{suffix}.lock"
+
+
+def slot_env_unread(web: Path | None = None) -> list[str]:
+    """The port variables a slot sets that nothing in the e2e suite reads as `process.env.<name>`.
+
+    Non-empty means a slot's ports would be ignored and every slot would serve on the defaults --
+    the collision slots exist to remove -- so the run is refused, by name, instead.
+    """
+    web = web or REPO / "apps" / "web"
+    texts = [
+        p.read_text(encoding="utf-8", errors="replace")
+        for p in [web / "playwright.config.ts", *sorted((web / "e2e").glob("*"))]
+        if p.is_file()
+    ]
+    return [n for n in PLAYWRIGHT_PORT_ENV if not any(f"process.env.{n}" in t for t in texts)]
 
 
 def port_in_use(port: int) -> bool:
@@ -2138,56 +2209,121 @@ def port_listener(port: int) -> str:
     return listing or "a listener `ss` did not name"
 
 
-def playwright_lock(
-    wait_s: float = PLAYWRIGHT_LOCK_WAIT_S,
-    path: Path | None = None,
-    ports: tuple[int, ...] = PLAYWRIGHT_PORTS,
-    port_wait_s: float = PLAYWRIGHT_PORT_WAIT_S,
-):
-    """The machine-wide Playwright lock, held until the returned file is closed; None on timeout.
+def _holder_line() -> str:
+    return f"{REPO} (pid {os.getpid()})\n"
 
-    The holder writes its checkout and pid into the file AS SOON AS IT HOLDS IT, so a waiter can
-    say what it waits for even while the holder is still waiting on a port. Taken only once
-    `ports` are free too.
+
+def _flock_now(handle) -> bool:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def playwright_tree_lock(wait_s: float, path: Path | None = None):
+    """This checkout's lock, held until the returned file is closed; None on timeout.
+
+    Two Playwright runs in one checkout build one `apps/web/dist` under each other, whatever slots
+    they hold. Keyed by the checkout's path, so other checkouts never wait on it.
     """
-    lock_path = path or PLAYWRIGHT_LOCK
-    handle = open(lock_path, "a+")  # noqa: SIM115 -- held open for the job's duration
+    if path is None:
+        key = hashlib.sha256(str(REPO).encode()).hexdigest()[:12]
+        path = PLAYWRIGHT_LOCK_DIR / f"burrow-playwright-{os.getuid()}.tree-{key}.lock"
+    handle = open(path, "a+")  # noqa: SIM115 -- held open for the job's duration
     started = time.monotonic()
     said = False
-    while True:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            if not said:
-                handle.seek(0)
-                holder = handle.read().strip() or "an unnamed run"
-                print(f"    waiting for the Playwright lock ({lock_path}), held by {holder}")
-                said = True
-            if time.monotonic() - started >= wait_s:
-                handle.close()
-                return None
-            time.sleep(2.0)
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{REPO} (pid {os.getpid()})\n")
-    handle.flush()
-    ports_started = time.monotonic()
-    busy_said = False
-    while busy := [port for port in ports if port_in_use(port)]:
-        if not busy_said:
-            print(f"    holding the Playwright lock, waiting for port(s) {busy} to be released")
-            busy_said = True
-        if time.monotonic() - ports_started >= port_wait_s:
-            for port in busy:
-                print(f"    port {port} is still in use after {port_wait_s:.0f}s: {port_listener(port)}")
+    while not _flock_now(handle):
+        if not said:
+            handle.seek(0)
+            holder = handle.read().strip() or "an unnamed run"
+            print(f"    waiting for this checkout's Playwright lock ({path}), held by {holder}")
+            said = True
+        if time.monotonic() - started >= wait_s:
             handle.close()
             return None
         time.sleep(2.0)
-    waited = time.monotonic() - started
-    if said or busy_said:
-        print(f"    took the Playwright lock after {waited:.0f}s")
+    handle.seek(0)
+    handle.truncate()
+    handle.write(_holder_line())
+    handle.flush()
     return handle
+
+
+class PlaywrightSlot:
+    """A held slot: its index, its ports, and the lock file whose closing releases it."""
+
+    def __init__(self, index: int, ports: tuple[int, ...], handle, waited: float):
+        self.index, self.ports, self.handle, self.waited = index, ports, handle, waited
+
+    def env(self) -> dict[str, str]:
+        return {name: str(port) for name, port in zip(PLAYWRIGHT_PORT_ENV, self.ports)}
+
+    def close(self) -> None:
+        self.handle.close()
+
+
+def playwright_slot(
+    slots: int | None = None,
+    wait_s: float | None = None,
+    port_wait_s: float = PLAYWRIGHT_PORT_WAIT_S,
+    directory: Path | None = None,
+    base_port: int | None = None,
+) -> PlaywrightSlot | None:
+    """The first free slot whose ports are free too, waiting, bounded; None when none comes free.
+
+    The holder writes its checkout and pid into the slot's file AS SOON AS IT HOLDS IT, so a waiter
+    can say whom it waits behind. A slot whose ports are bound by something holding no slot is let
+    go at once and the next is tried.
+    """
+    slots = playwright_slot_count() if slots is None else slots
+    wait_s = playwright_wait_s() if wait_s is None else wait_s
+    started = time.monotonic()
+    blocked_since: float | None = None
+    said = False
+    while True:
+        held: list[str] = []
+        blocked: dict[int, list[int]] = {}
+        for index in range(slots):
+            path = slot_lock_path(index, directory)
+            handle = open(path, "a+")  # noqa: SIM115 -- held open for the job's duration
+            if not _flock_now(handle):
+                handle.seek(0)
+                held.append(f"slot {index}: {handle.read().strip() or 'an unnamed run'}")
+                handle.close()
+                continue
+            handle.seek(0)
+            handle.truncate()
+            handle.write(_holder_line())
+            handle.flush()
+            ports = slot_ports(index, base_port)
+            busy = [port for port in ports if port_in_use(port)]
+            if busy:
+                blocked[index] = busy
+                handle.close()
+                continue
+            return PlaywrightSlot(index, ports, handle, time.monotonic() - started)
+        now = time.monotonic()
+        if not said:
+            print(f"    all {slots} Playwright slot(s) busy; waiting, at most {wait_s:.0f}s:")
+            for line in held:
+                print(f"      {line}")
+            for index, busy in blocked.items():
+                print(f"      slot {index}: free, but port(s) {busy} are bound by something holding no slot")
+            said = True
+        # ONLY PORTS STAND IN THE WAY, AND NO SWEEP WILL FREE THEM: the short limit applies.
+        if held:
+            blocked_since = None
+        else:
+            blocked_since = now if blocked_since is None else blocked_since
+            if now - blocked_since >= port_wait_s:
+                for busy in blocked.values():
+                    for port in busy:
+                        print(f"    port {port} is still in use after {port_wait_s:.0f}s: {port_listener(port)}")
+                return None
+        if now - started >= wait_s:
+            return None
+        time.sleep(2.0)
 
 
 def run(job: dict, env: dict[str, str] | None = None) -> bool:
@@ -2195,22 +2331,42 @@ def run(job: dict, env: dict[str, str] | None = None) -> bool:
     if job.get("why"):
         print(f"    ({job['why']})")
     print(f"    $ {job['run']}")
-    lock = None
+    held = []
+    job_env = dict(os.environ if env is None else env)
     if runs_playwright(job):
-        lock = playwright_lock()
-        if lock is None:
+        unread = slot_env_unread()
+        if unread:
             print(
-                f"    FAIL  {job['name']}: the Playwright lock was not free within "
-                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, or its ports {list(PLAYWRIGHT_PORTS)} stayed bound "
-                f"for {PLAYWRIGHT_PORT_WAIT_S:.0f}s (named above), so this run would share them "
+                f"    FAIL  {job['name']}: the e2e suite no longer reads {', '.join(unread)}, so a "
+                f"Playwright slot's ports would be ignored and every slot would serve on "
+                f"{list(PLAYWRIGHT_PORTS)} -- not run"
+            )
+            return False
+        wait_s = playwright_wait_s()
+        tree = playwright_tree_lock(wait_s)
+        if tree is None:
+            print(f"    FAIL  {job['name']}: this checkout's Playwright lock was not free within {wait_s:.0f}s -- not run")
+            return False
+        held.append(tree)
+        slot = playwright_slot(wait_s=wait_s)
+        if slot is None:
+            tree.close()
+            print(
+                f"    FAIL  {job['name']}: no Playwright slot of {playwright_slot_count()} came free "
+                f"within {wait_s:.0f}s, or every free slot's ports stayed bound for "
+                f"{PLAYWRIGHT_PORT_WAIT_S:.0f}s (named above), so this run would share them "
                 f"with another -- not run"
             )
             return False
+        held.append(slot)
+        job_env.update(slot.env())
+        ports = ", ".join(f"{k}={v}" for k, v in slot.env().items())
+        print(f"    Playwright slot {slot.index} of {playwright_slot_count()} ({ports}), after {slot.waited:.0f}s")
     try:
-        result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
+        result = subprocess.run(job["run"], shell=True, cwd=REPO, env=job_env)
     finally:
-        if lock is not None:
-            lock.close()
+        for handle in reversed(held):
+            handle.close()
     ok = result.returncode == 0
     print(f"    {'PASS' if ok else 'FAIL'}  {job['name']}")
     return ok
@@ -2323,6 +2479,28 @@ ALWAYS_RELEVANT = (
     r"Cargo\.toml",
     r"rust-toolchain",
 )
+
+
+def out_of_ci_workflows() -> frozenset[str]:
+    """The workflows `ci.yml` neither is nor calls: what this runner does not replicate (#399).
+
+    A file only they read cannot fail a `ci.yml` job, so it selects none -- `release.yml` echoing
+    `docs/ROADMAP.md` in a message is why a ROADMAP edit ran all 29 jobs. DERIVED: every workflow
+    in the directory, less `ci.yml` and any it calls as `uses: ./.github/workflows/<file>`. A
+    workflow `ci.yml` starts to call stops being out of it without an edit here.
+    """
+    directory = REPO / ".github" / "workflows"
+    ci = REPO / CI_REL
+    called = set(re.findall(r"uses:\s*\./(\.github/workflows/[\w.-]+\.ya?ml)", ci.read_text())) if ci.is_file() else set()
+    every = {f".github/workflows/{p.name}" for p in directory.glob("*.y*ml")} if directory.is_dir() else set()
+    return frozenset(every - called - {CI_REL})
+
+
+OUT_OF_CI_WORKFLOWS = out_of_ci_workflows()
+# How far `owners_of` follows an importer no job accounts for. Measured on 2026-10-19 over every
+# tracked `docs/**/*.md`: the deepest recursion any of them reached was 3 (32 recursions: 18 at
+# one, 10 at two, 4 at three). Deeper is unknown, and unknown narrows nothing.
+MAX_IMPORT_DEPTH = 4
 
 
 def job_paths(job: dict) -> tuple[set[str] | None, str]:
@@ -2495,9 +2673,22 @@ def _mention(namer: str, token: str, path: str) -> str:
 def _line_reads(namer: str, line: str, name: str, path: str) -> bool:
     """Whether one line of `namer` may read `path`: a non-comment line mentioning its name, with a
     token that is not provably about another file."""
-    if name not in line or _is_comment(line):
+    if name not in line or _is_comment(line) or _prints_only(line):
         return False
     return any(_mention(namer, t, path) != "elsewhere" for t in _path_tokens(line, name))
+
+
+# A SHELL LINE THAT ONLY PRINTS A MESSAGE names a file to a reader and reads nothing (#399):
+# `echo "corpus-fetch: not implemented yet. See docs/ROADMAP.md." >&2` in a tool CI never runs made
+# every ROADMAP edit run all 29 jobs. Only `echo` or `printf` with nothing that could run or read:
+# no `;`, `|`, `&` or `<`, no substitution (`$(`, a backtick -- even inside double quotes, where
+# the shell still runs it), and no redirection but the one to stderr. Anything else is a read.
+PRINTS_ONLY = re.compile(r"^\s*(?:echo|printf)\s(?P<rest>.*?)\s*(?:1?>&2)?\s*$")
+
+
+def _prints_only(line: str) -> bool:
+    printed = PRINTS_ONLY.match(line)
+    return bool(printed) and not re.search(r"[;|&<>`]|\$\(", printed.group("rest"))
 
 
 # A line that LISTS a directory rather than naming a file: `import.meta.glob("docs/x/*.md")`,
@@ -2633,7 +2824,7 @@ def prose_verdict(
     jobs: set[str] = set()
     for namer in namers:
         owners = owners_of(namer)
-        if not owners:
+        if owners is None:
             return set(), f"{namer} names it, and no job accounts for that file"
         jobs |= owners
     return jobs, None
@@ -2690,13 +2881,23 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
     def owns(paths, candidate: str) -> bool:
         return bool(paths) and any(candidate == q or candidate.startswith(f"{q}/") for q in paths)
 
-    def owners_of(namer: str) -> set[str]:
-        """The jobs whose paths contain `namer`, that run it, or whose files import it.
+    def owners_of(namer: str, visiting: tuple[str, ...] = ()) -> set[str] | None:
+        """The jobs whose paths contain `namer`, that run it, or whose files import it -- or `None`
+        when its readers are unknown, which narrows nothing. An EMPTY set is an answer: only a
+        workflow CI does not run gives it (#399).
 
         IMPORTS COUNT. `tools/build-origin.mjs` is run by `deployable-build` alone, and imported by
         `apps/web/astro.config.mjs`, so `web` runs it too; a namer reached only through an import
         read as always-run-only and skipped `web` (review, measured).
+
+        AND AN IMPORTER NO JOB ACCOUNTS FOR IS ASKED THE SAME QUESTION (#399). A data file names a
+        document -- `engines/licenses.toml` names five ADRs, the generated SBOM names the manifest
+        -- and is read by checkers in its turn; stopping at the data file called every one of
+        those documents unattributable, and a one-line ROADMAP edit ran all 29 jobs. Followed to
+        `MAX_IMPORT_DEPTH` hops; deeper, or around a cycle, the answer is `None`.
         """
+        if namer in OUT_OF_CI_WORKFLOWS:
+            return set()
         if not runs:
             for job in jobs:
                 runs[job["name"]] = set(job_texts(job))
@@ -2719,12 +2920,13 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
                 text=True,
             )
             if found.returncode not in (0, 1):
-                return set()
+                return None
+            readers = 0
             for importer in found.stdout.splitlines():
                 # CI's OWN DEFINITION IS ACCOUNTED FOR BY CONSTRUCTION: what `ci.yml` and its local
                 # actions run is what this file's jobs replicate, and parity refuses a gap. Counted
                 # as an importer, `ci.yml` naming `tools/test-ci-local.sh` erased that script's
-                # owner. Other workflows -- `release.yml` -- are not replicated, and still count.
+                # owner.
                 if (
                     importer in (namer, SELF_REL)
                     or is_prose(importer)
@@ -2735,14 +2937,24 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
                 text = (REPO / importer).read_text(encoding="utf-8", errors="replace")
                 if not any(_line_reads(importer, line, name, namer) for line in text.splitlines()):
                     continue
-                through = {
+                readers += 1
+                through: set[str] | None = {
                     job["name"]
                     for job, paths in derivable
                     if owns(paths, importer) or importer in runs[job["name"]]
                 }
                 if not through:
-                    return set()
+                    # A CYCLE OR A DEEP CHAIN IS UNKNOWN, never "nothing reads it": two files that
+                    # name only each other are read by nobody this can see, and that is not proof.
+                    if importer in visiting or len(visiting) >= MAX_IMPORT_DEPTH:
+                        return None
+                    through = owners_of(importer, visiting + (namer,))
+                if through is None:
+                    return None
                 owners |= through
+            # NO JOB AND NO READER is not "nothing reads it": it is a file this cannot place.
+            if not owners and readers == 0:
+                return None
         return owners
 
     prose: list[str] = []
@@ -2852,6 +3064,30 @@ def main(argv: list[str]) -> int:
             print("error: --only needs a job name", file=sys.stderr)
             return 1
         only = argv[index + 1]
+    # THE PLAYWRIGHT SLOTS AND THEIR WAIT, by flag; the environment variables the getters read are
+    # the other spelling, and a flag is written into them so every reader sees one answer.
+    for flag, variable in (
+        ("--playwright-slots", "BURROW_PLAYWRIGHT_SLOTS"),
+        ("--playwright-wait", "BURROW_PLAYWRIGHT_WAIT_S"),
+    ):
+        if flag in argv:
+            index = argv.index(flag)
+            if index + 1 >= len(argv):
+                print(f"error: {flag} needs a value", file=sys.stderr)
+                return 1
+            os.environ[variable] = argv[index + 1]
+    try:
+        slots, wait = playwright_slot_count(), playwright_wait_s()
+    except ValueError as error:
+        print(f"error: a Playwright slot setting is not a number: {error}", file=sys.stderr)
+        return 1
+    if not 1 <= slots <= PLAYWRIGHT_SLOTS_MAX or wait < 0:
+        print(
+            f"error: Playwright slots must be 1..{PLAYWRIGHT_SLOTS_MAX} and the wait non-negative "
+            f"(got {slots} slot(s), {wait}s)",
+            file=sys.stderr,
+        )
+        return 1
 
     # THE PARSER FIRST, AND ALWAYS -- including under `--check`, which runs no job. It decides
     # what the preflight looks for, so a broken one reports an empty requirement set and a

@@ -960,15 +960,22 @@ scenario "an edit to the doc gate's own script runs doc" \
 # change must still run them -- but an UNRELATED change must not. A mutation that dropped the
 # `touched_fuzz` condition would put a minute of searching on every push, which is the cost
 # this mode exists to remove.
-python3 - "$changed_probe" <<'PYEOF'
+#
+# IN A COPY OF ITS OWN. This used to mutate `$changed_probe` in place, so every scenario after it
+# ran on a runner with no fuzz exclusion -- and a docs-only scenario requiring `fuzz-seed` to be
+# skipped failed against the mutant, not the runner (found writing #399's scenarios).
+nofuzz_probe="$here/.ci-local-nofuzz.py"
+python3 - "$changed_probe" "$nofuzz_probe" <<'PYEOF'
 import pathlib, sys
-path = pathlib.Path(sys.argv[1])
+path, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 text = path.read_text()
 old = "if job[\"name\"] in NEVER_ON_THE_CHANGED_PATH and not touched_fuzz:"
 assert old in text, "the fuzz exclusion is not spelled as this test expects"
-path.write_text(text.replace(old, "if False:", 1))
+target.write_text(text.replace(old, "if False:", 1))
+assert old not in target.read_text(), "the fuzz-exclusion mutation did not apply"
 PYEOF
-out="$(python3 "$scenario_driver" "$changed_probe" "apps/web/src/pages/index.astro" 2>&1)"
+out="$(python3 "$scenario_driver" "$nofuzz_probe" "apps/web/src/pages/index.astro" 2>&1)"
+rm -f "$nofuzz_probe"
 if grep -q '^RUNS:.*\bfuzz\b' <<<"$out"; then
   echo "  ok   removing the fuzz exclusion puts fuzz back on an unrelated change, as the mutation should"
   pass=$((pass + 1))
@@ -1103,17 +1110,25 @@ scenario "an ADR cited only in comments selects nothing more" \
   "docs/adr/0022-every-operation-verifies-its-own-output.md" "checkers" "test,web,web-e2e"
 scenario "a licence notice in a directory of data narrows nothing" \
   "engines/licences/qpdf-NOTICE.md" "test,web,web-e2e" ""
-# `engines/licenses.toml` names it, and so does the generated SBOM, which no job accounts for.
-scenario "a licence text an unaccounted file reads narrows nothing" \
-  "docs/adr/licences/LicenseRef-AGG-2.3.txt" "test,web,web-e2e" ""
-scenario "a document only an unowned workflow names narrows nothing" \
-  "docs/ROADMAP.md" "test,web,web-e2e" ""
+# #399: A DATA FILE THAT NAMES A DOCUMENT IS ASKED WHO READS IT. `engines/licenses.toml` names
+# this text, and `generate-credits.mjs` (web) and the licence checkers read the manifest; until
+# #399 the generated SBOM naming the manifest made it unattributable, and it ran every job.
+scenario "a licence text a data file names selects that file's readers" \
+  "docs/adr/licences/LicenseRef-AGG-2.3.txt" "web,web-e2e,checkers" "test,clippy,fuzz"
+# #399 itself: a two-line ROADMAP edit ran all 29 jobs, fuzz included -- `release.yml` and a tool
+# CI never runs each ECHO its name. It now selects what reads it and no Rust test or fuzzer.
+scenario "a docs-only ROADMAP edit selects only what reads it" \
+  "docs/ROADMAP.md" "checkers,checker-self-tests" "test,clippy,doc,fuzz,fuzz-seed"
+# AND WHAT NOTHING CAN PLACE STILL RUNS EVERYTHING: ADR 0029's readers end in
+# `tools/check-corpus-manifest.py`, which no CI job runs and nothing reads.
+scenario "a document whose reader chain ends unread narrows nothing" \
+  "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md" "test,clippy,web,web-e2e,fuzz" ""
 scenario "a note among fixtures narrows nothing" \
   "tests/conformance/fixtures/NOTES.md" "test" ""
 
 # EACH RULE, removed in a copy, must change a selection. The comment leaders and the resolution
 # roots are pure functions with their own cases in `verify_parser`, on every run.
-for mutation in classification directory owner self comments wiring; do
+for mutation in classification directory owner self comments wiring workflows recursion prints unread; do
   mutant="$here/.ci-local-prose-$mutation.py"
   python3 - "$here/ci-local.py" "$mutant" "$mutation" <<'PYEOF'
 import pathlib, sys
@@ -1129,16 +1144,32 @@ old, new = {
         "        pass\n",
     ),
     "owner": (
-        '            return set(), f"{namer} names it, and no job accounts for that file"\n',
-        "            continue\n",
+        "        if owners is None:\n",
+        "        if not owners:\n            continue\n",
+    ),
+    "workflows": (
+        "        if namer in OUT_OF_CI_WORKFLOWS:\n            return set()\n",
+        "",
+    ),
+    "recursion": (
+        "                    through = owners_of(importer, visiting + (namer,))\n",
+        "                    return None\n",
+    ),
+    "prints": (
+        "    if name not in line or _is_comment(line) or _prints_only(line):\n",
+        "    if name not in line or _is_comment(line):\n",
+    ),
+    "unread": (
+        "            if not owners and readers == 0:\n                return None\n",
+        "",
     ),
     "self": (
         "        if namer == path or namer == SELF_REL or is_prose(namer):\n",
         "        if namer == path or is_prose(namer):\n",
     ),
     "comments": (
-        "    if name not in line or _is_comment(line):\n        return False\n",
-        "    if name not in line:\n        return False\n",
+        "    if name not in line or _is_comment(line) or _prints_only(line):\n        return False\n",
+        "    if name not in line or _prints_only(line):\n        return False\n",
     ),
     "wiring": (
         '        hit = job["name"] in forced or any(\n',
@@ -1155,7 +1186,15 @@ PYEOF
     # directory rule stops it narrowing -- measured; every other mixed-directory file also has an
     # unaccounted namer, which refuses it on its own.
     directory) probe_file="CONTRIBUTING.md"; job=test; want=SKIPS ;;
-    owner) probe_file="docs/ROADMAP.md"; job=test; want=SKIPS ;;
+    # ADR 0029's chain ends unread, so it runs everything; read as "no owner, keep going", it
+    # narrows, and fuzz -- off the pre-push path -- is skipped.
+    owner) probe_file="docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md"; job=fuzz; want=SKIPS ;;
+    # #399's rules, each on the real file it was measured on (2026-10-19). ADR 0008's chain reaches
+    # the SBOM, which `deploy.yml` uploads; counted as a reader, that workflow narrowed nothing.
+    workflows) probe_file="docs/adr/0008-widened-licence-allowlist.md"; job=fuzz; want=RUNS ;;
+    recursion) probe_file="docs/DECISIONS.md"; job=fuzz; want=RUNS ;;
+    prints) probe_file="docs/ROADMAP.md"; job=fuzz; want=RUNS ;;
+    unread) probe_file="docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md"; job=fuzz; want=SKIPS ;;
     self) probe_file=".claude/agent-memory/code-reviewer/MEMORY.md"; job=test; want=RUNS ;;
     comments) probe_file="docs/adr/0022-every-operation-verifies-its-own-output.md"; job=test; want=RUNS ;;
     wiring) probe_file="docs/spikes/0001-wasm-engines.md"; job=web; want=SKIPS ;;
@@ -1277,9 +1316,15 @@ fi
 import_tool="$here/.ci-local-import-tool.mutant.mjs"
 import_web="$repo/apps/web/.ci-local-import-web.mutant.mjs"
 import_stray="$repo/engines/.ci-local-import-stray.mutant.txt"
+# #399: TWO DATA FILES THAT NAME ONLY EACH OTHER, one of them also naming the tool. Followed, they
+# are a cycle no job reads, which is unknown; without the guard the walk never ends.
+import_cycle_a="$repo/engines/.ci-local-cycle-a.mutant.txt"
+import_cycle_b="$repo/engines/.ci-local-cycle-b.mutant.txt"
 printf 'export const spike = "docs/spikes/0005-what-qpdf-alone-compresses.md";\n' >"$import_tool"
 printf 'import { spike } from "../../tools/.ci-local-import-tool.mutant.mjs";\n' >"$import_web"
 printf 'see tools/.ci-local-import-tool.mutant.mjs\n' >"$import_stray"
+printf 'see tools/.ci-local-import-tool.mutant.mjs and engines/.ci-local-cycle-b.mutant.txt\n' >"$import_cycle_a"
+printf 'see engines/.ci-local-cycle-a.mutant.txt\n' >"$import_cycle_b"
 import_driver="$here/.ci-local-import-driver.py"
 cat > "$import_driver" <<'PYEOF'
 import importlib.util
@@ -1291,6 +1336,7 @@ module = importlib.util.module_from_spec(spec)
 sys.modules["cil"] = module
 spec.loader.exec_module(module)
 stray = sys.argv[2] == "stray"
+cycle = sys.argv[2] == "cycle"
 real = subprocess.run
 
 
@@ -1301,7 +1347,17 @@ def run(argv, *args, **kwargs):
         listed = "apps/web/.ci-local-import-web.mutant.mjs\n"
         if stray:
             listed += "engines/.ci-local-import-stray.mutant.txt\n"
+        if cycle:
+            listed += "engines/.ci-local-cycle-a.mutant.txt\n"
         return subprocess.CompletedProcess(argv, 0, listed, "")
+    # NOTHING READS THE STRAY. This script names it, as a fixture path, and since #399 an importer no
+    # job accounts for is asked who reads it -- so unstubbed, this script answered for it.
+    if argv == ["git", "grep", "-l", "-F", "-e", ".ci-local-import-stray.mutant.txt"]:
+        return subprocess.CompletedProcess(argv, 1, "", "")
+    if cycle and argv == ["git", "grep", "-l", "-F", "-e", ".ci-local-cycle-a.mutant.txt"]:
+        return subprocess.CompletedProcess(argv, 0, "engines/.ci-local-cycle-b.mutant.txt\n", "")
+    if cycle and argv == ["git", "grep", "-l", "-F", "-e", ".ci-local-cycle-b.mutant.txt"]:
+        return subprocess.CompletedProcess(argv, 0, "engines/.ci-local-cycle-a.mutant.txt\n", "")
     return real(argv, *args, **kwargs)
 
 
@@ -1320,9 +1376,16 @@ old, new = {
         "        if not any(owns(paths, namer) for _, paths in derivable):\n",
         "        if False:\n",
     ),
+    # SINCE #399 AN UNACCOUNTED IMPORTER IS ASKED WHO READS IT, and one nothing reads is unknown.
     "unaccounted": (
-        "                if not through:\n                    return set()\n",
-        "                if not through:\n                    continue\n",
+        "                    through = owners_of(importer, visiting + (namer,))\n",
+        "                    continue\n",
+    ),
+    # THE CYCLE AND DEPTH GUARD, whole: either half alone still ends the cycle below (the depth
+    # bound catches what the cycle check misses), so removing one is not observable here.
+    "guard": (
+        "                    if importer in visiting or len(visiting) >= MAX_IMPORT_DEPTH:\n",
+        "                    if False:\n",
     ),
 }[which]
 assert text.count(old) == 1, f"the {which} rule is not spelled as this test expects"
@@ -1338,8 +1401,19 @@ import_mutant "$here/.ci-local-prose-search.py" search
 no_search="$(python3 "$import_driver" "$here/.ci-local-prose-search.py" plain 2>&1)"
 import_mutant "$here/.ci-local-prose-unaccounted.py" unaccounted
 no_refusal="$(python3 "$import_driver" "$here/.ci-local-prose-unaccounted.py" stray 2>&1)"
-rm -f "$import_driver" "$import_tool" "$import_web" "$import_stray" \
-  "$here/.ci-local-prose-search.py" "$here/.ci-local-prose-unaccounted.py"
+cycled="$(python3 "$import_driver" "$changed_probe" cycle 2>&1)"
+import_mutant "$here/.ci-local-prose-guard.py" guard
+unguarded="$(python3 "$import_driver" "$here/.ci-local-prose-guard.py" cycle 2>&1)" || true
+rm -f "$import_driver" "$import_tool" "$import_web" "$import_stray" "$import_cycle_a" "$import_cycle_b" \
+  "$here/.ci-local-prose-search.py" "$here/.ci-local-prose-unaccounted.py" "$here/.ci-local-prose-guard.py"
+if runs_test "$cycled" && grep -q "RecursionError" <<<"$unguarded" && ! runs_test "$unguarded"; then
+  echo "  ok   a cycle of importers no job reads narrows nothing, and without the guard it never ends"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the importer cycle guard is not what ends a cycle"
+  for o in "$cycled" "$unguarded"; do grep -E '^RUNS:|Error' <<<"$o" | tail -1 | cut -c1-120; done
+  fail=$((fail + 1))
+fi
 if runs_web "$imported" && ! runs_test "$imported" && runs_test "$strayed" \
   && ! { runs_web "$no_search" && ! runs_test "$no_search"; } && ! runs_test "$no_refusal"; then
   echo "  ok   an importer's jobs run, an unaccounted importer narrows nothing, and each rule decides it"
@@ -1584,20 +1658,25 @@ else
 fi
 rm -f "$guard_fixture"
 
-# THE PLAYWRIGHT LOCK (2026-10-15, the five-lane plan): a held lock makes a second taker wait and
-# then give up, naming the holder; a free one is taken. Exercised on a lock file of its own, so the
-# case never waits behind a real sweep.
-lock_probe="$here/.ci-local-lock-probe.py"
-python3 - "$here/ci-local.py" "$lock_probe" <<'PYPLANT'
+# THE PLAYWRIGHT SLOTS (2026-10-19, lane 4d; the single lock before them, 2026-10-15). Exercised in
+# a lock directory and on a port range of their own, so no case waits behind a real sweep or takes
+# a real slot. Each case names what it asserts; the plants assert that they applied.
+slot_probe="$here/.ci-local-slot-probe.py"
+slot_wiring="$here/.ci-local-slot-wiring.py"
+python3 - "$here/ci-local.py" "$slot_probe" "$slot_wiring" <<'PYPLANT'
 import pathlib, sys
-src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+src, holder_dst, wiring_dst = (pathlib.Path(a) for a in sys.argv[1:4])
 text = src.read_text()
-old = '    handle.write(f"{REPO} (pid {os.getpid()})\\n")\n'
-assert old in text, "MUTATION DID NOT APPLY: the holder line's write has moved"
-dst.write_text(text.replace(old, "", 1))
+old = '    return f"{REPO} (pid {os.getpid()})\\n"\n'
+assert text.count(old) == 1, "MUTATION DID NOT APPLY: the holder line has moved"
+holder_dst.write_text(text.replace(old, '    return ""\n', 1))
+old = "        job_env.update(slot.env())\n"
+assert text.count(old) == 1, "MUTATION DID NOT APPLY: the slot's environment is not handed over as expected"
+wiring_dst.write_text(text.replace(old, "        pass\n", 1))
+assert old not in wiring_dst.read_text()
 PYPLANT
-lock_out="$(python3 -B - "$here/ci-local.py" "$lock_probe" <<'PYLOCK' 2>&1
-import importlib.util, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
+slot_out="$(python3 -B - "$here/ci-local.py" "$slot_probe" "$slot_wiring" <<'PYSLOT' 2>&1
+import importlib.util, os, pathlib, random, shutil, socket, subprocess, sys, tempfile, time
 
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -1606,62 +1685,159 @@ def load(path, name):
     return module
 
 ci = load(sys.argv[1], "ci_local")
-work = pathlib.Path(tempfile.mkdtemp())
-try:
-    path = work / "pw.lock"
-    holder = subprocess.Popen([sys.executable, "-c", (
+
+def free_base(ci, slots):
+    """A base port whose every slot's ports are free now, well away from 4321."""
+    for _ in range(200):
+        base = random.randrange(20000, 40000, 10)
+        if not any(ci.port_in_use(p) for i in range(slots) for p in ci.slot_ports(i, base)):
+            return base
+    raise SystemExit("no free port range for the slot probe")
+
+def hold(path):
+    """A process holding `path`'s lock, the way another sweep would, until killed."""
+    child = subprocess.Popen([sys.executable, "-c", (
         "import fcntl,sys,time\n"
         f"h=open({str(path)!r},'a+'); fcntl.flock(h, fcntl.LOCK_EX); h.seek(0); h.truncate()\n"
-        "h.write('the planted holder\\n'); h.flush(); print('held', flush=True); time.sleep(30)\n")],
+        "h.write('the planted holder\\n'); h.flush(); print('held', flush=True); time.sleep(60)\n")],
         stdout=subprocess.PIPE, text=True)
-    assert holder.stdout.readline().strip() == "held"
+    assert child.stdout.readline().strip() == "held", "the planted holder did not take its lock"
+    return child
+
+work = pathlib.Path(tempfile.mkdtemp())
+children = []
+try:
+    base = free_base(ci, 3)
+
+    # SLOT 0 IS THE OLD LOCK: same file and same ports, so an unrebased runner excludes it.
+    assert ci.slot_lock_path(0) == ci.PLAYWRIGHT_LOCK, ci.slot_lock_path(0)
+    assert ci.PLAYWRIGHT_LOCK.name == f"burrow-playwright-{os.getuid()}.lock", ci.PLAYWRIGHT_LOCK
+    assert ci.slot_ports(0) == (4321, 4322, 4323), ci.slot_ports(0)
+    print("case: slot 0 is the old lock")
+
+    # TWO CONCURRENT ACQUISITIONS GET DIFFERENT SLOTS WITH DISJOINT PORTS: one taken by another
+    # process, held, and one here.
+    first_child = subprocess.Popen([sys.executable, "-c", (
+        "import importlib.util,pathlib,sys,time\n"
+        f"spec=importlib.util.spec_from_file_location('c', {sys.argv[1]!r}); c=importlib.util.module_from_spec(spec); spec.loader.exec_module(c)\n"
+        f"s=c.playwright_slot(slots=3, wait_s=5.0, directory=pathlib.Path({str(work)!r}), base_port={base})\n"
+        "print('slot', s.index, *s.ports, flush=True); time.sleep(60)\n")],
+        stdout=subprocess.PIPE, text=True)
+    children.append(first_child)
+    fields = first_child.stdout.readline().split()
+    assert fields[:1] == ["slot"], f"the other process took no slot: {fields}"
+    theirs = (int(fields[1]), tuple(int(p) for p in fields[2:]))
+    mine = ci.playwright_slot(slots=3, wait_s=5.0, directory=work, base_port=base)
+    assert mine is not None, "a second slot was not taken while one of three was held"
+    assert mine.index != theirs[0], f"both took slot {mine.index}"
+    assert not set(mine.ports) & set(theirs[1]), f"ports overlap: {mine.ports} and {theirs[1]}"
+    assert str(os.getpid()) in ci.slot_lock_path(mine.index, work).read_text(), "no holder line"
+    print(f"case: concurrent takers got slots {theirs[0]} and {mine.index}, ports {theirs[1]} and {mine.ports}")
+    mine.close(); first_child.kill(); first_child.wait()
+
+    # A FULL HOUSE WAITS, naming every holder, until its bound -- and then a released slot is taken.
+    full = [hold(ci.slot_lock_path(i, work)) for i in range(2)]
+    children += full
     started = time.monotonic()
-    got = ci.playwright_lock(wait_s=1.0, path=path, ports=())
-    assert got is None, "a held lock was taken"
-    assert time.monotonic() - started >= 1.0, "gave up on a held lock before its bound"
-    holder.kill(); holder.wait()
+    got = ci.playwright_slot(slots=2, wait_s=1.5, directory=work, base_port=base)
+    took = time.monotonic() - started
+    assert got is None, "a slot was taken while every slot was held"
+    assert took >= 1.5, f"gave up on a full house before its bound: {took:.1f}s"
+    full[1].kill(); full[1].wait()
+    got = ci.playwright_slot(slots=2, wait_s=5.0, directory=work, base_port=base)
+    assert got is not None and got.index == 1, f"the released slot was not the one taken: {got and got.index}"
+    got.close(); full[0].kill(); full[0].wait()
+    print("case: a full house waits to its bound, and takes the slot that comes free")
 
-    # A FREE LOCK IS TAKEN, AND THE HOLDER LINE IS WRITTEN AT ONCE, naming this checkout and pid.
-    free = socket.socket(); free.bind(("127.0.0.1", 0)); spare = free.getsockname()[1]; free.close()
-    got = ci.playwright_lock(wait_s=1.0, path=path, ports=(spare,))
-    assert got is not None, "a free lock was not taken"
-    written = path.read_text()
-    assert str(ci.REPO) in written and str(os.getpid()) in written, f"holder line: {written!r}"
-    got.close()
-
-    # THE PLANTED DELETION OF THAT WRITE must fail the same assertion: the line is not written by
-    # anything else.
+    # THE HOLDER LINE, deleted in a copy, must disappear: nothing else writes it.
     probe = load(sys.argv[2], "ci_local_probe")
-    path.write_text("")
-    got = probe.playwright_lock(wait_s=1.0, path=path, ports=())
+    got = probe.playwright_slot(slots=1, wait_s=1.0, directory=work, base_port=base)
     assert got is not None
-    assert str(os.getpid()) not in path.read_text(), "the holder line appeared without its write"
+    assert str(os.getpid()) not in ci.slot_lock_path(0, work).read_text(), "the holder line appeared without its write"
     got.close()
+    print("case: without its write, no holder line")
 
-    # A BOUND PORT, on 127.0.0.1 and on the wildcard address, holds the lock back until its own
-    # short limit, then gives up.
+    # A SLOT WHOSE PORTS SOMETHING ELSE HOLDS is passed over for the next.
+    taken = socket.socket(); taken.bind(("127.0.0.1", ci.slot_ports(0, base)[0])); taken.listen(1)
+    got = ci.playwright_slot(slots=2, wait_s=5.0, directory=work, base_port=base, port_wait_s=60.0)
+    assert got is not None and got.index == 1, f"slot 0's bound port was not passed over: {got and got.index}"
+    got.close()
+    print("case: a slot whose port is bound by a stranger is passed over")
+
+    # EVERY FREE SLOT PORT-BLOCKED, AND NO SWEEP HOLDING ONE: the short port limit ends the wait,
+    # naming the listener, on 127.0.0.1 and on the wildcard address.
+    taken.close()
     for address in ("127.0.0.1", "0.0.0.0"):
-        taken = socket.socket(); taken.bind((address, 0)); taken.listen(1)
-        busy = taken.getsockname()[1]
+        taken = socket.socket(); taken.bind((address, ci.slot_ports(0, base)[1])); taken.listen(1)
         started = time.monotonic()
-        got = ci.playwright_lock(wait_s=60.0, path=path, ports=(busy,), port_wait_s=1.0)
-        assert got is None, f"a port listened on at {address} did not stop the lock being taken"
+        got = ci.playwright_slot(slots=1, wait_s=60.0, directory=work, base_port=base, port_wait_s=1.0)
         took = time.monotonic() - started
-        assert 1.0 <= took < 30.0, f"the port limit, not the lock's, should end the wait: {took:.1f}s"
+        assert got is None, f"a port listened on at {address} did not stop the slot being used"
+        assert 1.0 <= took < 30.0, f"the port limit, not the slot wait, should end it: {took:.1f}s"
         taken.close()
-    print("lock-ok")
+    print("case: ports bound by strangers give up at the port limit")
+
+    # THIS CHECKOUT'S LOCK: a second taker in the same checkout waits and gives up at its bound.
+    tree = work / "tree.lock"
+    children.append(hold(tree))
+    started = time.monotonic()
+    assert ci.playwright_tree_lock(1.0, tree) is None, "a held checkout lock was taken"
+    assert time.monotonic() - started >= 1.0
+    print("case: the checkout lock waits for its holder")
+
+    # THE SUITE READS EVERY VARIABLE A SLOT SETS, and a renamed one is named.
+    assert ci.slot_env_unread() == [], f"the real suite does not read {ci.slot_env_unread()}"
+    web = work / "web"
+    shutil.copytree(ci.REPO / "apps/web/e2e", web / "e2e")
+    shutil.copy(ci.REPO / "apps/web/playwright.config.ts", web)
+    spec = web / "e2e/origin-guard.spec.ts"
+    text = spec.read_text()
+    assert "process.env.BURROW_MISMATCH_PORT" in text, "PLANT DID NOT APPLY: origin-guard reads no mismatch port"
+    spec.write_text(text.replace("process.env.BURROW_MISMATCH_PORT", "process.env.BURROW_ELSEWHERE"))
+    assert ci.slot_env_unread(web) == ["BURROW_MISMATCH_PORT"], ci.slot_env_unread(web)
+    print("case: a renamed port variable is named")
+
+    # THE SLOT'S PORTS REACH THE JOB: `run` with slot 0 held hands the job slot 1's ports. A copy
+    # without the hand-over must not.
+    for path, expect in ((sys.argv[1], True), (sys.argv[3], False)):
+        module = load(path, "ci_local_wiring")
+        module.PLAYWRIGHT_LOCK_DIR = work
+        module.PLAYWRIGHT_BASE_PORT = base
+        holder = hold(module.slot_lock_path(0))
+        children.append(holder)
+        out = work / "env.txt"
+        out.unlink(missing_ok=True)
+        os.environ["BURROW_PLAYWRIGHT_SLOTS"] = "2"
+        os.environ["BURROW_PLAYWRIGHT_WAIT_S"] = "10"
+        # SPLIT, because ci-local reads this script as text and the heredoc opener here ends in
+        # `2>&1`: spelled whole, it made `checker-self-tests` a job that runs Playwright.
+        job = {"name": "slot-wiring", "run": f'printf "%s" "${{BURROW_TEST_PORT:-none}}" > {out}; : playwright' + " test"}
+        assert module.runs_playwright(job), "the wiring job is not seen to run Playwright"
+        assert module.run(job, dict(os.environ)), "the wiring job failed"
+        seen = out.read_text()
+        want = str(module.slot_ports(1)[0])
+        assert (seen == want) == expect, f"job saw BURROW_TEST_PORT={seen}, slot 1's is {want}, expected hand-over={expect}"
+        holder.kill(); holder.wait()
+    print("case: the slot's ports reach the job, and not without the hand-over")
+    print("slots-ok")
 finally:
+    for child in children:
+        child.kill()
+        child.wait()
     shutil.rmtree(work, ignore_errors=True)
-PYLOCK
+PYSLOT
 )" || true
-rm -f "$lock_probe"
-if grep -q "lock-ok" <<<"$lock_out" && grep -q "held by the planted holder" <<<"$lock_out" &&
-  grep -q "is still in use after" <<<"$lock_out"; then
-  echo "  ok   the Playwright lock waits for a holder, writes its own holder line, and gives up on a bound port at the port limit"
-  pass=$((pass + 1))
+rm -f "$slot_probe" "$slot_wiring"
+if grep -q "slots-ok" <<<"$slot_out" && grep -q "all 2 Playwright slot(s) busy" <<<"$slot_out" &&
+  grep -q "slot 1: the planted holder" <<<"$slot_out" && grep -q "is still in use after" <<<"$slot_out" &&
+  grep -q "held by the planted holder" <<<"$slot_out" && grep -q "Playwright slot 1 of 2" <<<"$slot_out"; then
+  echo "  ok   Playwright slots: $(grep -c '^case:' <<<"$slot_out") of 9 cases, each asserted"
+  grep '^case:' <<<"$slot_out" | sed 's/^case: /         /'
+  if [ "$(grep -c '^case:' <<<"$slot_out")" -eq 9 ]; then pass=$((pass + 1)); else
+    echo "  FAIL Playwright slots: expected 9 cases"; fail=$((fail + 1)); fi
 else
-  echo "  FAIL the Playwright lock did not behave as required"
-  echo "$lock_out" | tail -8
+  echo "  FAIL the Playwright slots did not behave as required"
+  echo "$slot_out" | tail -12
   fail=$((fail + 1))
 fi
 
