@@ -5434,13 +5434,19 @@ after it keep their place.
 the kept text lands where it did, well inside the second reading's 0.05 pt tolerance. A sum that
 is not finite refuses `[adjustment-not-expressible]`, as a single adjustment already did.
 
-**The residual, at rule level: a removed run's total width is disclosed.** It has to be: the kept
-text after the run must not move, and the one number that keeps it in place is the run's width
-(plus any producer kerns folded into it). What is no longer disclosed is how that width divides
+**The residual, at rule level: a removed run's total width is disclosed.** Where kept text follows
+the run in the same operation, it has to be: that text must not move, and the one number that keeps
+it in place is the run's width (plus any producer kerns folded into it). A *trailing* run -- one
+with no kept code after it in its operation -- also leaves its width as the array's last number
+today. That number is needed only when a later show operation continues from the same pen; where
+the next pen-relevant operator resets the pen, it discloses the width and places nothing. That is
+filed separately and not changed here. What is no longer disclosed is how a run's width divides
 among the removed glyphs, and where a producer kern inside the run marked a word boundary. Also
-still disclosed, and unchanged by this amendment: the number of operations a removal touched (one
-number per operation), the synthetic space PDFium's text layer reports at the gap, and whatever the
-kept text's positions say about the gap's ends.
+still disclosed, and unchanged by this amendment: how many operations a removal touched, and for
+each of them the width removed from it -- a removal spanning several show operations leaves one
+number per operation, and each number is that operation's share of the removed width, not a
+total; the synthetic space PDFium's text layer reports at the gap; and whatever
+the kept text's positions say about the gap's ends.
 
 **Tests.** `pdfsyntax::geometry`'s unit tests assert the run's one number and its value for three
 glyphs of different advances, a producer kern folded into the run, the near-miss of two runs with
