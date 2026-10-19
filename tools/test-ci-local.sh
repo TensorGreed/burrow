@@ -809,6 +809,37 @@ else
 fi
 rm -f "$broken"
 
+# THE SAME GATE OVER THE PRINTS-ONLY RULE'S CONTINUATION CLAUSE (review, 2026-10-19): a copy that
+# forgets the trailing `\` reads `echo "see docs/ROADMAP.md" \` as prints-only, and the probe table
+# must refuse it by name -- the near-miss case is what makes the rule a measurement.
+broken="$here/.ci-local-prints-fixture.py"
+python3 - "$here/ci-local.py" "$broken" <<'PYBREAK'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = 'r"[;|&<>`\\\\]|\\$\\("'
+assert text.count(old) == 1, "the prints-only rule is not spelled as this test expects"
+dst.write_text(text.replace(old, 'r"[;|&<>`]|\\$\\("', 1))
+assert old not in dst.read_text(), "the prints-only mutation did not apply"
+PYBREAK
+if cmp -s "$here/ci-local.py" "$broken"; then
+  echo "  FAIL the checker copy is identical to the original, so nothing was broken"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$(python3 "$broken" --check 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && grep -q "the command parser is broken" <<<"$out" \
+    && grep -qF 'echo "see docs/ROADMAP.md" \\' <<<"$out"; then
+    echo "  ok   a prints-only rule blind to a continued line is refused by its own probe"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a prints-only rule blind to a continued line was not caught by the probe table (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$broken"
+
 # --- `--changed` may only ever NARROW, and each rule that lets it is probed ------------------
 #
 # A selective sweep that skipped a job it should have run is indistinguishable, from its output,

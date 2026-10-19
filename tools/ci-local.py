@@ -1950,6 +1950,10 @@ LINE_READS_CASES: list[tuple[str, str, str, str, bool]] = [
      "docs/adr/README.md", True),
     ("apps/web/fonts.toml", 'note = "apps/web/CLAUDE.md"', "CLAUDE.md", "CLAUDE.md", False),
     ("apps/web/src/x.ts", '// see docs/spikes/x-only.md', "x-only.md", "docs/spikes/x-only.md", False),
+    # #399's prints-only rule, and its near-miss: the same echo continued onto the next line, where
+    # an operator this line cannot see may read the file.
+    ("tools/x.sh", 'echo "see docs/ROADMAP.md"', "ROADMAP.md", "docs/ROADMAP.md", False),
+    ("tools/x.sh", 'echo "see docs/ROADMAP.md" \\', "ROADMAP.md", "docs/ROADMAP.md", True),
 ]
 
 # What `_line_lists` makes of a line near a prose directory: a glob over it, and the near-miss
@@ -2682,13 +2686,15 @@ def _line_reads(namer: str, line: str, name: str, path: str) -> bool:
 # `echo "corpus-fetch: not implemented yet. See docs/ROADMAP.md." >&2` in a tool CI never runs made
 # every ROADMAP edit run all 29 jobs. Only `echo` or `printf` with nothing that could run or read:
 # no `;`, `|`, `&` or `<`, no substitution (`$(`, a backtick -- even inside double quotes, where
-# the shell still runs it), and no redirection but the one to stderr. Anything else is a read.
+# the shell still runs it), and no redirection but the one to stderr, and no trailing `\`: a
+# continued line's operator sits on the NEXT line, which this one-line rule never sees (review,
+# 2026-10-19), so `echo "see docs/ROADMAP.md" \` is a read. Anything else is a read.
 PRINTS_ONLY = re.compile(r"^\s*(?:echo|printf)\s(?P<rest>.*?)\s*(?:1?>&2)?\s*$")
 
 
 def _prints_only(line: str) -> bool:
     printed = PRINTS_ONLY.match(line)
-    return bool(printed) and not re.search(r"[;|&<>`]|\$\(", printed.group("rest"))
+    return bool(printed) and not re.search(r"[;|&<>`\\]|\$\(", printed.group("rest"))
 
 
 # A line that LISTS a directory rather than naming a file: `import.meta.glob("docs/x/*.md")`,
