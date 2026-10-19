@@ -378,6 +378,39 @@ fn each_allowlisted_key_accepts_its_shape_and_refuses_the_near_miss() {
             "/D [ [ 3 2 ] /Phase ]",
             &[],
         ),
+        // Round 1 (code SF2, security F-2): each row below is the one input a surviving mutation
+        // let through -- a third item, a third item behind a reference, the dashes or the phase
+        // behind a reference, and a blend mode behind a reference.
+        (
+            "/D with a third item",
+            "/D [ [ 3 2 ] 0 ]",
+            "/D [ [ 3 2 ] 0 1 ]",
+            &[],
+        ),
+        (
+            "/D with a third item behind a reference",
+            "/D [ [ 3 2 ] 0 ]",
+            "/D [ [ 3 2 ] 0 9 0 R ]",
+            &["(TEXT)".to_owned()],
+        ),
+        (
+            "/D's dash array behind a reference",
+            "/D [ [ 3 2 ] 0 ]",
+            "/D [ 9 0 R 0 ]",
+            &["[ 3 2 ]".to_owned()],
+        ),
+        (
+            "/D's phase behind a reference",
+            "/D [ [ 3 2 ] 0 ]",
+            "/D [ [ 3 2 ] 9 0 R ]",
+            &["0".to_owned()],
+        ),
+        (
+            "/BM's array item behind a reference",
+            "/BM [ /Multiply ]",
+            "/BM [ 9 0 R ]",
+            &["/Multiply".to_owned()],
+        ),
         ("/TR", "/TR /Identity", "/TR /Default", &[]),
         ("/TR2", "/TR2 /Default", "/TR2 /Other", &[]),
         ("/BG2", "/BG2 /Default", "/BG2 /Identity", &[]),
@@ -516,6 +549,54 @@ fn a_shared_graphics_state_dictionary_is_judged_by_every_kept_page_that_shares_i
     let pdf = holder.pdf();
     splits("both pages, one /Resources", &pdf, 0, 2);
     refuses("page 1 alone, one /Resources", &pdf, 0, 1, UNUSED);
+}
+
+/// A DIRECT `/ExtGState` IN A DIRECT `/Resources` IS ITS PAGE'S ALONE (round 1, security F-2).
+/// Three pages, every `/Resources` and `/ExtGState` written directly; the part is pages 1 and 2.
+/// Page 1 lists `/GSX`, the soft mask page 3 draws with, and does not draw with it; page 2 lists a
+/// content-free `/GSX` of its own and draws with it. The two direct dictionaries are not one pool,
+/// so page 2's use does not clear page 1's entry. The twin: page 1 draws with it too.
+#[test]
+fn direct_graphics_state_dictionaries_on_different_pages_are_not_pooled() {
+    let pdf = |page_one: &str| {
+        let page = |states: &str, content: u32| {
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << \
+                 /F1 7 0 R >> /ExtGState << /GSX {states} >> >> /Contents {content} 0 R >>"
+            )
+        };
+        let objects: Vec<Written> = vec![
+            (1, 0, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                0,
+                "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] >>".to_owned(),
+            ),
+            (3, 0, page("9 0 R", 10)),
+            (4, 0, page("<< /ca 0.5 >>", 11)),
+            (5, 0, page("9 0 R", 12)),
+            (7, 0, HELVETICA.to_owned()),
+            (8, 0, mask_form()),
+            (
+                9,
+                0,
+                "<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 8 0 R >> >>"
+                    .to_owned(),
+            ),
+            (10, 0, stream("", page_one)),
+            (11, 0, stream("", PAGE_ONE_USES)),
+            (12, 0, stream("", PAGE_TWO)),
+        ];
+        classic(&objects)
+    };
+    refuses(
+        "page 1 lists the mask and does not draw with it",
+        &pdf(PAGE_ONE),
+        0,
+        2,
+        UNUSED,
+    );
+    splits("page 1 draws with the mask", &pdf(PAGE_ONE_USES), 0, 2);
 }
 
 /// A deep page tree: the resources two `/Pages` levels up, page 1 with its own `/Rotate`. The copy
@@ -709,6 +790,11 @@ fn a_page_inheriting_resources_refuses_and_the_climb_refuses_at_its_ceiling() {
     let deep = check(chain(70, "")).expect_err("deeper than the climb");
     assert!(deep.contains("[split-page-tree-too-deep]"), "{deep}");
     check(chain(60, "")).expect("inside the climb");
+    // THE BOUNDARY. A page under 63 `/Pages` levels takes 64 steps to find the root's absent
+    // `/Parent`, the ceiling exactly; one level more refuses.
+    check(chain(63, "")).expect("at the ceiling");
+    let over = check(chain(64, "")).expect_err("one past the ceiling");
+    assert!(over.contains("[split-page-tree-too-deep]"), "{over}");
 }
 
 /// THE DEADLINE IS READ AT EVERY ENTRY AND EVERY ARRAY ITEM. A page listing many graphics states it
