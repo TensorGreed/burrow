@@ -218,10 +218,10 @@ test("redacting makes no request beyond redaction's and the picture's pinned eng
   const chosen = `redact-chosen:${testInfo.project.name}`;
   await mark(opened);
   await page.goto("/redact-pdf/");
-  // HYDRATED, AND SETTLED: Astro drops `ssr` from an island once it has hydrated, so anything the
-  // island fetches on its own has been asked for by the time the network goes quiet.
-  await expect(page.locator("astro-island")).not.toHaveCount(0);
-  await expect(page.locator("astro-island[ssr]")).toHaveCount(0);
+  // MOUNTED, AND SETTLED: the file input exists only once the page's script has mounted the tool
+  // (`src/held/redact-pdf.astro`), so anything the tool fetches on its own has been asked for by
+  // the time the network goes quiet after it.
+  await expect(page.getByTestId("redact-file")).toBeAttached();
   await page.waitForLoadState("networkidle");
   await mark(chosen);
   await page.getByTestId("redact-file").setInputFiles(join(fixtures, REDACTS));
@@ -806,7 +806,11 @@ test("nothing below the picture moves when it arrives (S4)", async ({ page }) =>
   release();
   await drawnPicture(page);
   const after = await top();
-  expect(after - before, "the run button moved when the picture arrived").toBe(0);
+  // UNDER HALF A PIXEL IS ROUNDING, not a shift: Firefox reports a fraction of a pixel's
+  // difference (measured: 0.00006) between two reads of an unmoved node.
+  expect(Math.abs(after - before), "the run button moved when the picture arrived").toBeLessThan(
+    0.5,
+  );
 });
 
 test("leaving the page lets go of the picture and ends its worker (S4, D1, D4)", async ({
