@@ -47,6 +47,7 @@ import {
   driftFindings,
   explain,
 } from "./size-budget-drift.js";
+import { baseLineDeltaTable, baseLineDeltas } from "../../../tools/size-budget-base-delta.mjs";
 import { HARNESS_DIR, PRODUCTION_DIR } from "./build-output.js";
 import { type HeadroomLine, headroomFindings, policyMinimum } from "./size-budget-headroom.js";
 
@@ -1232,5 +1233,50 @@ describe("the drift probe itself", () => {
         live: {},
       }),
     ).toEqual([]);
+  });
+});
+
+describe("the base-line delta against main, and its count (owner, 2026-10-18)", () => {
+  // `tools/report-size-budget.mjs` prints every base line against main's recording and REFUSES
+  // unless it compared every one. These are that count's probes, run on every run: a count that
+  // cannot go short is not a count. The expected number is this file's base lines, so it is
+  // derived, not a literal.
+  const expected = Object.keys(budget.artifacts).sort();
+  const asMain = budget.artifacts;
+
+  it("compares every base line when main records them all and the build has them all", () => {
+    const delta = baseLineDeltas(asMain, budget.artifacts, groups);
+    expect(delta.expected).toEqual(expected);
+    expect(delta.examined).toEqual(expected);
+    expect(delta.missing).toEqual([]);
+    // eslint-disable-next-line no-console -- a test reporting what it examined
+    console.log(`  base-line delta: ${delta.examined.length} of ${expected.length} compared`);
+  });
+
+  it("goes short, naming the line, when main has no recording of it", () => {
+    const victim = expected[0];
+    const main = { ...asMain };
+    delete main[victim];
+    expect(Object.keys(main), "the plant must remove a line").toHaveLength(expected.length - 1);
+    const delta = baseLineDeltas(main, budget.artifacts, groups);
+    expect(delta.missing).toEqual([victim]);
+    expect(delta.examined).toHaveLength(expected.length - 1);
+  });
+
+  it("goes short, naming the line, when the build does not contain it", () => {
+    const victim = expected[expected.length - 1];
+    const build = { ...groups };
+    delete build[victim];
+    expect(victim in build, "the plant must remove a group").toBe(false);
+    expect(baseLineDeltas(asMain, budget.artifacts, build).missing).toEqual([victim]);
+  });
+
+  it("prints a one-byte growth as +1, which the KiB table rounds away", () => {
+    const victim = "page";
+    const grown = { ...groups, [victim]: { ...groups[victim], brotli: groups[victim].brotli + 1 } };
+    expect(grown[victim].brotli, "the plant must apply").toBe(groups[victim].brotli + 1);
+    const main = { [victim]: { measured_brotli: groups[victim].brotli } };
+    const table = baseLineDeltaTable(baseLineDeltas(main, { [victim]: main[victim] }, grown));
+    expect(table).toMatch(new RegExp(`\\| \`${victim}\` \\|.*\\| \\+1 \\|$`, "m"));
   });
 });
