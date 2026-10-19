@@ -2622,8 +2622,8 @@ mod second_reading {
 
     #[test]
     fn a_failing_second_reading_stops_the_operation_returning_bytes() {
-        // KILLS: discarding `region_is_cleared_twice`'s result, or calling `region_is_cleared`
-        // alone. The honest run above is this test's twin.
+        // KILLS: discarding the second reading's verdict (`redact_read_back::agrees`), or running
+        // burrow's walk alone. The honest run above is this test's twin.
         reset();
         SECOND_READING_FAILS.with(|flag| flag.set(true));
         let result = redact(PLAIN);
