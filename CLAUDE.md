@@ -150,6 +150,9 @@ still local. **Which reviewer depends on what the change decides** (2026-10-14, 
   the 2026-09-24 tooling class (tooling, gates, checkers, their self-tests, CI wiring, fixture
   generators) -- get one `code-reviewer` pass.
 
+A slice that adds a refusal fixture with a twin also renders the twin's output in all five readers
+and puts the result in the PR body (DECISIONS.md rule 17, amended 2026-10-19).
+
 When a change is more than one of these, it gets the heaviest. DECISIONS.md rule 17 (owner,
 2026-10-14) is the source; this replaced "both reviewers for any code that decides what redaction
 removes or keeps" (2026-09-24).
