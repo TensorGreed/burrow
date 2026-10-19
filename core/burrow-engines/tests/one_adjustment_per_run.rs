@@ -219,3 +219,24 @@ fn a_single_removed_glyph_leaves_one_number() {
         1,
     );
 }
+
+/// L-4 (F-2 round 1): A TRAILING RUN FOLLOWED BY A SHOW OPERATION ON THE SAME PEN. `W` ends the
+/// first `Tj`, so its one number is the last item of the rewritten array; nothing in that array
+/// comes after it, but the second `Tj` draws `CD` from where the first left the pen. That number
+/// is what keeps `C` and `D` in place -- dropping the array's final flush moves them left by
+/// `W`'s advance, which this asserts against PDFium's origins.
+#[test]
+fn a_trailing_run_keeps_a_later_show_operation_on_the_same_pen_in_place() {
+    redacts_to(
+        "trailing run",
+        "BT /F2 20 Tf 40 Tc 10 260 Td (ABW) Tj (CD) Tj ET",
+        Region {
+            left: 100.0,
+            top: 100.0,
+            width: 50.0,
+            height: 50.0,
+        },
+        "W",
+        1,
+    );
+}
