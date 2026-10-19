@@ -227,6 +227,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "xobject-missing": "text-structure",
 
   // How the file itself is written.
+  "content-operand-read-differently": "file-structure",
   "contents-boundary": "file-structure",
   "contents-not-a-stream": "file-structure",
   "contents-offset": "file-structure",
