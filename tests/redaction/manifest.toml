@@ -1571,6 +1571,145 @@ pages = 1
   expect_after = "refused"
   notes = "Refused since #125 slice 3 (2026-10-15): no page-side signal survives its evasion, so every document with a structure tree refuses [structure-tree], this near-miss of the page-side proxy included. A deliberate over-refusal: nearly every accessible PDF is tagged, and the narrowing is post-launch."
 
+# #125 slice 5 (2026-10-18): the /StructParents evasion, and the twins the evasions above lacked.
+# Each twin keeps its evasion's shape and drops only the carrier the refusal keys on.
+
+[[fixture]]
+name = "evade-structparents-resolving-elsewhere"
+file = "generated/evade-structparents-resolving-elsewhere.pdf"
+kind = "hand-built"
+probes_refusal = "/StructTreeRoot"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot — evasion"
+  canary = "BURROW-EVADE-STRUCT-ELSEWHERE"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#125 slice 5. Page 1 carries /StructParents 0, and the /ParentTree entry it names resolves to an element whose /Pg is page 2, while that element's /ActualText describes page 1's marked content. A signal following /StructParents to its own page's elements finds nothing. Refused by [structure-tree], as every document with a tree is."
+
+[[fixture]]
+name = "nearmiss-structparents-without-a-tree"
+file = "generated/nearmiss-structparents-without-a-tree.pdf"
+kind = "hand-built"
+probes_refusal = "/StructTreeRoot"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot — near-miss twin"
+  canary = "BURROW-EVADE-STRUCT-ELSE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-structparents-resolving-elsewhere: the same two pages, /StructParents and marked content, and no structure tree. The refusal is on a tree, not on a page claiming a place in one."
+
+[[fixture]]
+name = "nearmiss-marked-content-without-a-tree"
+file = "generated/nearmiss-marked-content-without-a-tree.pdf"
+kind = "hand-built"
+probes_refusal = "/StructTreeRoot"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot — near-miss twin"
+  canary = "BURROW-EVADE-MARKED-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-struct-without-structparents: the same /MCID marked content in the region, no /StructParents and no tree."
+
+[[fixture]]
+name = "nearmiss-inline-image-unfiltered-outside-region"
+file = "generated/nearmiss-inline-image-unfiltered-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-INLINE-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused under the pdfbuild and band regions. The twin of evade-inline-image: the same kind of inline image with no /F filter, drawn below the region. The whole-page region reaches it and refuses [image-in-region] by design."
+
+[[fixture]]
+name = "nearmiss-image-pattern-never-selected"
+file = "generated/nearmiss-image-pattern-never-selected.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-IMGPAT-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The page-level twin of evade-image-as-pattern: the same image tiling pattern in the page's /Pattern resources, never selected as a colour."
+
+[[fixture]]
+name = "nearmiss-paths-in-type3-glyph-clip-only"
+file = "generated/nearmiss-paths-in-type3-glyph-clip-only.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-TYPE3-CLIP-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-paths-in-type3-glyph: the same Type 3 font shown at the same place, its glyph procedure building the same rectangles and only clipping to them (re W n), painting nothing."
+
+[[fixture]]
+name = "nearmiss-widget-without-a-field-on-another-page"
+file = "generated/nearmiss-widget-without-a-field-on-another-page.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-WIDGET-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-widget-on-another-page: the same widget annotation and appearance on page 2, with no /FT, no /V and no catalogue /AcroForm; page 1 is redacted."
+
+[[fixture]]
+name = "nearmiss-field-keys-without-a-field-type"
+file = "generated/nearmiss-field-keys-without-a-field-type.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-FIELDKEYS-NEAR"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-field-with-no-widget: an object with a field's /T and /V and no /FT, reached from the catalogue through /PieceInfo rather than an /AcroForm."
+
 [[fixture]]
 name = "evade-oc-two-levels-down"
 file = "generated/evade-oc-two-levels-down.pdf"

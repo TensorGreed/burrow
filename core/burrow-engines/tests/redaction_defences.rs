@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 98] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2920,10 +2920,32 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
     // `/Parent` with no `/FT` anywhere.
     ("evade-widget-ft-on-parent.pdf", Some("acroform-field")),
     ("nearmiss-annotation-with-a-parent-not-a-field.pdf", None),
+    // #125 slice 5: a twin for each of the two evasions that shared the sticky note. The refusal
+    // is document-wide, so each twin keeps its evasion's shape and drops the carrier: the widget
+    // on page 2 without a field type, and a field's `/T` and `/V` without `/FT` or `/AcroForm`.
+    ("nearmiss-widget-without-a-field-on-another-page.pdf", None),
+    ("nearmiss-field-keys-without-a-field-type.pdf", None),
+    // /StructTreeRoot (#125 slice 3): every document with a structure tree refuses, so the
+    // page-proxy near-miss refuses too -- a recorded over-refusal. The twins that stay `Ok` (slice
+    // 5) carry the page side of a tag -- the `/MCID` marks, `/StructParents` -- and no tree.
+    (
+        "evade-struct-without-structparents.pdf",
+        Some("structure-tree"),
+    ),
+    (
+        "nearmiss-structparents-but-nothing-in-region.pdf",
+        Some("structure-tree"),
+    ),
+    (
+        "evade-structparents-resolving-elsewhere.pdf",
+        Some("structure-tree"),
+    ),
+    ("nearmiss-structparents-without-a-tree.pdf", None),
+    ("nearmiss-marked-content-without-a-tree.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 13] = [
+const RESOLVED_GROUPS: [&str; 14] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2937,6 +2959,7 @@ const RESOLVED_GROUPS: [&str; 13] = [
     "annotation appearance",
     "annotation dependents",
     "/AcroForm",
+    "/StructTreeRoot",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
@@ -3123,7 +3146,7 @@ fn pdfbuild_region() -> Region {
 /// are discharged by a broader rule than the region signal, and say so: a tiling or shading pattern
 /// fill by `pattern-may-draw-text`, a filtered inline image by `inline-image-filtered`, a Type 3
 /// procedure by the Type 3 rules.
-const INK_OUTCOMES: [(&str, Option<&str>); 21] = [
+const INK_OUTCOMES: [(&str, Option<&str>); 24] = [
     ("evade-image-in-form.pdf", Some("image-in-region")),
     (
         "evade-image-in-form-two-levels-down.pdf",
@@ -3138,6 +3161,8 @@ const INK_OUTCOMES: [(&str, Option<&str>); 21] = [
         None,
     ),
     ("evade-inline-image.pdf", Some("inline-image-filtered")),
+    // Its twin (#125 slice 5): the same kind of inline image without the filter, below the region.
+    ("nearmiss-inline-image-unfiltered-outside-region.pdf", None),
     (
         "evade-inline-image-outside-type3-box.pdf",
         Some("type-three-image-outside-its-box"),
@@ -3147,6 +3172,8 @@ const INK_OUTCOMES: [(&str, Option<&str>); 21] = [
         Some("type-three-procedure-shows-text"),
     ),
     ("evade-image-as-pattern.pdf", Some("pattern-may-draw-text")),
+    // Its page-level twin (#125 slice 5): the same pattern in the page's resources, never selected.
+    ("nearmiss-image-pattern-never-selected.pdf", None),
     (
         "evade-image-in-tiling-pattern-inside-a-form.pdf",
         Some("pattern-may-draw-text"),
@@ -3176,6 +3203,8 @@ const INK_OUTCOMES: [(&str, Option<&str>); 21] = [
         "evade-paths-in-type3-glyph.pdf",
         Some("type-three-procedure-paints"),
     ),
+    // Its twin (#125 slice 5): the same glyph procedure clipping to its rectangles, painting none.
+    ("nearmiss-paths-in-type3-glyph-clip-only.pdf", None),
 ];
 
 #[test]

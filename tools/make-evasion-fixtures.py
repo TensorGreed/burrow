@@ -1480,6 +1480,247 @@ def nearmiss_structparents_but_nothing_in_region() -> bytes:
 
 
 # ===========================================================================================
+# #125 SLICE 5 (2026-10-18): the `/StructParents` evasion, and the near-miss twins the evasions
+# above still lacked.
+#
+# Five of these refusals are document-wide or global -- a pattern fill, a filtered inline image, a
+# Type 3 procedure that paints, a form field, a structure tree -- so no twin can carry the carrier
+# and stay `Ok`. Each twin here keeps the evasion's SHAPE and drops only the carrier the refusal
+# keys on: the same inline image without its filter, the same pattern never selected, the same
+# glyph procedure with its fills turned into clips, the same widget without a field type, the same
+# marked content without a tree. A refusal keyed on the shape rather than the carrier refuses the
+# twin too, which is the over-refusal a twin exists to catch.
+# ===========================================================================================
+
+
+def nearmiss_inline_image_unfiltered_outside_region() -> bytes:
+    """`evade-inline-image`'s twin: the same kind of inline image with NO `/F` filter, drawn below
+    the region, and the canary as text in it. MUST NOT be refused where the region misses the
+    image -- the filtered-inline refusal is on the filter, not on an inline image existing. The
+    `whole`-page region reaches the image and refuses `[image-in-region]` by design."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    w, h, pixels = raster("DECORATION", scale=1)
+    inline = (
+        b"q 80 0 0 6 300 10 cm\n"
+        b"BI /W " + str(w).encode() + b" /H " + str(h).encode() + b" /CS /G /BPC 8 ID "
+    )
+    content = inline + pixels + b"\nEI Q\n" + _secret_run("INLINE-NEAR") + keep_line_ops()
+    return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
+
+
+def nearmiss_image_pattern_never_selected() -> bytes:
+    """`evade-image-as-pattern`'s twin: the same image tiling pattern in the PAGE's `/Pattern`
+    resources, never selected as a colour; the canary is text in the region. MUST NOT be refused
+    -- the refusal is on a pattern fill, not on a pattern existing."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    image, w, h = _grey_image_stream(pdf, "DECORATION", scale=2)
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Pattern << /P1 " + str(_image_tiling_pattern(pdf, image, w, h)).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, _secret_run("IMGPAT-NEAR") + keep_line_ops(), res)
+
+
+def nearmiss_paths_in_type3_glyph_clip_only() -> bytes:
+    """`evade-paths-in-type3-glyph`'s twin: the same Type 3 font, shown at the same place, whose
+    glyph procedure builds the same rectangles and only CLIPS to them (`re W n`), painting nothing;
+    the canary is text in the region. MUST NOT be refused -- `[type-three-procedure-paints]` is on
+    a paint operator, and a clip alone paints nothing (`check_type_three_procedure`'s rustdoc)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    fills = outline_ops("DECORATION", 0, 0, SECRET_SIZE)
+    clips = fills.replace(b" re f\n", b" re W n\n")
+    assert b" re f\n" not in clips and clips.count(b" re W n\n") == fills.count(b" re f\n")
+    proc = pdf.stream(b"", b"200 0 0 0 200 20 d0\n" + clips)
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 200 20]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [200]"
+        b" /Resources << >> >>"
+    )
+    content = (
+        b"BT /T3 1 Tf " + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal("a") + b" Tj ET\n" + _secret_run("TYPE3-CLIP-NEAR") + keep_line_ops()
+    )
+    res = (
+        b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_widget_without_a_field_on_another_page() -> bytes:
+    """`evade-widget-on-another-page`'s twin: the same two pages and the same widget annotation on
+    page 2, with its appearance, but no `/FT`, no `/V` and no catalogue `/AcroForm`. Page 1 is
+    redacted, its canary as text in the region. MUST NOT be refused -- the refusal is on a field,
+    not on a widget annotation, and not on the document having a second page."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    pages = pdf.reserve()
+    page1 = pdf.reserve()
+    page2 = pdf.reserve()
+    ap = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 200 24]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"/Tx BMC q BT /Helv 14 Tf 2 6 Td " + literal("A-BUTTON-LABEL") + b" Tj ET Q EMC\n",
+    )
+    widget = pdf.add(
+        b"<< /Type /Annot /Subtype /Widget /F 4 /Rect [40 40 240 64]"
+        b" /P " + str(page2).encode() + b" 0 R"
+        b" /AP << /N " + str(ap).encode() + b" 0 R >> >>",
+    )
+    body1 = pdf.stream(b"", _secret_run("WIDGET-NEAR") + keep_line_ops())
+    body2 = pdf.stream(b"", keep_line_ops())
+    common = (
+        b" /MediaBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>"
+    )
+    pdf.put(
+        page1,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + common
+        + b" /Contents " + str(body1).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        page2,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + common
+        + b" /Annots [" + str(widget).encode() + b" 0 R]"
+        b" /Contents " + str(body2).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 2 /Kids ["
+        + str(page1).encode() + b" 0 R " + str(page2).encode() + b" 0 R] >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build(root)
+
+
+def nearmiss_field_keys_without_a_field_type() -> bytes:
+    """`evade-field-with-no-widget`'s twin: an object carrying a field's `/T` and `/V` but no
+    `/FT`, reached from the catalogue through `/PieceInfo` (an application's private data) rather
+    than through an `/AcroForm`; the canary is text in the region. MUST NOT be refused -- the
+    refusal keys on `/FT` and on the catalogue's `/AcroForm`, not on keys that happen to share a
+    field's names."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    private = pdf.add(
+        b"<< /T " + literal("widgetless") + b" /V " + literal("an application's own value") + b" >>"
+    )
+    piece_info = (
+        b" /PieceInfo << /BurrowFixture << /LastModified (D:20261018000000Z)"
+        b" /Private " + str(private).encode() + b" 0 R >> >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("FIELDKEYS-NEAR") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        catalog_extra=piece_info,
+    )
+
+
+def _tagged_pair(*, tree: bool, structparents: bool, canary_in_region: bool) -> bytes:
+    """Two pages, page 1's marked content `/P << /MCID 0 >>` in the region, page 2 its own.
+
+    With `tree`, a `/StructTreeRoot` whose `/ParentTree` maps page 1's `/StructParents 0` to an
+    element whose `/Pg` is PAGE 2, carrying the canary as `/ActualText`: an entry that resolves
+    elsewhere. Without it, the same pages and marks and no tree at all."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    pages = pdf.reserve()
+    page1 = pdf.reserve()
+    page2 = pdf.reserve()
+    marked = literal(secret("STRUCT-ELSE-NEAR")) if canary_in_region else literal("MARKED-CONTENT-HERE")
+    body1 = pdf.stream(
+        b"",
+        b"/P << /MCID 0 >> BDC\n"
+        b"BT /Helv 20 Tf " + f"{SECRET_X} {SECRET_Y} Td ".encode() + marked + b" Tj ET\nEMC\n"
+        + keep_line_ops(),
+    )
+    body2 = pdf.stream(
+        b"",
+        b"/P << /MCID 0 >> BDC\n" + keep_line_ops() + b"EMC\n",
+    )
+    catalog_extra = b" /MarkInfo << /Marked true >>"
+    if tree:
+        struct_root = pdf.reserve()
+        elem = pdf.reserve()
+        pdf.put(
+            elem,
+            b"<< /Type /StructElem /S /P /P " + str(struct_root).encode() + b" 0 R"
+            b" /Pg " + str(page2).encode() + b" 0 R /K 0"
+            b" /ActualText " + literal(secret("STRUCT-ELSEWHERE")) + b" >>",
+        )
+        e = str(elem).encode()
+        pdf.put(
+            struct_root,
+            b"<< /Type /StructTreeRoot /K [" + e + b" 0 R]"
+            b" /ParentTree << /Nums [0 [" + e + b" 0 R] 1 [" + e + b" 0 R]] >>"
+            b" /ParentTreeNextKey 2 >>",
+        )
+        catalog_extra += b" /StructTreeRoot " + str(struct_root).encode() + b" 0 R"
+    common = (
+        b" /MediaBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>"
+    )
+    for index, (page, body) in enumerate(((page1, body1), (page2, body2))):
+        parents = f" /StructParents {index}".encode() if structparents else b""
+        pdf.put(
+            page,
+            b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + common + parents
+            + b" /Contents " + str(body).encode() + b" 0 R >>",
+        )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 2 /Kids ["
+        + str(page1).encode() + b" 0 R " + str(page2).encode() + b" 0 R] >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R" + catalog_extra + b" >>")
+    return pdf.build(root)
+
+
+def evade_structparents_resolving_elsewhere() -> bytes:
+    """Page 1 carries `/StructParents 0`, and the `/ParentTree` entry it names resolves to an
+    element whose `/Pg` is PAGE 2 -- while that element's `/ActualText` is the canary describing
+    page 1's marked content.
+
+    #125's last structure checkbox. A page-side signal that follows `/StructParents` and keeps only
+    the elements on its own page finds nothing on page 1 here. Refused by `[structure-tree]`: since
+    slice 3 any document with a tree refuses, so no page-side reading is trusted. MUST be refused.
+    """
+    return _tagged_pair(tree=True, structparents=True, canary_in_region=False)
+
+
+def nearmiss_structparents_without_a_tree() -> bytes:
+    """`evade-structparents-resolving-elsewhere`'s twin: the same two pages, the same
+    `/StructParents` and marked content, and NO structure tree; the canary is the marked text in
+    the region. MUST NOT be refused -- the refusal is on a tree, not on a page claiming a place in
+    one."""
+    return _tagged_pair(tree=False, structparents=True, canary_in_region=True)
+
+
+def nearmiss_marked_content_without_a_tree() -> bytes:
+    """`evade-struct-without-structparents`'s twin: the same `/P << /MCID 0 >>` marked content in
+    the region, no `/StructParents` and no structure tree. MUST NOT be refused -- an `/MCID` mark
+    is ordinary content, and the refusal is on the tree that would describe it."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"/P << /MCID 0 >> BDC\n" + _secret_run("MARKED-NEAR") + b"EMC\n" + keep_line_ops()
+    )
+    return simple_page(
+        pdf,
+        content,
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        catalog_extra=b" /MarkInfo << /Marked true >>",
+    )
+
+
+# ===========================================================================================
 # Refusal 5 — optional content. The ONE signal ADR 0029 §5 marks measured. It still owes depth:
 # its evade fixture (`oc-nested.pdf`) pins ONE level and the code walks deeper.
 # ===========================================================================================
@@ -3434,6 +3675,15 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-annotation-with-a-parent-not-a-field", "/AcroForm"),
     ("evade-struct-without-structparents", "/StructTreeRoot"),
     ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot"),
+    # #125 slice 5: the /StructParents evasion and the twins the evasions above lacked.
+    ("evade-structparents-resolving-elsewhere", "/StructTreeRoot"),
+    ("nearmiss-structparents-without-a-tree", "/StructTreeRoot"),
+    ("nearmiss-marked-content-without-a-tree", "/StructTreeRoot"),
+    ("nearmiss-inline-image-unfiltered-outside-region", "image"),
+    ("nearmiss-image-pattern-never-selected", "image"),
+    ("nearmiss-paths-in-type3-glyph-clip-only", "vector paths"),
+    ("nearmiss-widget-without-a-field-on-another-page", "/AcroForm"),
+    ("nearmiss-field-keys-without-a-field-type", "/AcroForm"),
     ("evade-oc-two-levels-down", "optional content"),
     ("nearmiss-nested-forms-no-oc", "optional content"),
     ("evade-actualtext-around-a-form", "/ActualText"),
@@ -3676,6 +3926,14 @@ BUILDERS = {
     "evade-widget-ft-on-parent": evade_widget_ft_on_parent,
     "nearmiss-annotation-with-a-parent-not-a-field": nearmiss_annotation_with_a_parent_not_a_field,
     "nearmiss-property-list-inside-an-unused-type3-font": nearmiss_property_list_inside_an_unused_type3_font,
+    "evade-structparents-resolving-elsewhere": evade_structparents_resolving_elsewhere,
+    "nearmiss-structparents-without-a-tree": nearmiss_structparents_without_a_tree,
+    "nearmiss-marked-content-without-a-tree": nearmiss_marked_content_without_a_tree,
+    "nearmiss-inline-image-unfiltered-outside-region": nearmiss_inline_image_unfiltered_outside_region,
+    "nearmiss-image-pattern-never-selected": nearmiss_image_pattern_never_selected,
+    "nearmiss-paths-in-type3-glyph-clip-only": nearmiss_paths_in_type3_glyph_clip_only,
+    "nearmiss-widget-without-a-field-on-another-page": nearmiss_widget_without_a_field_on_another_page,
+    "nearmiss-field-keys-without-a-field-type": nearmiss_field_keys_without_a_field_type,
 }
 
 
