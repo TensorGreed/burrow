@@ -472,7 +472,7 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         deadline.checkpoint(clock.as_ref())?;
         let engine = self.0;
         let heap_before = engine.bridge().heap_bytes();
-        // R10: THE SLICE COPIED INTO QPDF'S HEAP, if a verifier named this open.
+        // R10: THE SLICE COPIED INTO QPDF'S HEAP, recorded under the name a verifier gave this open, or Unnamed.
         #[cfg(test)]
         crate::redact::hooks::record_open(opened, bytes);
         let session = Session::open(engine, bytes, options.password, false)?;

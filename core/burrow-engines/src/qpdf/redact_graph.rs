@@ -189,7 +189,7 @@ impl OpensForRedaction for Qpdf {
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)> {
         let bytes = bytes.to_vec().into_boxed_slice();
-        // R10: THE COPY QPDF IS HANDED, if a verifier named this open. See `hooks::record_open`.
+        // R10: THE COPY QPDF IS HANDED, recorded under the name a verifier gave this open, or Unnamed. See `hooks::record_open`.
         #[cfg(test)]
         crate::redact::hooks::record_open(crate::redact::hooks::take_opening(), &bytes);
         let (document, _, _, deadline) = super::open_document(bytes, options)?;

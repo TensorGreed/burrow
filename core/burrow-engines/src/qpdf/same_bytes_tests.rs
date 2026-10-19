@@ -36,7 +36,8 @@
 //! over -- the boxed slice qpdf and PDFium are given -- and nothing inside the engine. Opens
 //! outside the three instrumented ones (`Qpdf::open_for_redaction`, `PdfiumReading::open`, the
 //! web engine's `open_for_redaction`) are not recorded: the renderer's size read of an inherited
-//! `/MediaBox` opens the input through `Pdfium::open`, which no verifier uses. And only the
+//! `/MediaBox` opens the input through `Pdfium::open`, which no verifier uses, and
+//! `input_rotations` reaches `open_document` directly, an unrecorded open too. And only the
 //! corpus's `OK` cases: a path none of them reaches is held by the fakes' structural tests in
 //! `redact::tests`, not by real digests.
 //!
