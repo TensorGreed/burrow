@@ -1280,12 +1280,16 @@ def evade_clip_pending_across_form_in_q() -> bytes:
 
 
 def evade_clip_rectangle_single_precision_rounds() -> bytes:
-    """One rectangle clip that holds the whole page in double precision, from numbers single
-    precision cannot hold, so a reader working in single precision may admit a different box.
+    """One rectangle clip that holds the text in double precision, from numbers single precision
+    cannot hold, with an edge closer to the text than single precision can place it.
+
+    Every number is within 2^24, so the clip is exact and only the margin refuses it: with the
+    margin removed, the rectangle provably holds the text and the page is accepted. The top
+    edge is 8 units above the region; the margin at these magnitudes is about 30.
 
     The twin is `nearmiss_clip_rectangle_around_region`. Refuses `[clip-path-in-region]`."""
     return _clip_page(
-        f"0 -2147483456.01 {PAGE_W} 2147483656.01 re".encode(), "CLIP-RECT-F32"
+        f"0 -16000000.4 {PAGE_W} 16000140.4 re".encode(), "CLIP-RECT-F32"
     )
 
 

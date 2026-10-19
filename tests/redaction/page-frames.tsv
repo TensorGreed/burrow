@@ -125,7 +125,7 @@ INPUT	tests/redaction/generated/evade-clip-pending-across-form-in-q.pdf	7a783623
 PAGE	tests/redaction/generated/evade-clip-pending-across-form-in-q.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	5e6353c933c38a74463a00add17e470b478e5e41710272a9d0bff3e2e2707b55
 PAGE	tests/redaction/generated/evade-clip-pending-across-text-in-q.pdf	0	FRAME 400 200
-INPUT	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	f28cdd6759ec9edc95120c7f577121e1a1dff8b14f3897006a2a11429fbbd351
+INPUT	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	5b4c7c90dd349aec2e04cb568d154b835dd613bf6b7f1288790e913e0e4675a4
 PAGE	tests/redaction/generated/evade-clip-rectangle-single-precision-rounds.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	ce98848d3ff694dc1d62c01752830bb85026e7fd47b1317d1581de3cb374cc7d
 PAGE	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	0	RULE media-box-unverified

@@ -1512,7 +1512,7 @@ pages = 1
   witness_before = "pdfium-text"
   witness_observes = "canary"
   expect_after = "refused"
-  notes = "Refuses [clip-path-in-region]: one rectangle clip that holds the page in double precision, from numbers single precision cannot hold. The twin is nearmiss-clip-rectangle-around-region."
+  notes = "Refuses [clip-path-in-region]: one exact rectangle clip that holds the text in double precision, with an edge nearer the text than single precision can place it. The twin is nearmiss-clip-rectangle-around-region."
 
 [[fixture]]
 name = "evade-clip-outer-path-inner-rectangle"
