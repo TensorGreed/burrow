@@ -1,7 +1,7 @@
 // The per-line brotli delta of every BASE line against main (owner, 2026-10-18).
 //
-// A base line is a top-level `artifacts` entry of `apps/web/size-budget.json`: something every
-// visitor loads. The question a reviewer asks of a PR about those lines is "which one moved, by
+// A base line is anything a visitor loads (DECISIONS rule 18's 2026-10-18 amendment): a
+// top-level `artifacts` entry of `apps/web/size-budget.json`, or a `render.artifacts` one. The question a reviewer asks of a PR about those lines is "which one moved, by
 // how many bytes, against main" -- and the existing table answers a different one ("against this
 // tree's own recording", in KiB to one decimal, which rounds a 40-byte growth to "+0.0 KiB").
 //

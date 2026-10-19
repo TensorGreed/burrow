@@ -162,6 +162,12 @@ jobs:
       - name: No shipped build can read qpdf's error text (DECISIONS.md rule 13)
         run: tools/check-no-error-text-in-deploy.sh
 
+      # The report below compares every base line with main's recording and refuses without it;
+      # this checkout is depth 1 and has no `origin/main`. A commit of this repository, not file
+      # content.
+      - name: Fetch main's recording for the base-line delta
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+
       - name: Record what is about to be uploaded
         run: |
           echo "### Payload" >> "$GITHUB_STEP_SUMMARY"

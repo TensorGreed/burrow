@@ -144,7 +144,13 @@ try {
   );
   process.exit(1);
 }
-const baseDelta = baseLineDeltas(mainBudget.artifacts ?? {}, budget.artifacts, groups);
+// Render lines are base lines too (rule 18's 2026-10-18 amendment: anything a visitor loads).
+// Their keys are distinct from the base payload's, so the two merge without a collision.
+const baseDelta = baseLineDeltas(
+  { ...mainBudget.artifacts, ...mainBudget.render?.artifacts },
+  { ...budget.artifacts, ...budget.render.artifacts },
+  { ...groups, ...renderGroups },
+);
 const baseCount =
   `${baseDelta.examined.length} of ${baseDelta.expected.length} base line(s) compared with ` +
   `\`${baseRef}\``;
@@ -172,7 +178,8 @@ const report = [
   "",
   "### Every base line against main, in bytes",
   "",
-  'Base lines are what every visitor loads. "recorded vs main" is what this PR re-records.',
+  "Base lines are what visitors load, the render lines included; DECISIONS rule 18 holds them",
+  'at 0% on the recording\'s architecture. "recorded vs main" is what this PR re-records.',
   "Main's figures are main's recording, not a build of main, so \"this build\" also carries any",
   "difference between the machine that recorded main and this one.",
   "",
