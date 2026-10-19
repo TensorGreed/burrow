@@ -951,3 +951,15 @@ are judged like any other dictionary.
 the catalog's keys too cost 3 of 99 real documents (over the 1% bar); with the exemption, **0 of
 99** real documents, **0** on `big_book.pdf`, and **5 of 182** fixtures, all adversarial redaction
 fixtures that carry a null.
+
+## Amendment, 2026-10-19 — a number written longer than PDFium reads whole refuses (#301)
+
+The reference pass that split's open runs now refuses, as `[split-number-token-too-long]`, a run of
+regular characters that begins with a digit, a sign or a decimal point and is longer than 256 bytes,
+wherever it lexes object syntax. PDFium keeps the first 256 bytes of such a number and qpdf the
+whole, so the source and a part, rewritten by qpdf, can read differently to the viewer. Measured,
+and the detail is in ADR 0029's amendment of the same date.
+
+**Cost, measured** against `main` with the same harness: **0 of 99** real documents, **0** committed
+fixtures, **0** on `big_book.pdf`.
+

@@ -160,6 +160,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point. **Since [#227] it is also a refusal of a member of an object stream qpdf cannot load** -- one headed at a generation qpdf will not read members from. The reference rule below refuses it first, unless a decoy header declares the member null, and then this is the only refusal; see the [2026-10-01 amendment](#amendment-2026-10-01--227-a-reference-qpdf-resolves-to-null-is-refused-unless-the-file-declares-that-null) |
 | a **reference qpdf resolves to null** that the file does not itself declare as `null` -- a generation the cross-reference does not have, however qpdf came to cache it; a number it does not have; an object in the file body and missing from a valid cross-reference; a member of an object stream qpdf cannot load | **refuse**, `[reference-to-nothing]` — added 2026-10-01 ([#227]). qpdf drops the key that held it and warns about nothing; PDFium finds the object by number. A null redacts only where every header for its number holds `null`, one at the pair written, qpdf holds it at that pair, and no object stream lists the number -- dvipdfm's `/Threads`. **It over-refuses** a reference to an object absent from both readers, and a declared null the cross-reference frees or an object stream also lists. 0 of 99 real documents and 0 of 100 fixtures |
 | a **reference not written in plain digits** -- a sign, a leading zero, a number past 32 bits, a comment inside it -- or a stream object or object stream whose header does not read, or more references than the check's caps | **refuse**, `[reference-unreadable]` — added 2026-10-01 ([#227]). qpdf reads `+6 0 R`, `6 +0 R`, `06 00 R` and a comment between the numbers as ordinary references; the rule refuses the shape rather than deciding what a reader meant. 0 of 99 real documents and 0 of 100 fixtures |
+| a **number written longer than 256 bytes** in object syntax -- a run of regular characters beginning with a digit, a sign or a decimal point, wherever the reference pass lexes: a value, an array item, the token after a value, an object's header, an object stream's header or member | **refuse**, `[number-token-too-long]` — added 2026-10-19 ([#301]). PDFium keeps the first 256 bytes of such a token, the sign and the point counted, and drops the rest without starting a new token; qpdf reads the whole, and its object model keeps no record of the length, so a `/Widths` entry, a box, a matrix or a `/FirstChar` written that way is one value to burrow and another to the viewer. Measured against the pinned PDFium: whole at 256, cut at 257; a page whose header number is padded to 257 bytes does not load. qpdf's rewriting is not judged. Cost 0 of 99 real documents, 0 of the committed fixtures, 0 on `big_book.pdf`, 0 of 4,825 tiles. Content-stream operands are cut at 255 by a different parser and refused by #152 |
 | an **unfiltered inline image whose `/L` disagrees** with the size its `/W`, `/H`, `/BPC` and colour space imply | **refuse**, `[inline-image-length-disagrees]` — added 2026-10-04 ([#228]). PDFium never reads `/L`; an overstated one hid the text after the image from burrow while PDFium drew it, `Ok` with 1,842 dark pixels in the region, measured. 0 of 100 real documents carry `/L` on an inline image |
 | an **unfiltered inline image PDFium sizes by a rule the specification does not share**, or from the page's resources: no `/CS` and a `/BPC` other than 1; a device `/CS` and no `/BPC`; an image mask that names a `/CS`; a `/CS` that is not one of the six device spellings, or an array | **refuse**, `[inline-image-bpc-without-cs]` / `[inline-image-cs-without-bpc]` / `[inline-image-mask-with-cs]` / `[inline-image-unshared-cs]` — added 2026-10-04 by #228's reviews. PDFium reads no `/CS` as one bit whatever `/BPC` says, a missing `/BPC` beside a `/CS` as 0, and every other colour-space name through the page's resources; burrow read each by the specification and ended the image somewhere else: `Ok` over 1,842 dark pixels on each shape the two reviews ran end to end, the others refused as unmeasured. 0 of 100 real documents: every inline image in them is a mask with no `/CS` and `/BPC 1` |
 | a **filtered inline image** | **refuse**, `[inline-image-filtered]` — added 2026-10-04 ([#228]). PDFium ends it at its first filter's own end of data, which burrow cannot decode to find. 0 of 100 real documents carry one; the TeX-heavy sample is why that is not a rate for office producers, which is unmeasured. `split` refuses it too, `[split-inline-image-filtered]`: ADR 0019's #228 amendment |
@@ -1207,6 +1208,7 @@ the seven cases then in the script:
 [#278]: https://github.com/TensorGreed/burrow/issues/278
 [#227]: https://github.com/TensorGreed/burrow/issues/227
 [#152]: https://github.com/TensorGreed/burrow/issues/152
+[#301]: https://github.com/TensorGreed/burrow/issues/301
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 
@@ -5408,3 +5410,31 @@ box. The verification re-walks with the same reader and inherits the rule.
   glyphs cut by identity, and that is pinned.
 - The oracle's P3 floor was re-derived as the larger of PDFium's loose box and the envelope:
   against the loose box alone, 145 of 238 real glyphs fail a box that is what the rule asks for.
+
+## Amendment, 2026-10-19 — a number written longer than PDFium reads whole refuses (#301)
+
+PDFium keeps the first 256 bytes of a number in object syntax and drops the rest; qpdf reads the
+whole token. A `/Widths` entry of zeros then `600` was 0 to PDFium and 600 to burrow, `Ok` with the
+secret kept, in simple and Type 3 fonts (#291's round-2 security review), and every number the walk
+reads is reachable the same way. **Measured** against the pinned PDFium, raw bytes through a
+`/MediaBox` entry: a token reads whole at 254, 255 and 256 bytes and is cut at 257, with a leading
+sign and with a decimal point counted as bytes; a page object whose header number is padded with
+zeros to 257 bytes does not load, where qpdf reads it.
+
+The reference pass that redaction runs now refuses, as `[number-token-too-long]`, a run of regular
+characters that begins with a digit, a sign or a decimal point and is longer than 256 bytes
+(`pdfsyntax::references::MAX_NUMBER_WRITTEN`), wherever it lexes object syntax: values, the token
+after a value, object headers, and object streams' headers and members. Judging a number by its
+first byte is wider than qpdf's number syntax: a run such as `16x…` past the length refuses too,
+where qpdf reads a keyword and warns. qpdf's own rewriting of a value is not judged. **Not judged**:
+the number after `startxref` and a classic cross-reference table's own numbers, which the pass does
+not lex; filed for the final spec review.
+
+Fixtures `evade-number-past-pdfium-length` (file body) and
+`evade-number-past-pdfium-length-in-an-object-stream` refuse; the twin
+`nearmiss-number-at-pdfium-length`, at exactly 256 bytes, redacts. Removing the lexer's check, or
+moving the cut to 257, makes both evasions redact and leaves the twin as it was.
+
+**Cost, measured** against `main` with the same harness, for both operations: **0 of 99** real
+documents, **0** committed fixtures, **0** on `big_book.pdf`, and the 4,825 tiles unchanged. No input
+moved from refused to `Ok`.
