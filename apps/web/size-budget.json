@@ -130,7 +130,9 @@
     "page-js 30, burrow-render-worker.js 30, page 18, control.txt 0, pdfium.wasm 0. Said plainly:",
     "ten commits, but most lines had ONE distinct content in that window (page-js and the render",
     "worker had two), so each maximum is close to one sample, and a toolchain change on either",
-    "side can move it. An allowance passed is measured again from saved runs, not raised by hand."
+    "side can move it. An allowance passed is measured again from saved runs, not raised by hand.",
+    "Measured on Deploy-origin builds only: CI's own x86_64 figures (the web job's build) are first",
+    "seen in the step summary of the PR that recorded these allowances."
   ],
   "headroom": {
     "per_artifact": 0.25,

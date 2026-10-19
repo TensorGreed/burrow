@@ -237,11 +237,12 @@ one is decided in an issue, with the same three parts.
     byte allowance recorded next to it (`cross_arch_allowance_brotli`), set at twice the largest
     cross-architecture difference measured from saved runs, and each total is checked against the
     sum of its lines' allowances. Going past an allowance is a stop, not a re-record. *Decided:*
-    owner, 2026-10-18. The allowances were measured on 2026-10-19 from ten Deploy runs' x86_64
-    artifacts against aarch64 builds of the same commits; the largest is 150 bytes, on
-    `burrow_wasm_bg.wasm`. *Does not cover:* how an allowance is re-measured when a toolchain
-    moves, beyond "from saved runs, never by hand"; and the per-line budgets and the headroom
-    policy, which are unchanged.
+    owner, 2026-10-18 (0% base lines, approval named in the PR body) and 2026-10-19 (architecture
+    stamp, allowances, totals, CI's x86 build ships). The allowances were measured on 2026-10-19
+    from ten Deploy runs' x86_64 artifacts against aarch64 builds of the same commits; the
+    largest allowance is 150 bytes, on `burrow_wasm_bg.wasm` (largest measured difference 75).
+    *Does not cover:* how an allowance is re-measured when a toolchain moves, beyond "from saved
+    runs, never by hand"; and the per-line budgets and the headroom policy, which are unchanged.
 
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
     output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
