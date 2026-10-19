@@ -2444,7 +2444,7 @@ fn the_web_and_native_object_stream_modes_agree() {
 // `max_pixels` fires before anything is allocated.
 // ---------------------------------------------------------------------------------
 
-use crate::{PageRenderer, Raster};
+use crate::{Annotations, PageRenderer, Raster};
 
 fn open_for_render(
     script: PdfiumScript,
@@ -2467,9 +2467,62 @@ fn render(
     height: u32,
     limits: Limits,
 ) -> Result<Raster> {
+    render_drawing(engine, doc, width, height, Annotations::Omitted, limits)
+}
+
+fn render_drawing(
+    engine: &WebPdfium,
+    doc: &super::pdfium::WebDocument,
+    width: u32,
+    height: u32,
+    annotations: Annotations,
+    limits: Limits,
+) -> Result<Raster> {
     let options = OpenOptions::new(limits, stopped());
     let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
-    PageRenderer::render(engine, doc, 0, width, height, &options, &deadline)
+    PageRenderer::render(
+        engine,
+        doc,
+        0,
+        width,
+        height,
+        annotations,
+        &options,
+        &deadline,
+    )
+}
+
+/// The flags the first `FPDF_RenderPageBitmap_Start` was given.
+fn render_start_flags(calls: &[Call]) -> i32 {
+    match calls
+        .iter()
+        .find(|c| matches!(c, Call::RenderPageStart { .. }))
+    {
+        Some(Call::RenderPageStart { flags, .. }) => *flags,
+        other => panic!("expected a render start, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_web_render_draws_annotations_only_when_asked_and_by_default_does_not() {
+    // #136 D3: the redaction page's selection picture asks for `FPDF_ANNOT` (0x01); every
+    // other caller, and the default, passes 0. Both from the one `Annotations::render_flags`.
+    for (annotations, flags) in [
+        (Annotations::Omitted, 0),
+        (Annotations::default(), 0),
+        (Annotations::Drawn, 0x01),
+    ] {
+        let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+        render_drawing(&engine, &doc, 4, 4, annotations, Limits::default())
+            .expect("a page should render");
+        assert_eq!(
+            render_start_flags(&state.calls()),
+            flags,
+            "{annotations:?} should start the render with flags {flags}"
+        );
+        drop(doc);
+        state.assert_empty();
+    }
 }
 
 #[test]
@@ -2703,7 +2756,7 @@ fn the_fill_happens_before_the_render_and_the_rotation_is_never_doubled() {
     {
         Some(Call::RenderPageStart { rotate, flags, .. }) => {
             assert_eq!(*rotate, 0, "PDFium applies /Rotate itself");
-            assert_eq!(*flags, 0, "no FPDF_ANNOT; see the constant");
+            assert_eq!(*flags, 0, "no FPDF_ANNOT unless asked; see `Annotations`");
         }
         other => panic!("expected a render start, got {other:?}"),
     }
@@ -2788,7 +2841,16 @@ fn a_deadline_that_comes_due_between_slices_ends_the_render_and_releases_everyth
 
     let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
 
-    let outcome = PageRenderer::render(&engine, &doc, 0, 4, 4, &options, &deadline);
+    let outcome = PageRenderer::render(
+        &engine,
+        &doc,
+        0,
+        4,
+        4,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    );
     assert!(
         matches!(
             outcome,
@@ -2881,7 +2943,16 @@ fn a_page_past_the_end_never_reaches_the_bridge_on_the_web_path_either() {
     let options = OpenOptions::new(Limits::default(), stopped());
     let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
     assert!(matches!(
-        PageRenderer::render(&engine, &doc, 1, 4, 4, &options, &deadline),
+        PageRenderer::render(
+            &engine,
+            &doc,
+            1,
+            4,
+            4,
+            Annotations::Omitted,
+            &options,
+            &deadline
+        ),
         Err(Error::InvalidArgument(_))
     ));
     assert!(matches!(
@@ -2974,7 +3045,16 @@ fn a_strip_that_has_already_spent_the_memory_budget_will_not_load_another_page()
     let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &limits);
 
     // The first page is drawn. It ends over budget -- the render's own measured check says so.
-    let first = PageRenderer::render(&engine, &doc, 0, 4, 4, &options, &deadline);
+    let first = PageRenderer::render(
+        &engine,
+        &doc,
+        0,
+        4,
+        4,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    );
     assert!(
         matches!(
             first,
@@ -2987,7 +3067,16 @@ fn a_strip_that_has_already_spent_the_memory_budget_will_not_load_another_page()
     );
 
     let before = state.calls().len();
-    let second = PageRenderer::render(&engine, &doc, 1, 4, 4, &options, &deadline);
+    let second = PageRenderer::render(
+        &engine,
+        &doc,
+        1,
+        4,
+        4,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    );
     assert!(
         matches!(
             second,

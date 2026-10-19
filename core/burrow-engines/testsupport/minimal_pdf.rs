@@ -267,6 +267,61 @@ pub fn pdf_with_ink() -> Vec<u8> {
     out
 }
 
+/// A 200 x 400 point page that draws nothing itself and carries ONE annotation whose appearance
+/// inks the bottom-right quarter: a `/Square` with `/Rect [100 0 200 200]` and an `/AP /N` form
+/// filling its `/BBox` black (#136 D3).
+///
+/// So a render that draws annotations inks the bottom-right quarter and nothing else, and one
+/// that does not is white everywhere. Its `/F` is 4 (Print), the ordinary flag, so nothing about
+/// it asks a renderer to hide it.
+pub fn pdf_with_annotation_ink() -> Vec<u8> {
+    let appearance = b"0 0 0 rg\n0 0 100 100 re\nf\n";
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 400] \
+          /Resources << >> /Annots [4 0 R] >>\nendobj\n",
+    );
+
+    offsets.push(out.len());
+    out.extend_from_slice(
+        b"4 0 obj\n<< /Type /Annot /Subtype /Square /Rect [100 0 200 200] /F 4 \
+          /AP << /N 5 0 R >> >>\nendobj\n",
+    );
+
+    offsets.push(out.len());
+    out.extend_from_slice(
+        format!(
+            "5 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length {} >>\nstream\n",
+            appearance.len()
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(appearance);
+    out.extend_from_slice(b"endstream\nendobj\n");
+
+    let startxref = out.len();
+    let size = offsets.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+    out
+}
+
 // ---------------------------------------------------------------------------------
 // Canary fixtures, for the secret-leak test.
 // ---------------------------------------------------------------------------------

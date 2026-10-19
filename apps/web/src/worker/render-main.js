@@ -119,13 +119,22 @@ const KNOWN_OPS = new Set(["page_count", "render"]);
  * @param {Uint32Array} pages
  * @param {number} boxWidth
  * @param {number} boxHeight
+ * @param {boolean} annotations  draw annotations too: the redaction page's picture (#136 D3)
  * @param {Uint8Array | undefined} password
  * @param {WebLimits} limits
  */
-function renderStrip(id, bytes, pages, boxWidth, boxHeight, password, limits) {
+function renderStrip(id, bytes, pages, boxWidth, boxHeight, annotations, password, limits) {
   let session;
   try {
-    session = wasm_bindgen.render_begin(bytes, pages, boxWidth, boxHeight, password, limits);
+    session = wasm_bindgen.render_begin(
+      bytes,
+      pages,
+      boxWidth,
+      boxHeight,
+      annotations,
+      password,
+      limits,
+    );
   } catch {
     self.postMessage(internalFailure(id, "internal error"));
     return;
@@ -287,6 +296,9 @@ async function runOperation(request) {
         Uint32Array.from(request.pages),
         request.boxWidth,
         request.boxHeight,
+        // ONLY A STRICT `true` DRAWS THEM. Anything else -- absent, as every thumbnail strip
+        // sends it, or a truthy non-boolean -- is the default, `flags = 0`.
+        request.annotations === true,
         password,
         limits,
       );

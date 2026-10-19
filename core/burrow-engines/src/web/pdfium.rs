@@ -39,7 +39,7 @@ use std::sync::Arc;
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
 use super::bridge::{PdfiumBridge, PdfiumPtr};
-use crate::{DocumentEngine, OpenOptions, PageRenderer, Raster};
+use crate::{Annotations, DocumentEngine, OpenOptions, PageRenderer, Raster};
 
 /// The web PDFium engine.
 ///
@@ -326,8 +326,8 @@ const BITMAP_BGRA: i32 = 1;
 /// Opaque white for `FPDFBitmap_FillRect`, as `0xAARRGGBB`.
 const OPAQUE_WHITE: u32 = 0xFFFF_FFFF;
 
-/// `FPDF_RenderPageBitmap`'s flags: none. **Not** `FPDF_ANNOT`; see the native constant.
-const RENDER_FLAGS: i32 = 0;
+// `FPDF_RenderPageBitmap`'s flags come from the caller's `crate::Annotations`, `0` unless it
+// asks for `FPDF_ANNOT` (#136 D3); the native `ffi.rs` note says why it is no longer a constant.
 
 /// PDFium's progressive render states, `fpdf_progressive.h:15-18`. Only two are acted on.
 const FPDF_RENDER_TOBECONTINUED: i32 = 1;
@@ -403,6 +403,7 @@ impl WebPdfium {
         bitmap: PdfiumPtr,
         width: i32,
         height: i32,
+        flags: i32,
         deadline: &Deadline,
         clock: &dyn Clock,
         options: &OpenOptions<'_>,
@@ -423,7 +424,7 @@ impl WebPdfium {
             width,
             height,
             NO_EXTRA_ROTATION,
-            RENDER_FLAGS,
+            flags,
             pause,
         );
 
@@ -499,11 +500,13 @@ impl PageRenderer for WebPdfium {
         index: u64,
         width: u32,
         height: u32,
+        annotations: Annotations,
         options: &OpenOptions<'_>,
         deadline: &Deadline,
     ) -> Result<Raster> {
         let clock = Arc::clone(&options.clock);
         deadline.checkpoint(clock.as_ref())?;
+        let flags = annotations.render_flags();
 
         // THE CEILING BEFORE ANYTHING IS ALLOCATED. The same `check_pixels` the native path
         // calls, not a mirror of it (ADR 0027).
@@ -557,7 +560,16 @@ impl PageRenderer for WebPdfium {
                 self.bridge
                     .bitmap_fill_rect(bitmap, 0, 0, w, h, OPAQUE_WHITE);
 
-                self.render_progressively(page, bitmap, w, h, deadline, clock.as_ref(), options)?;
+                self.render_progressively(
+                    page,
+                    bitmap,
+                    w,
+                    h,
+                    flags,
+                    deadline,
+                    clock.as_ref(),
+                    options,
+                )?;
 
                 let buffer = self.bridge.bitmap_buffer(bitmap);
                 if buffer.is_null() {

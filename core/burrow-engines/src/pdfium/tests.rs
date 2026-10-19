@@ -229,7 +229,7 @@ fn the_engine_is_not_poisoned_by_any_of_the_errors_above() {
 // Rendering (#57, ADR 0027). The first capability here that produces pixels.
 // ---------------------------------------------------------------------------------
 
-use crate::{PageRenderer, Raster};
+use crate::{Annotations, PageRenderer, Raster};
 
 /// A deadline over the stopped clock, as `PageRenderer::render` takes.
 fn render_options(limits: Limits) -> OpenOptions<'static> {
@@ -239,7 +239,16 @@ fn render_options(limits: Limits) -> OpenOptions<'static> {
 fn render_at(doc: &PdfiumDocument, index: u64, w: u32, h: u32, limits: Limits) -> Result<Raster> {
     let options = render_options(limits);
     let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
-    PageRenderer::render(&Pdfium::new(), doc, index, w, h, &options, &deadline)
+    PageRenderer::render(
+        &Pdfium::new(),
+        doc,
+        index,
+        w,
+        h,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    )
 }
 
 #[test]
@@ -284,6 +293,61 @@ fn the_ink_lands_where_the_page_puts_it_and_the_rest_is_opaque_white() {
         [255, 255, 255, 255],
         "bottom right should not"
     );
+}
+
+#[test]
+fn annotations_are_drawn_only_when_asked_and_land_where_their_rect_puts_them() {
+    // #136 D3: the redaction page's selection picture draws annotations; every other render
+    // does not. The fixture's page draws nothing and its one annotation inks the bottom-right
+    // quarter, so the two choices differ in exactly that quarter.
+    let doc = open(crate::minimal_pdf::pdf_with_annotation_ink())
+        .expect("the annotation fixture should open");
+    let draw = |annotations: Annotations| -> Raster {
+        let options = render_options(generous());
+        let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
+        PageRenderer::render(
+            &Pdfium::new(),
+            &doc,
+            0,
+            40,
+            80,
+            annotations,
+            &options,
+            &deadline,
+        )
+        .expect("a page should render")
+    };
+    let pixel = |raster: &Raster, x: usize, y: usize| -> [u8; 4] {
+        let at = (y * 40 + x) * 4;
+        [
+            raster.rgba[at],
+            raster.rgba[at + 1],
+            raster.rgba[at + 2],
+            raster.rgba[at + 3],
+        ]
+    };
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+    let omitted = draw(Annotations::Omitted);
+    assert!(
+        omitted.rgba.chunks(4).all(|p| p == WHITE),
+        "without FPDF_ANNOT the annotation must not be drawn at all"
+    );
+
+    let drawn = draw(Annotations::Drawn);
+    assert_eq!(
+        pixel(&drawn, 30, 60),
+        BLACK,
+        "bottom right holds the annotation"
+    );
+    for (x, y, quarter) in [
+        (10, 20, "top left"),
+        (30, 20, "top right"),
+        (10, 60, "bottom left"),
+    ] {
+        assert_eq!(pixel(&drawn, x, y), WHITE, "{quarter} should not be inked");
+    }
 }
 
 #[test]
@@ -389,7 +453,16 @@ fn a_spent_budget_stops_a_render_before_it_starts() {
     let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
     clock.advance(11);
     assert!(matches!(
-        PageRenderer::render(&Pdfium::new(), &doc, 0, 8, 8, &options, &deadline),
+        PageRenderer::render(
+            &Pdfium::new(),
+            &doc,
+            0,
+            8,
+            8,
+            Annotations::Omitted,
+            &options,
+            &deadline
+        ),
         Err(Error::LimitExceeded {
             stage: Stage::Deadline,
             ..
@@ -478,7 +551,7 @@ fn slice_profile(
         let started = Instant::now();
         // SAFETY: both handles are live, `pause` outlives the render, engine thread.
         let mut state =
-            unsafe { super::ffi::render_page_start(bitmap, page, width, height, pause_ptr) };
+            unsafe { super::ffi::render_page_start(bitmap, page, width, height, 0, pause_ptr) };
         durations.push(started.elapsed().as_secs_f64() * 1000.0);
         rss.push(crate::rss::resident_bytes());
 
@@ -640,6 +713,7 @@ fn a_deadline_that_comes_due_mid_render_ends_it_without_finishing_the_page() {
         0,
         240,
         320,
+        Annotations::Omitted,
         &generous_options,
         &whole_deadline,
     )
@@ -659,7 +733,16 @@ fn a_deadline_that_comes_due_mid_render_ends_it_without_finishing_the_page() {
         .expect("a many-path page should open");
     let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
     let at = std::time::Instant::now();
-    let outcome = PageRenderer::render(&Pdfium::new(), &doc, 0, 240, 320, &options, &deadline);
+    let outcome = PageRenderer::render(
+        &Pdfium::new(),
+        &doc,
+        0,
+        240,
+        320,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    );
     let interrupted = at.elapsed();
 
     assert!(
@@ -708,7 +791,16 @@ fn a_render_interrupted_by_a_deadline_leaves_the_engine_usable() {
     let doc = DocumentEngine::open(&Pdfium::new(), bytes.into_boxed_slice(), &open_options)
         .expect("a many-path page should open");
     let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
-    let interrupted = PageRenderer::render(&Pdfium::new(), &doc, 0, 240, 320, &options, &deadline);
+    let interrupted = PageRenderer::render(
+        &Pdfium::new(),
+        &doc,
+        0,
+        240,
+        320,
+        Annotations::Omitted,
+        &options,
+        &deadline,
+    );
     assert!(
         matches!(
             interrupted,

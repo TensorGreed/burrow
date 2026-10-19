@@ -103,6 +103,17 @@ fuzz_target!(|data: &[u8]| {
     // every request is refused before an engine is touched. One case in eight is left raw to
     // keep the refusal path live.
     let raw = data[2] & 0x80 != 0;
+
+    // ANNOTATIONS DRAWN OR NOT (#136 D3), from a bit no other decision reads: bits 0-1 are the
+    // page count and bit 7 is `raw`. Bit 2 is SET in the seeder's prefix byte (5), so every
+    // seeded input draws its annotations' appearances -- the new path, on real files that
+    // have them -- and a mutation of that one bit reaches the long-standing `flags = 0` path.
+    let fit = Fit::box_of(box_width, box_height);
+    let fit = if data[2] & 0x04 != 0 {
+        fit.drawing_annotations()
+    } else {
+        fit
+    };
     let mut pages: Vec<u64> = Vec::with_capacity(wanted);
     for i in 0..wanted {
         let byte = u64::from(document.get(i).copied().unwrap_or(1));
@@ -117,7 +128,7 @@ fuzz_target!(|data: &[u8]| {
         &engine,
         document.to_vec().into_boxed_slice(),
         &pages,
-        Fit::box_of(box_width, box_height),
+        fit,
         &options,
     ) {
         Ok(strip) => {

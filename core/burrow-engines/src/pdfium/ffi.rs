@@ -524,13 +524,13 @@ pub(crate) unsafe fn render_page_start(
     page: FpdfPage,
     width: c_int,
     height: c_int,
+    flags: c_int,
     pause: *mut IfsdkPause,
 ) -> c_int {
     // SAFETY: the caller guarantees both handles are live, that the extent is the bitmap's own,
-    // that `pause` outlives the render, and that this is the engine thread.
-    unsafe {
-        FPDF_RenderPageBitmap_Start(bitmap, page, 0, 0, width, height, 0, RENDER_FLAGS, pause)
-    }
+    // that `pause` outlives the render, and that this is the engine thread. `flags` is a bit set
+    // PDFium reads and does not dereference.
+    unsafe { FPDF_RenderPageBitmap_Start(bitmap, page, 0, 0, width, height, 0, flags, pause) }
 }
 
 /// Continue a progressive render. Returns one of the `FPDF_RENDER_*` states.
@@ -572,13 +572,11 @@ pub(crate) const BITMAP_BGRA: c_int = 1;
 /// Opaque white, as `FPDFBitmap_FillRect` wants it: `0xAARRGGBB`.
 pub(crate) const OPAQUE_WHITE: c_ulong = 0xFFFF_FFFF;
 
-/// `FPDF_RenderPageBitmap`'s flags. None of them.
-///
-/// In particular **not** `FPDF_ANNOT` (`fpdfview.h:1237`): annotations are not part of the
-/// page, and a thumbnail that drew a reviewer's comments would be showing content the
-/// document's pages do not have. If that becomes wanted it is a decision with a record, not a
-/// constant somebody widens.
-pub(crate) const RENDER_FLAGS: c_int = 0;
+// `FPDF_RenderPageBitmap`'s flags are NOT a constant here any more. They were `0` -- in
+// particular not `FPDF_ANNOT` (`fpdfview.h:1237`), "a decision with a record, not a constant
+// somebody widens". The record is #136 D3 (owner, 2026-10-14): the redaction page's selection
+// picture draws annotations. So the caller names the choice, `crate::Annotations`, whose
+// default is still `0`, and `Annotations::render_flags` is the one place the number lives.
 
 /// Load one page.
 ///

@@ -158,6 +158,8 @@ interface BurrowWasm {
     pages: Uint32Array,
     boxWidth: number,
     boxHeight: number,
+    /** Draw annotations too (`FPDF_ANNOT`): the redaction page's selection picture, #136 D3. */
+    annotations: boolean,
     password: Uint8Array | undefined,
     limits: WebLimits,
   ): RenderSession;
