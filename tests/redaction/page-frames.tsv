@@ -252,6 +252,8 @@ INPUT	tests/redaction/generated/evade-text-in-type3-via-form.pdf	e73273c6c58a9e1
 PAGE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	5087b9b5c24c2ee0711fdcbfcc084f09a02e20326538e3863c39a69ae7ad6f9f
 PAGE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-tounicode-inline-image-syntax.pdf	4d463e9703ae53439c7071a56786b25eeef5201bccf8fc5df1a7cc78b3b75094
+PAGE	tests/redaction/generated/evade-tounicode-inline-image-syntax.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	c4410e5e539c5b2db83e0696dc4a87c1827cbd64a1ec729a8599881174b9cf0c
 PAGE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-type3-subtype-as-a-string.pdf	f7fa5bede371d6e761530b6c500290113d4cbfb12ab4734f91914869c0c3cd14
@@ -384,6 +386,8 @@ PAGE	tests/redaction/generated/nearmiss-structparents-without-a-tree.pdf	0	FRAME
 PAGE	tests/redaction/generated/nearmiss-structparents-without-a-tree.pdf	1	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	b4fdbf4c785b63abdad2b25958ef9c56a4527a180df651ae0458a8562e79b151
 PAGE	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-tounicode-letters-as-data.pdf	dc715aa82aefa0e8febae4ed7b3f1748abff7a0575debe7344812cf074571ffb
+PAGE	tests/redaction/generated/nearmiss-tounicode-letters-as-data.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	e165355c611be327e06b6e3d2dd59f81e696dfb290974c583d33cc69065e3b8a
 PAGE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4

@@ -179,6 +179,7 @@ export const RULES: Readonly<Record<string, Category>> = {
   "type-three-procedure-shows-text": "fonts",
   "type-three-unreadable": "fonts",
   "type-three-width-zero": "fonts",
+  "tounicode-inline-image-syntax": "fonts",
   "unreadable-cmap": "fonts",
   "vertical-writing": "fonts",
   "width-out-of-range": "fonts",

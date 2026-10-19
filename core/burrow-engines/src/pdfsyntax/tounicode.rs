@@ -144,6 +144,8 @@ impl ToUnicode {
     /// - [`Error::Unsupported`] — more than [`MAX_ENTRIES`] entries, or more code ranges
     ///   than this module will read. A refusal rather than a truncation: a truncated CMap is
     ///   one that still maps the secret and no longer maps something else.
+    /// - [`Error::Malformed`], `[tounicode-inline-image-syntax]` — `BI`, `ID` or `EI` read as a
+    ///   keyword, which no CMap contains (#338).
     pub fn parse(program: &[u8]) -> Result<Self> {
         let mut lexer = Lexer::new(program, super::lexer::InlineImages::REDACTION);
         let mut read = Self::default();
@@ -178,6 +180,24 @@ impl ToUnicode {
                 }
                 Token::ArrayOpen => pending.push(Item::ArrayOpen),
                 Token::ArrayClose => collapse_array(&mut pending)?,
+                // INLINE-IMAGE SYNTAX IN A CMAP refuses (#338): no CMap contains `BI`, `ID` or
+                // `EI`, and this lexer reads them as a content stream would -- an image whose
+                // bytes it skips, and an `EI` that ends an operand run -- which a CMap reader does
+                // not. The two would pair codes with destinations differently. The same rule the
+                // writing-mode reader applies (#193). As KEYWORDS only: the same letters in a
+                // string or a name are data and pass.
+                //
+                // THE `ID` ARM IS DEFENSIVE, stated rather than implied: an `ID` the lexer accepts
+                // follows a `BI`, which has already refused here, and a lone `ID` the lexer refuses
+                // itself. It is kept so this rule does not depend on either.
+                Token::Keyword(word) if matches!(word.as_slice(), b"BI" | b"ID" | b"EI") => {
+                    return Err(Error::Malformed(
+                        "pdf syntax [tounicode-inline-image-syntax]: a /ToUnicode CMap carrying \
+                         inline-image syntax, which no CMap contains, so readers may pair its \
+                         codes and text differently"
+                            .to_owned(),
+                    ));
+                }
                 Token::Keyword(word) => {
                     read.take(&word, &pending)?;
                     pending.clear();
@@ -563,6 +583,48 @@ mod tests {
             );
         }
         assert!(ToUnicode::parse(b"1 beginbfchar\n<01> <0041>\nendbfchar").is_ok());
+    }
+
+    #[test]
+    fn inline_image_syntax_in_a_cmap_is_refused() {
+        // NO CMAP CONTAINS `BI`, `ID` OR `EI` (#338). The producer's subset CMap with each
+        // spliced in after its last section refuses, by this rule; nothing else about it is
+        // unusual. The first plant is a whole inline image the lexer accepts, so the refusal
+        // cannot be the lexer's own.
+        let at = SUBSET
+            .windows(b"endcmap".len())
+            .position(|w| w == b"endcmap")
+            .expect("the subset CMap ends its program");
+        let image = b"BI /W 1 /H 1 /BPC 8 /CS /G ID A EI Q\n".as_slice();
+        for planted in [
+            image,
+            b"BI /W 1 /H 1 /BPC 8 /CS /G\n".as_slice(),
+            b"EI\n".as_slice(),
+        ] {
+            let program = [&SUBSET[..at], planted, &SUBSET[at..]].concat();
+            let error = ToUnicode::parse(&program).expect_err("inline-image syntax in a CMap");
+            assert!(
+                matches!(&error, burrow_types::Error::Malformed(m)
+                    if m.contains("[tounicode-inline-image-syntax]")),
+                "refused, but not by this rule: {error:?}"
+            );
+        }
+        // THE TWINS: the program untouched reads as it always did, and the same letters as DATA
+        // -- names, a literal string, a hex string -- are not keywords and pass.
+        assert_eq!(text_for(SUBSET, 1), Some(b"\x00S".to_vec()));
+        for data in [
+            b"/BI /ID /EI\n".as_slice(),
+            b"(BI ID EI)\n".as_slice(),
+            b"<4249>\n".as_slice(),
+        ] {
+            let program = [&SUBSET[..at], data, &SUBSET[at..]].concat();
+            assert_eq!(
+                text_for(&program, 1),
+                Some(b"\x00S".to_vec()),
+                "the letters as data refused: {:?}",
+                String::from_utf8_lossy(data)
+            );
+        }
     }
 
     #[test]

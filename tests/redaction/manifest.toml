@@ -2158,6 +2158,47 @@ scope it is named for.
 """
 
 [[fixture]]
+name = "evade-tounicode-inline-image-syntax"
+file = "generated/evade-tounicode-inline-image-syntax.pdf"
+kind = "hand-built"
+probes_refusal = "CMap keywords"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /ToUnicode CMap carrying inline-image syntax (BI ... ID ... EI) — evasion"
+  canary = "<0058>"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+No CMap contains `BI`, `ID` or `EI`, and the CMap is lexed as a content stream, which a CMap reader
+does not do. Refused [tounicode-inline-image-syntax] (#338), the rule the writing-mode reader
+already applies (#193). This shape redacted before the rule; the rule refuses the syntax.
+"""
+
+[[fixture]]
+name = "nearmiss-tounicode-letters-as-data"
+file = "generated/nearmiss-tounicode-letters-as-data.pdf"
+kind = "hand-built"
+probes_refusal = "CMap keywords"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "CMap keywords — near-miss twin, the same letters as names and a string"
+  canary = "<0058>"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. `/BI` and `(BI ID EI)` are data, not keywords; a rule matching the letters
+would refuse this.
+"""
+
+[[fixture]]
 name = "evade-actualtext-on-a-page-that-draws-nothing-itself"
 file = "generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf"
 kind = "hand-built"

@@ -180,6 +180,7 @@ pub const RULE_IDS: &[&str] = &[
     "too-many-form-draws",
     "too-many-glyphs",
     "too-much-ink",
+    "tounicode-inline-image-syntax",
     "type-three-image-cut",
     "type-three-image-outside-its-box",
     "type-three-procedure-matrix",
