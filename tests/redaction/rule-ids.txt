@@ -15,6 +15,7 @@ annots-too-long
 base-encoding-not-a-name
 bt-nested
 bt-unterminated
+clip-path-in-region
 contents-boundary
 contents-not-a-stream
 contents-offset

@@ -289,6 +289,11 @@ CASE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	1	1	whole	ERR
 CASE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	0	0	pdfbuild	ERR Unsupported("pdf resources [base-encoding-not-a-name]: an /Encoding whose /BaseEncoding is not a name, which a renderer reads by its bytes")
 CASE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	0	0	whole	ERR Unsupported("pdf resources [base-encoding-not-a-name]: an /Encoding whose /BaseEncoding is not a name, which a renderer reads by its bytes")
 CASE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	0	0	band	ERR Unsupported("pdf resources [base-encoding-not-a-name]: an /Encoding whose /BaseEncoding is not a name, which a renderer reads by its bytes")
+INPUT	tests/redaction/generated/evade-clip-path-shaping-text.pdf	b219b81c86ffb3304f83dffa31ccdf6a14fe88ded8c24e0a1a5edb3bfcc6f60e
+CASE	tests/redaction/generated/evade-clip-path-shaping-text.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-clip-path-shaping-text.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
+CASE	tests/redaction/generated/evade-clip-path-shaping-text.pdf	0	0	whole	ERR Unsupported("pdf redaction [clip-path-in-region]: a clipping path shapes text the region removes, and the path would stay after the text is removed")
+CASE	tests/redaction/generated/evade-clip-path-shaping-text.pdf	0	0	band	OK e6ffa07ea3087a609c75b1ea01b270ef0e773f75d5314edbe0d28ab1f03251c5 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	ce98848d3ff694dc1d62c01752830bb85026e7fd47b1317d1581de3cb374cc7d
 CASE	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [media-box-unverified]: a page that takes its /MediaBox from the page tree, and nothing confirmed it is the box the viewer shows. A page that overrides it with null is shown at US Letter, and burrow cannot tell a null from an absent entry")
@@ -748,6 +753,16 @@ CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	1	1	whole	ER
 CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	pdfbuild	OK fa615681d11fe23c51184fbc86fae97c566bb9e24cf455ef5fe8d2e40faddaff report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	whole	OK 49732dc60dc8644599a11bcd94767f26967f11393c5f16718d0c23554131406e report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
 CASE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	0	band	OK 7482f79c6a29ada16137d598a0bbce709ff72d21ca6d7cdf4d972ee3de075312 report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120
+INPUT	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	031ad13171dec082de194ccd175422182e6f2761c1a38c28d22cfd20fa3ec0d1
+CASE	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	0	0	pdfbuild	OK cf3fbf9dc4a4f6c8af9f6dfebcd369fd1d7b4916e2a51dba94b7009b56be71ad report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	0	0	whole	OK 3f2f27c84116a9c528acb9c0f0fe75be4c7f375637e697ba15d4897f26966015 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	0	0	band	OK 20cba1e4db2492db9b7cb8696565506a0104d1a93ebd80efe0b3ebbdfb417a79 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	cbbc64353bd77852a55d493409add8695f069334c712e299afc2455b08933bef
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	pdfbuild	OK 07beab2ac7ee35d88810bb1b156d2e6ef83a5ca2c64077c87af0633f63fb41fd report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	whole	OK c7194a5d68200ca5a843d20f940bdc84c2c68b96bb294d46c490c6e3cea3532d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	0	band	OK 636a8f1d3767e2147f4ac5f3a55c959edb6e4cec506047b48b6e09e004845710 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	0	pdfbuild	OK d03ffb2c6e8c88266190fd8655e8fa037ba5fcec3b2808cd775664a47fb66f2b report 08b8912c3a147a436f103ecc4b6e7c639be7fe4c8ef8a9e78b174addb36c1120

@@ -1197,6 +1197,49 @@ def nearmiss_paths_in_form_two_levels_down_outside_region() -> bytes:
 
 
 # ===========================================================================================
+# A clipping path that shapes text the region removes (owner, 2026-10-19). The redaction removes
+# the text and keeps the clip, so the clip must not be what shaped the text in the region.
+# ===========================================================================================
+
+
+def _clip_page(clip: bytes, tag: str, after_restore: bool = False) -> bytes:
+    """The canary in the region, drawn under `clip` (`... W n`), or after the clip is restored."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    text = _secret_run(tag)
+    if after_restore:
+        content = b"q " + clip + b" W n Q\n" + text
+    else:
+        content = b"q " + clip + b" W n\n" + text + b"Q\n"
+    content += keep_line_ops()
+    return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
+
+
+def evade_clip_path_shaping_text() -> bytes:
+    """Text in the region, drawn under a clipping path that is not one rectangle and meets it.
+
+    Refuses `[clip-path-in-region]`."""
+    return _clip_page(b"35 92 m 300 92 l 300 118 l 35 108 l h", "CLIP-PATH")
+
+
+def nearmiss_clip_path_clear_of_region() -> bytes:
+    """The same clip, clear of the region, restored before the text. MUST NOT be refused.
+
+    A page-level rule ("a page with a clip") refuses this."""
+    return _clip_page(b"35 150 m 300 150 l 300 190 l 35 180 l h", "CLIP-NEARMISS", after_restore=True)
+
+
+def nearmiss_clip_rectangle_around_region() -> bytes:
+    """The text under one rectangle clip that holds the whole page. MUST NOT be refused.
+
+    The clip producers write around a page or a table cell: it admits everything in the region,
+    so it says nothing about the text there."""
+    return _clip_page(
+        f"0 0 {PAGE_W} {PAGE_H} re".encode(), "CLIP-RECT"
+    )
+
+
+# ===========================================================================================
 # Refusal 3 — "/AcroForm". Proposed signal: an /Annots entry with /Subtype /Widget.
 # ===========================================================================================
 
@@ -3909,6 +3952,9 @@ CASES: list[tuple[str, str]] = [
     ("evade-paths-in-form-two-levels-down", "vector paths"),
     ("nearmiss-paths-in-form-outside-region", "vector paths"),
     ("nearmiss-paths-in-form-two-levels-down-outside-region", "vector paths"),
+    ("evade-clip-path-shaping-text", "vector paths"),
+    ("nearmiss-clip-path-clear-of-region", "vector paths"),
+    ("nearmiss-clip-rectangle-around-region", "vector paths"),
     ("evade-widget-on-another-page", "/AcroForm"),
     ("evade-field-with-no-widget", "/AcroForm"),
     ("evade-acroform-inline-field", "/AcroForm"),
@@ -4178,6 +4224,9 @@ BUILDERS = {
     "evade-paths-in-form-two-levels-down": evade_paths_in_form_two_levels_down,
     "nearmiss-paths-in-form-outside-region": nearmiss_paths_in_form_outside_region,
     "nearmiss-paths-in-form-two-levels-down-outside-region": nearmiss_paths_in_form_two_levels_down_outside_region,
+    "evade-clip-path-shaping-text": evade_clip_path_shaping_text,
+    "nearmiss-clip-path-clear-of-region": nearmiss_clip_path_clear_of_region,
+    "nearmiss-clip-rectangle-around-region": nearmiss_clip_rectangle_around_region,
     "evade-widget-ft-on-parent": evade_widget_ft_on_parent,
     "nearmiss-annotation-with-a-parent-not-a-field": nearmiss_annotation_with_a_parent_not_a_field,
     "nearmiss-property-list-inside-an-unused-type3-font": nearmiss_property_list_inside_an_unused_type3_font,

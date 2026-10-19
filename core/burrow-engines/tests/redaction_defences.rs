@@ -3166,7 +3166,7 @@ fn pdfbuild_region() -> Region {
 /// are discharged by a broader rule than the region signal, and say so: a tiling or shading pattern
 /// fill by `pattern-may-draw-text`, a filtered inline image by `inline-image-filtered`, a Type 3
 /// procedure by the Type 3 rules.
-const INK_OUTCOMES: [(&str, Option<&str>); 24] = [
+const INK_OUTCOMES: [(&str, Option<&str>); 27] = [
     ("evade-image-in-form.pdf", Some("image-in-region")),
     (
         "evade-image-in-form-two-levels-down.pdf",
@@ -3225,6 +3225,14 @@ const INK_OUTCOMES: [(&str, Option<&str>); 24] = [
     ),
     // Its twin (#125 slice 5): the same glyph procedure clipping to its rectangles, painting none.
     ("nearmiss-paths-in-type3-glyph-clip-only.pdf", None),
+    // A CLIPPING PATH that shapes the text the region removes, and its two twins: the clip clear
+    // of the region, and one rectangle holding the whole page around the text.
+    (
+        "evade-clip-path-shaping-text.pdf",
+        Some("clip-path-in-region"),
+    ),
+    ("nearmiss-clip-path-clear-of-region.pdf", None),
+    ("nearmiss-clip-rectangle-around-region.pdf", None),
 ];
 
 #[test]

@@ -634,9 +634,10 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
     // fifteen evasion fixtures and twins (2026-10-17); 201 since the tagged Chrome print joined
     // the conformance fixtures; 218 since #125 slice 5 added the `/StructParents` evasion and
     // its twins (seventeen new inputs, 2026-10-18); 220 since #338 added a ToUnicode evasion
-    // fixture and its twin (2026-10-19).
+    // fixture and its twin (2026-10-19); 223 since the clip-path refusal added its fixture and two
+    // twins.
     let recorded_cases: usize = cases.values().map(Vec::len).sum();
-    assert_eq!(documents.len(), 220, "the golden's documents");
+    assert_eq!(documents.len(), 223, "the golden's documents");
     assert_eq!(held_to_the_golden, recorded_cases);
 
     // THE PAGE-FRAMES GOLDEN, diffed on every run and re-blessed only on request.

@@ -28,6 +28,7 @@
 # AND EACH NAMES THE TWINS IT MUST NOT FREE (#125 slice 5). A near-miss twin is `Ok` with the check
 # in place and must stay `Ok` with it gone -- the pinning suite reports every fixture that moved,
 # so a twin named in the output is a twin the deletion moved, and that fails the mutation too.
+#   clip-path-in-region   the removed-text-under-a-clip check  evade-clip-path-shaping-text
 #
 # EACH MUTATION IS ASSERTED TWICE BEFORE ITS RESULT COUNTS. That it applied: the anchor occurs
 # exactly once and the file changed -- a replace that matched nothing is indistinguishable from a
@@ -161,6 +162,12 @@ MUTATIONS = {
         "core/burrow-engines/src/redact/steps.rs",
         "        if has_acro_form {\n            return Err(refusal());",
         "        if has_acro_form && !" + off + " {\n            return Err(refusal());",
+    ),
+    "clip-path-in-region": (
+        "core/burrow-engines/src/redact/steps.rs",
+        "        if cut.iter().any(|glyph| {\n            glyph\n                .conservative_box()",
+        "        if !" + off + " && cut.iter().any(|glyph| {\n            glyph\n"
+        "                .conservative_box()",
     ),
     "structure-tree": (
         "core/burrow-engines/src/redact/steps.rs",
@@ -349,6 +356,9 @@ run() {
     type-three-paints)
       require_red "$1" "evade-paths-in-type3-glyph.pdf:" \
         "nearmiss-paths-in-type3-glyph-clip-only.pdf:" $ink ;;
+    clip-path-in-region)
+      require_red "$1" "evade-clip-path-shaping-text.pdf:" \
+        "nearmiss-clip-path-clear-of-region.pdf:|nearmiss-clip-rectangle-around-region.pdf:" $ink ;;
     *)
       echo "unknown mutation: $1" >&2
       exit 2 ;;
@@ -396,7 +406,8 @@ PY
 
 all=(optional-content split-oc-form-route split-oc-type3-route image-in-region vector-in-region
   shading-in-region form-route acroform-field-ft acroform-catalogue acroform-field structure-tree
-  inline-image-filtered pattern-fill type-three-paints)
+  inline-image-filtered pattern-fill type-three-paints
+  clip-path-in-region)
 selected=("$@")
 [ "${#selected[@]}" -gt 0 ] || selected=("${all[@]}" twin-check-probe)
 for name in "${selected[@]}"; do

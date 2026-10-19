@@ -117,6 +117,8 @@ INPUT	tests/redaction/generated/evade-annotation-subtype-as-a-string.pdf	395f38d
 PAGE	tests/redaction/generated/evade-annotation-subtype-as-a-string.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	756dc1fea71bda0620d3447964a9478a6d5b5dd26b492449e71b345ac14bc813
 PAGE	tests/redaction/generated/evade-base-encoding-as-a-string.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-clip-path-shaping-text.pdf	b219b81c86ffb3304f83dffa31ccdf6a14fe88ded8c24e0a1a5edb3bfcc6f60e
+PAGE	tests/redaction/generated/evade-clip-path-shaping-text.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	ce98848d3ff694dc1d62c01752830bb85026e7fd47b1317d1581de3cb374cc7d
 PAGE	tests/redaction/generated/evade-crop-wider-than-both-media-boxes.pdf	0	RULE media-box-unverified
 INPUT	tests/redaction/generated/evade-cropbox-as-dictionary.pdf	07541f7b2bcb0865efc9b406dc92873afa54f505ef5e4ec3d98369d72ea21ad8
@@ -299,6 +301,10 @@ INPUT	tests/redaction/generated/nearmiss-appearance-stream-without-a-layer.pdf	7
 PAGE	tests/redaction/generated/nearmiss-appearance-stream-without-a-layer.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	cd3e6f85b6006a0b06cf60dc5f7aa60d3f12c40227b6e0754f66a3c8ed2f6124
 PAGE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	031ad13171dec082de194ccd175422182e6f2761c1a38c28d22cfd20fa3ec0d1
+PAGE	tests/redaction/generated/nearmiss-clip-path-clear-of-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	cbbc64353bd77852a55d493409add8695f069334c712e299afc2455b08933bef
+PAGE	tests/redaction/generated/nearmiss-clip-rectangle-around-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 PAGE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	2844a59246b64171bf1fb06c6179012181c4e8fcc83215cee6d0648ea23814fd

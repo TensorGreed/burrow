@@ -1413,6 +1413,57 @@ pages = 1
   notes = "MUST NOT be refused. The twin of evade-paths-in-form-two-levels-down: the same corner paths in a form inside a form."
 
 [[fixture]]
+name = "evade-clip-path-shaping-text"
+file = "generated/evade-clip-path-shaping-text.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — clip shaping removed text"
+  canary = "BURROW-EVADE-CLIP-PATH"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: the text the region removes is drawn under a clipping path, not one rectangle holding it, that meets the region. The clip would stay after the text is removed."
+
+[[fixture]]
+name = "nearmiss-clip-path-clear-of-region"
+file = "generated/nearmiss-clip-path-clear-of-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-CLIP-NEARMISS"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-clip-path-shaping-text: the same clip, clear of the region and restored before the text. A rule keyed on the page having a clip refuses it."
+
+[[fixture]]
+name = "nearmiss-clip-rectangle-around-region"
+file = "generated/nearmiss-clip-rectangle-around-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-CLIP-RECT"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The text under one rectangle clip that holds the whole page, as producers write around a page or a cell: it admits all of the region, so it holds nothing about the text there."
+
+[[fixture]]
 name = "evade-widget-on-another-page"
 file = "generated/evade-widget-on-another-page.pdf"
 kind = "hand-built"

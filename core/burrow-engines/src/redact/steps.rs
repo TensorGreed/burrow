@@ -810,6 +810,25 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
             ));
         }
 
+        // A CLIPPING PATH THAT SHAPED A REMOVED GLYPH'S INK IN THE REGION (owner, 2026-10-19). The glyph is
+        // removed and the clip is kept byte for byte, so where the clip's boundary passes through
+        // the glyph's ink in the region, the kept path carries the outline of what the reader saw
+        // there. Refused per removed glyph, over the part of its box the region covers: a clip
+        // that admits all of that part (one exact rectangle containing it) or none of it holds
+        // nothing about the ink there. See `ClipBox`.
+        if cut.iter().any(|glyph| {
+            glyph
+                .conservative_box()
+                .overlap(&region)
+                .is_some_and(|area| glyph.clips.iter().any(|clip| clip.shapes(&area)))
+        }) {
+            return Err(Error::Unsupported(
+                "pdf redaction [clip-path-in-region]: a clipping path shapes text the region \
+                 removes, and the path would stay after the text is removed"
+                    .to_owned(),
+            ));
+        }
+
         // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
         // from. The page's own content first, then each form the removal reaches -- a form
         // carries its own `BDC`s and its own offsets.
