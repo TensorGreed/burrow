@@ -183,6 +183,10 @@ INPUT	tests/redaction/generated/evade-missing-pair-named-in-an-xref-stream.pdf	e
 PAGE	tests/redaction/generated/evade-missing-pair-named-in-an-xref-stream.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-missing-pair-named-in-the-trailer.pdf	088000f05458904ed0b70877c473132118f04f98e98bdef0e16414f26e8cb051
 PAGE	tests/redaction/generated/evade-missing-pair-named-in-the-trailer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-number-past-pdfium-length-in-an-object-stream.pdf	ce5122c5ab63ed8141f0d1b93ea6e0500534d16c4c6cf72919bf8b5603e8968f
+PAGE	tests/redaction/generated/evade-number-past-pdfium-length-in-an-object-stream.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-number-past-pdfium-length.pdf	52c3f1581cb0876947928b16c519cec4c056d5cec677585587cce2420b06e5d4
+PAGE	tests/redaction/generated/evade-number-past-pdfium-length.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-object-stream-qpdf-cannot-load.pdf	7bfe516dbc40d6001b7eacac7dd3dd056d1522246008db4e503ec727d7585c41
 DOC	tests/redaction/generated/evade-object-stream-qpdf-cannot-load.pdf	ERR Unsupported("pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known")
 INPUT	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	2d5d048401928973cbc6e7b69926dc20029e816d873cbec8411dd366eac2ceaf
@@ -316,6 +320,8 @@ INPUT	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	a9859
 PAGE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	552e12c4fb86fc2392fec71e457d355c7e15b5e949731738b0255c2e0f05534f
 PAGE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-number-at-pdfium-length.pdf	dbb86de5689b7b2a6f24ab426adada493b6e59c2f560ccb62ddc458b5f82d2e6
+PAGE	tests/redaction/generated/nearmiss-number-at-pdfium-length.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	9f5d897daf7dea9666cc5ba597e1c9375639e2e0bbf0f7ad4c8a85f350f4359b
 PAGE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	FRAME 400 200
 PAGE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	1	FRAME 400 200

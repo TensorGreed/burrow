@@ -647,6 +647,7 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         undecodable: split_object_stream_undecodable,
         name: split_name_read_differently,
         syntax: split_syntax_read_differently,
+        number: split_number_token_too_long,
         null_value: Some(split_null_value),
         defer_null_value: false,
         // AT THE OPEN ONLY (owner, 2026-10-15): the catalog's `/Dests` dictionary may hold an
@@ -731,6 +732,14 @@ fn split_syntax_read_differently() -> Error {
     )
 }
 
+fn split_number_token_too_long() -> Error {
+    Error::Unsupported(
+        "split [split-number-token-too-long]: the document writes a number longer than readers \
+         read alike, so what a part would show cannot be known"
+            .to_owned(),
+    )
+}
+
 fn split_null_value() -> Error {
     Error::Unsupported(
         "split [split-null-value]: the document writes a value the engine drops when it writes, \
@@ -780,7 +789,8 @@ fn optional_content_document() -> Error {
 /// # Errors
 ///
 /// `[split-reference-to-nothing]`, `[split-reference-unreadable]`,
-/// `[split-name-read-differently]`, `[split-syntax-read-differently]`, `[split-null-value]`,
+/// `[split-name-read-differently]`, `[split-syntax-read-differently]`,
+/// `[split-number-token-too-long]`, `[split-null-value]`,
 /// `[split-optional-content-document]`, the deadline, and whatever the engine reports.
 ///
 /// Returns whether an empty `/Dests` key was admitted, in which case every part must pass

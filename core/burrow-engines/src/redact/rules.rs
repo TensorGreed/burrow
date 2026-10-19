@@ -134,6 +134,7 @@ pub const RULE_IDS: &[&str] = &[
     "non-finite-geometry",
     "not-a-dictionary-where-one-belongs",
     "null-value",
+    "number-token-too-long",
     "number-unreadable",
     "numeric-operand-not-a-number",
     "operand-count-mismatch",

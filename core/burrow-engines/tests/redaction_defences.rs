@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 94] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2833,6 +2833,17 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
         Some("reference-unreadable"),
     ),
     ("nearmiss-reference-written-plainly.pdf", None),
+    // #301: a number written past the 256 bytes PDFium reads whole, in the file body and in an
+    // object stream; its twin at exactly 256.
+    (
+        "evade-number-past-pdfium-length.pdf",
+        Some("number-token-too-long"),
+    ),
+    (
+        "evade-number-past-pdfium-length-in-an-object-stream.pdf",
+        Some("number-token-too-long"),
+    ),
+    ("nearmiss-number-at-pdfium-length.pdf", None),
     ("nearmiss-literal-null-threads.pdf", None),
     (
         "evade-object-stream-qpdf-cannot-load.pdf",
@@ -2923,7 +2934,7 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 91] = [
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 13] = [
+const RESOLVED_GROUPS: [&str; 14] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2934,6 +2945,7 @@ const RESOLVED_GROUPS: [&str; 13] = [
     "graphics state font",
     "reference to nothing",
     "reference unreadable",
+    "number too long",
     "annotation appearance",
     "annotation dependents",
     "/AcroForm",

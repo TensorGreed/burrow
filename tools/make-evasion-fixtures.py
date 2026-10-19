@@ -2895,6 +2895,61 @@ def evade_reference_with_a_comment_inside() -> bytes:
     return _rotated_by_reference("COMMENT-INSIDE", "{n} %between\n0 R", 0, b"90")
 
 
+# PDFium keeps the first 256 bytes of a number in object syntax, the sign counted, and drops the
+# rest; qpdf reads the whole (#301). `pdfsyntax::references::MAX_NUMBER_WRITTEN`.
+PDFIUM_NUMBER_BYTES = 256
+
+
+def _rotate_written_as(tag: str, written: bytes, in_object_stream: bool = False) -> bytes:
+    """The canary page with `/Rotate` written as `written`, a direct number. In an object stream,
+    the page is the member."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run(tag) + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+        + b" /Rotate " + written
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    if in_object_stream:
+        return pdf.build_with_object_stream(root, [page])
+    return pdf.build(root)
+
+
+def _signed_zero(length: int) -> bytes:
+    """`+` and zeros, `length` bytes as written: 0 to every reader, whatever it keeps."""
+    return b"+" + b"0" * (length - 1)
+
+
+def evade_number_past_pdfium_length() -> bytes:
+    """`/Rotate` written as `+` and zeros, 257 bytes: one past what PDFium reads whole (#301).
+
+    The value is 0 however much of it a reader keeps, so this file draws the same to both; it is
+    refused for the token's length, which is where a number that does differ is told apart. The
+    sign is counted, as PDFium counts it.
+    """
+    return _rotate_written_as("NUMBER-PAST-THE-CUT", _signed_zero(PDFIUM_NUMBER_BYTES + 1))
+
+
+def evade_number_past_pdfium_length_in_an_object_stream() -> bytes:
+    """The same 257-byte number, in a page that is an object stream's member (#301): the file body
+    does not hold it, so a check of the raw bytes alone passes it."""
+    return _rotate_written_as(
+        "NUMBER-PAST-THE-CUT-OBJSTM", _signed_zero(PDFIUM_NUMBER_BYTES + 1), True
+    )
+
+
+def nearmiss_number_at_pdfium_length() -> bytes:
+    """The same number at exactly 256 bytes, which PDFium and qpdf both read whole. MUST redact."""
+    return _rotate_written_as("NUMBER-AT-THE-CUT", _signed_zero(PDFIUM_NUMBER_BYTES))
+
+
 def evade_object_stream_qpdf_cannot_load() -> bytes:
     """`/Rotate N 0 R` to a member of an object stream headed and cross-referenced at generation 1.
 
@@ -3508,6 +3563,9 @@ CASES: list[tuple[str, str]] = [
     ("evade-reference-with-leading-zeros", "reference unreadable"),
     ("evade-reference-with-a-comment-inside", "reference unreadable"),
     ("nearmiss-reference-written-plainly", "reference unreadable"),
+    ("evade-number-past-pdfium-length", "number too long"),
+    ("evade-number-past-pdfium-length-in-an-object-stream", "number too long"),
+    ("nearmiss-number-at-pdfium-length", "number too long"),
     ("nearmiss-literal-null-threads", "reference to nothing"),
     ("evade-object-stream-qpdf-cannot-load", "reference to nothing"),
     ("evade-missing-pair-named-in-the-trailer", "reference to nothing"),
@@ -3642,6 +3700,9 @@ BUILDERS = {
     "evade-reference-with-leading-zeros": evade_reference_with_leading_zeros,
     "evade-reference-with-a-comment-inside": evade_reference_with_a_comment_inside,
     "nearmiss-reference-written-plainly": nearmiss_reference_written_plainly,
+    "evade-number-past-pdfium-length": evade_number_past_pdfium_length,
+    "evade-number-past-pdfium-length-in-an-object-stream": evade_number_past_pdfium_length_in_an_object_stream,
+    "nearmiss-number-at-pdfium-length": nearmiss_number_at_pdfium_length,
     "nearmiss-literal-null-threads": nearmiss_literal_null_threads,
     "evade-object-stream-qpdf-cannot-load": evade_object_stream_qpdf_cannot_load,
     "evade-missing-pair-named-in-the-trailer": evade_missing_pair_named_in_the_trailer,
