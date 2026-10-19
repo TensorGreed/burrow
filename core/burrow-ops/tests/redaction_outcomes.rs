@@ -48,6 +48,15 @@
 //! skipped: an output that changed because its input changed is not a finding about the code, and
 //! a gate that quietly left it out would be examining less than it reports.
 //!
+//! # And the bytes verification read are the bytes returned (R10)
+//!
+//! The engine is wrapped in a [`Recorder`] that records the sha256 of every buffer the operation's
+//! frame check opens (`OutputReader::open_output`) and then delegates. For every case that
+//! redacts, that is exactly one buffer, equal to the document returned -- whose digest is the one
+//! the golden file pins; for every refusal raised before the frame check, none. ADR 0006's R10, as
+//! amended 2026-09-27, on real bytes. The count is gated against the golden file: opens equal its
+//! `OK` rows plus its rows refused by the frame check itself (`OutputRejected("redact: ..`).
+//!
 //! # Blessing
 //!
 //! ```text
@@ -66,6 +75,7 @@
               attacker-controlled input in library code, where they stay denied"
 )]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -73,8 +83,9 @@ use std::sync::Arc;
 
 use burrow_engines::pdfsyntax::region::Region;
 use burrow_engines::qpdf::Qpdf;
-use burrow_engines::{OpenOptions, PageRotator};
-use burrow_types::{Clock, Limits, ManualClock};
+use burrow_engines::redact::Report;
+use burrow_engines::{OpenOptions, OutputReader, PageRedactor, PageRotator};
+use burrow_types::{Clock, Deadline, Limits, ManualClock};
 use sha2::{Digest, Sha256};
 
 /// Where every document comes from, relative to this crate. Read in full; none is optional.
@@ -115,6 +126,85 @@ const BAND: Region = Region {
     width: 5000.0,
     height: 120.0,
 };
+
+/// qpdf, recording the sha256 of every buffer the operation's frame check opens (R10).
+///
+/// Delegates everything; records in `open_output` only, the one method `verify::output` reads the
+/// emitted bytes through. `fresh` shares the record, because the frame check opens through a fresh
+/// engine.
+struct Recorder {
+    opened: std::rc::Rc<RefCell<Vec<String>>>,
+}
+
+impl PageRedactor for Recorder {
+    fn name(&self) -> &'static str {
+        PageRedactor::name(&Qpdf)
+    }
+
+    fn redact_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        redacted: &BTreeSet<usize>,
+        region: Region,
+        options: &OpenOptions<'_>,
+    ) -> burrow_types::Result<(Vec<u8>, Report)> {
+        Qpdf.redact_page(bytes, page, redacted, region, options)
+    }
+
+    fn input_rotations(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> burrow_types::Result<Vec<i64>> {
+        Qpdf.input_rotations(bytes, options, deadline)
+    }
+}
+
+impl OutputReader for Recorder {
+    type Read = <Qpdf as OutputReader>::Read;
+
+    fn fresh(&self) -> Self {
+        Self {
+            opened: std::rc::Rc::clone(&self.opened),
+        }
+    }
+
+    fn open_output(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+    ) -> burrow_types::Result<Self::Read> {
+        self.opened.borrow_mut().push(hex(bytes));
+        Qpdf.fresh().open_output(bytes, options)
+    }
+
+    fn page_count(&self, read: &Self::Read) -> burrow_types::Result<u64> {
+        OutputReader::page_count(&Qpdf, read)
+    }
+
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> burrow_types::Result<Vec<i64>> {
+        OutputReader::rotations(&Qpdf, read, options, deadline)
+    }
+}
+
+/// What the recorder saw over a run: how many buffers the frame check opened, and every case
+/// where what it opened was not what R10 requires.
+struct ReadBacks {
+    opens: usize,
+    wrong: Vec<String>,
+}
+
+/// Whether a refusal is the operation's frame check's own, which opens the output before refusing.
+fn refused_by_the_frame_check(outcome: &str) -> bool {
+    outcome.starts_with("ERR OutputRejected(\"redact: ")
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -285,11 +375,18 @@ fn covered_label(covered: &BTreeSet<usize>) -> String {
     all.join(",")
 }
 
-/// Run every case, as the lines the golden file holds.
-fn measure() -> (Vec<String>, usize) {
+/// Run every case, as the lines the golden file holds, and what the frame check opened.
+fn measure() -> (Vec<String>, usize, ReadBacks) {
     let manifest = manifest_regions();
     let documents = documents();
     let mut lines = Vec::new();
+    let engine = Recorder {
+        opened: std::rc::Rc::new(RefCell::new(Vec::new())),
+    };
+    let mut read_backs = ReadBacks {
+        opens: 0,
+        wrong: Vec::new(),
+    };
     let mut matched_regions = 0usize;
     for (name, bytes) in &documents {
         lines.push(format!("INPUT\t{name}\t{}", hex(bytes)));
@@ -301,27 +398,56 @@ fn measure() -> (Vec<String>, usize) {
         let region = manifest.get(name).copied();
         matched_regions += usize::from(region.is_some());
         for case in cases(pages, region) {
-            let outcome = match burrow_ops::redact::page(
-                &Qpdf,
+            engine.opened.borrow_mut().clear();
+            let result = burrow_ops::redact::page(
+                &engine,
                 bytes,
                 case.page,
                 &case.covered,
                 case.region,
                 &options(),
-            ) {
-                Ok(done) => format!(
-                    "OK {} report {}",
-                    hex(&done.document),
-                    hex(format!("{:?}", done.report).as_bytes())
-                ),
-                Err(error) => format!("ERR {}", format!("{error:?}").replace(['\n', '\t'], " ")),
-            };
-            lines.push(format!(
-                "CASE\t{name}\t{}\t{}\t{}\t{outcome}",
+            );
+            let opened = engine.opened.take();
+            read_backs.opens += opened.len();
+            let label = format!(
+                "{name}\t{}\t{}\t{}",
                 case.page,
                 covered_label(&case.covered),
                 case.label
-            ));
+            );
+            let outcome = match result {
+                Ok(done) => {
+                    // R10: ONE READ-BACK, OF THE DOCUMENT RETURNED.
+                    if opened != [hex(&done.document)] {
+                        read_backs.wrong.push(format!(
+                            "{label}: redacted, and the frame check's read-back opened {} \
+                             buffer(s), {} of them the returned document",
+                            opened.len(),
+                            opened.iter().filter(|o| **o == hex(&done.document)).count()
+                        ));
+                    }
+                    format!(
+                        "OK {} report {}",
+                        hex(&done.document),
+                        hex(format!("{:?}", done.report).as_bytes())
+                    )
+                }
+                Err(error) => {
+                    let outcome =
+                        format!("ERR {}", format!("{error:?}").replace(['\n', '\t'], " "));
+                    // A REFUSAL BEFORE THE FRAME CHECK OPENS NOTHING: nobody receives those bytes.
+                    let expected = usize::from(refused_by_the_frame_check(&outcome));
+                    if opened.len() != expected {
+                        read_backs.wrong.push(format!(
+                            "{label}: refused, and the frame check's read-back opened {} \
+                             buffer(s); expected {expected}",
+                            opened.len()
+                        ));
+                    }
+                    outcome
+                }
+            };
+            lines.push(format!("CASE\t{label}\t{outcome}"));
         }
     }
     // EVERY REGION THE MANIFEST DECLARES WAS USED, so a renamed fixture cannot quietly fall back
@@ -332,7 +458,44 @@ fn measure() -> (Vec<String>, usize) {
         "the manifest declares {} regions and {matched_regions} matched a document",
         manifest.len()
     );
-    (lines, documents.len())
+    (lines, documents.len(), read_backs)
+}
+
+/// R10's gate: the frame check opened one buffer per case the golden file records as redacted or
+/// as refused by the frame check, and each was the right one. Counts from the FILE, not from the
+/// run, so a recorder that records nothing cannot agree with itself.
+fn read_back_gate(recorded: &[String], read_backs: &ReadBacks) -> Result<String, String> {
+    let outcome_of = |line: &String| line.rsplit('\t').next().unwrap_or_default().to_owned();
+    let cases: Vec<String> = recorded
+        .iter()
+        .filter(|l| l.starts_with("CASE\t"))
+        .map(outcome_of)
+        .collect();
+    let ok = cases.iter().filter(|o| o.starts_with("OK ")).count();
+    let rejected = cases
+        .iter()
+        .filter(|o| refused_by_the_frame_check(o))
+        .count();
+    let report = format!(
+        "R10 read-backs: {} frame-check open(s) over {} cases; expected {} = {ok} OK row(s) + \
+         {rejected} OutputRejected row(s) in outcomes.tsv",
+        read_backs.opens,
+        cases.len(),
+        ok + rejected
+    );
+    if !read_backs.wrong.is_empty() {
+        return Err(format!(
+            "{report}\nR10: {} case(s) where the read-back opened the wrong buffers:\n{}",
+            read_backs.wrong.len(),
+            read_backs.wrong.join("\n")
+        ));
+    }
+    if ok == 0 || read_backs.opens != ok + rejected {
+        return Err(format!(
+            "{report}\nR10: the read-back opens do not match the golden file's count"
+        ));
+    }
+    Ok(report)
 }
 
 /// Every way `computed` differs from `recorded`, named.
@@ -366,7 +529,7 @@ fn differences(recorded: &[String], computed: &[String]) -> Vec<String> {
 
 #[test]
 fn every_redaction_outcome_in_the_corpus_is_the_recorded_one() {
-    let (computed, documents) = measure();
+    let (computed, documents, read_backs) = measure();
     let path = root().join(GOLDEN);
 
     // BLESSING IS ASKED FOR BY NAME, AND NEVER IN CI. `var_os(..).is_some()` blessed on `=0` or an
@@ -430,6 +593,61 @@ fn every_redaction_outcome_in_the_corpus_is_the_recorded_one() {
     );
     assert_eq!(recorded_inputs, documents);
     assert_eq!(recorded_cases, cases);
+
+    match read_back_gate(&recorded, &read_backs) {
+        Ok(report) => println!("{report}"),
+        Err(refusal) => panic!("{refusal}"),
+    }
+}
+
+/// The gate refuses each shape of failure, naming it, so a clean run is a measurement.
+#[test]
+fn the_read_back_gate_names_every_kind_of_failure() {
+    let recorded = vec![
+        "INPUT\ta.pdf\t00".to_owned(),
+        "CASE\ta.pdf\t0\t0\twhole\tOK 11 report 22".to_owned(),
+        "CASE\ta.pdf\t0\t0\tband\tERR OutputRejected(\"redact: x\")".to_owned(),
+        "CASE\ta.pdf\t1\t1\twhole\tERR Malformed(\"pdf redaction [x]: y\")".to_owned(),
+    ];
+    let clean = ReadBacks {
+        opens: 2,
+        wrong: Vec::new(),
+    };
+    let report = read_back_gate(&recorded, &clean).expect("two opens for one OK and one rejection");
+    assert!(
+        report.contains("expected 2 = 1 OK row(s) + 1 OutputRejected"),
+        "{report}"
+    );
+
+    // A RECORDER THAT RECORDS NOTHING.
+    let silent = ReadBacks {
+        opens: 0,
+        wrong: Vec::new(),
+    };
+    let refusal = read_back_gate(&recorded, &silent).expect_err("no opens recorded");
+    assert!(
+        refusal.contains("do not match the golden file's count"),
+        "{refusal}"
+    );
+
+    // ONE TOO MANY.
+    let extra = ReadBacks {
+        opens: 3,
+        wrong: Vec::new(),
+    };
+    assert!(read_back_gate(&recorded, &extra).is_err());
+
+    // A CASE THAT OPENED THE WRONG BUFFER, with the count right.
+    let wrong = ReadBacks {
+        opens: 2,
+        wrong: vec!["a.pdf\t0\t0\twhole: wrong".to_owned()],
+    };
+    let refusal = read_back_gate(&recorded, &wrong).expect_err("a wrong buffer");
+    assert!(refusal.contains("opened the wrong buffers"), "{refusal}");
+
+    // A GOLDEN FILE WITH NOTHING REDACTED is not a measurement.
+    let none = vec!["CASE\ta.pdf\t1\t1\twhole\tERR Malformed(\"x\")".to_owned()];
+    assert!(read_back_gate(&none, &silent).is_err());
 }
 
 /// The comparison sees each kind of difference, so a clean run is a measurement.
