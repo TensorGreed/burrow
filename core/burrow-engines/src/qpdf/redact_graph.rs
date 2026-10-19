@@ -191,7 +191,7 @@ impl OpensForRedaction for Qpdf {
         let bytes = bytes.to_vec().into_boxed_slice();
         // R10: THE COPY QPDF IS HANDED, if a verifier named this open. See `hooks::record_open`.
         #[cfg(test)]
-        crate::redact::hooks::record_open(&bytes);
+        crate::redact::hooks::record_open(crate::redact::hooks::take_opening(), &bytes);
         let (document, _, _, deadline) = super::open_document(bytes, options)?;
         // A REPAIRED INPUT IS REFUSED (#224): see `repaired_by_the_engine`. After the page count
         // `open_document` takes, which is when qpdf flattens -- and repairs -- the page tree.

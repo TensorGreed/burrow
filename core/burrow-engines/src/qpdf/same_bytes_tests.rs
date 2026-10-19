@@ -5,7 +5,9 @@
 //! writes drift; this holds the wiring with the real ones -- qpdf's walk and PDFium's second
 //! reading -- by recording, inside each engine's open, the sha256 of the buffer the engine is
 //! handed (`hooks::record_open`), under the name of the verifier that asked for it
-//! (`hooks::opening`), on the caller's thread.
+//! (`hooks::opening`), on the caller's thread. An open nobody named is recorded too, as
+//! `Opened::Unnamed`, so a run is held to its whole sequence of opens and not to the named ones
+//! alone.
 //!
 //! Engine-internal readings are only observable from here: `cfg(test)` hooks in this crate are not
 //! compiled into the copy `burrow-ops` links, so `redaction_outcomes.rs` can see the operation's
@@ -21,16 +23,28 @@
 //!
 //! # What it asserts, per case
 //!
-//! Exactly three opens, in this order: the walk of the OUTPUT, the second reading's page count of
-//! the INPUT, and its page read of the OUTPUT -- each digest equal to the bytes returned, or to the
-//! input's. Then totals against the expected counts, printed.
+//! Exactly four opens through the instrumented engine opens, in this order: the operation's own
+//! open of the INPUT (unnamed: `redact::redact_page` opens its input once, through
+//! `open_for_redaction`, before any step runs), the walk of the OUTPUT, the second reading's page
+//! count of the INPUT, and its page read of the OUTPUT -- each digest equal to the bytes returned,
+//! or to the input's. A verifier that opened its buffer and then another would show a fifth open,
+//! unnamed, and fail. Then totals against the expected counts, printed.
 //!
 //! # What it cannot say
 //!
 //! What either engine does with the buffer once it holds it: the digest is of the copy Rust hands
-//! over -- the boxed slice qpdf and PDFium are given -- and nothing inside the engine. And only the
+//! over -- the boxed slice qpdf and PDFium are given -- and nothing inside the engine. Opens
+//! outside the three instrumented ones (`Qpdf::open_for_redaction`, `PdfiumReading::open`, the
+//! web engine's `open_for_redaction`) are not recorded: the renderer's size read of an inherited
+//! `/MediaBox` opens the input through `Pdfium::open`, which no verifier uses. And only the
 //! corpus's `OK` cases: a path none of them reaches is held by the fakes' structural tests in
 //! `redact::tests`, not by real digests.
+//!
+//! **Nothing records through the web engine.** Its open carries the same recorder, but no test
+//! here runs `WebRedactor`, and deleting that recorder leaves the suite green (measured in R10's
+//! round 2). The web walk is held by the call site it shares with the native one,
+//! `Witness::open_output` (M2web; M5 natively), and by the browser differential -- not by a
+//! digest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -213,6 +227,7 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
         let taken = digest(&input);
         assert_ne!(returned, taken, "{case}: the output is the input");
         let expected = vec![
+            (Opened::Unnamed, taken.clone()),
             (Opened::Walk, returned.clone()),
             (Opened::PageCount, taken),
             (Opened::ReadPage, returned),
@@ -237,15 +252,16 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
             opens,
             expected,
             "{case}: the verifiers opened [{}]; expected [{}]",
-            named(&opens, &expected[0].1, &expected[1].1).join(", "),
-            named(&expected, &expected[0].1, &expected[1].1).join(", "),
+            named(&opens, &expected[1].1, &expected[0].1).join(", "),
+            named(&expected, &expected[1].1, &expected[0].1).join(", "),
         );
         for (which, _) in &opens {
             *tally.entry(*which).or_default() += 1;
         }
     }
 
-    // THE COUNTS, AGAINST WHAT THEY SHOULD BE: one of each per `OK` row the FILE records, counted
+    // THE COUNTS, AGAINST WHAT THEY SHOULD BE: one of each -- the input's unnamed open included --
+    // per `OK` row the FILE records, counted
     // from the file rather than from the loop, so a run over fewer reads as fewer.
     let recorded = golden
         .lines()
@@ -253,17 +269,24 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
         .count();
     let count = |which| tally.get(&which).copied().unwrap_or(0);
     println!(
-        "R10 engine readings: {} OK case(s) over {} fixture(s); {} walk opens, {} read_page \
-         opens, {} page_count opens; expected {recorded} of each (outcomes.tsv's OK rows)",
+        "R10 engine readings: {} OK case(s) over {} fixture(s); {} unnamed (input) opens, {} walk \
+         opens, {} read_page opens, {} page_count opens; expected {recorded} of each \
+         (outcomes.tsv's OK rows)",
         rows.len(),
         fixtures.len(),
+        count(Opened::Unnamed),
         count(Opened::Walk),
         count(Opened::ReadPage),
         count(Opened::PageCount),
     );
     assert!(recorded > 0, "{GOLDEN} records no OK case");
     assert_eq!(rows.len(), recorded, "OK rows read vs OK rows in the file");
-    for which in [Opened::Walk, Opened::ReadPage, Opened::PageCount] {
+    for which in [
+        Opened::Unnamed,
+        Opened::Walk,
+        Opened::ReadPage,
+        Opened::PageCount,
+    ] {
         assert_eq!(
             count(which),
             recorded,
@@ -274,10 +297,10 @@ fn every_buffer_redaction_verifies_is_the_one_it_returns() {
 }
 
 #[test]
-fn a_refusal_before_verification_opens_nothing() {
-    // THE TWIN: the recorder records only what a verifier opened. A page past the end is refused
-    // at the constructor, before any output exists, so nothing is opened -- and a recorder that
-    // recorded every open in the operation would say otherwise.
+fn a_refusal_before_verification_opens_only_its_input() {
+    // THE TWIN: a page past the end is refused at the constructor, before any output exists, so
+    // the only open is the operation's own, unnamed, of its input -- and a recorder that named
+    // every open, or a verifier that ran anyway, would say otherwise.
     let input = std::fs::read(root().join("tests/redaction/fixtures/producer-latex.pdf"))
         .expect("the fixture");
     start_recording_opens();
@@ -296,5 +319,9 @@ fn a_refusal_before_verification_opens_nothing() {
         format!("{error:?}").contains("[page-out-of-range]"),
         "refused for another reason: {error:?}"
     );
-    assert!(opens.is_empty(), "a refusal opened {opens:?}");
+    assert_eq!(
+        opens,
+        vec![(Opened::Unnamed, digest(&input))],
+        "a refusal before verification opened more than its input"
+    );
 }

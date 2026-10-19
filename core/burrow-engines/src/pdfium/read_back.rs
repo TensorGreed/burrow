@@ -56,6 +56,9 @@ impl<'a> PdfiumReading<'a> {
     /// output a few hundred bytes larger than an input that passed it. `max_pages`,
     /// `max_duration_ms` and the deadline are untouched.
     fn open(&self, bytes: &[u8]) -> Result<PdfiumDocument> {
+        // R10: the name is consumed before anything can return. See `hooks::take_opening`.
+        #[cfg(test)]
+        let opened = crate::redact::hooks::take_opening();
         let size = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("a document length does not fit in u64".to_owned()))?;
         let mut limits = self.limits;
@@ -68,7 +71,7 @@ impl<'a> PdfiumReading<'a> {
         let bytes = bytes.to_vec().into_boxed_slice();
         // R10: THE COPY PDFIUM IS HANDED, under the name its caller gave it.
         #[cfg(test)]
-        crate::redact::hooks::record_open(&bytes);
+        crate::redact::hooks::record_open(opened, &bytes);
         open_spending(bytes, &options, Some(self.deadline))
     }
 }
