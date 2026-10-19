@@ -8,6 +8,17 @@
 //! and a graphics state is what can hide content -- so the content it hid is drawn in the part.
 //! Keeping every page-level graphics state takes that decision away from the reading.
 //!
+//! **Except where the same object is also another category.** This module does not prune
+//! `/ExtGState`, but the other categories are pruned by editing their dictionaries in place, so a
+//! kept graphics-state dictionary, or one of its entries, that another kept page lists as a
+//! different resource category is edited by that category's pruning, and is not whole. That case
+//! is open until pruning is done per object across categories (the release after this rule's).
+//!
+//! **And split's reading errs both ways.** An entry read as unused is judged below and may refuse.
+//! An entry whose name appears anywhere in a kept page's content is read as used, whether or not
+//! the page draws with it, and then travels whole with whatever it reaches, without being judged.
+//! That too is open and filed (ADR 0019 §2b's graphics-state amendment).
+//!
 //! # Why keeping them whole needs a refusal beside it
 //!
 //! A graphics state can reach content of its own: a soft mask's group form, a transfer, black

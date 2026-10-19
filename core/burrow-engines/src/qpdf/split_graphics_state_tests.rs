@@ -653,8 +653,8 @@ fn resources_inherited_two_levels_up_are_judged_like_the_pages_own() {
 }
 
 /// EVERY RESOURCE CATEGORY written as something other than a dictionary refuses: pruning cannot
-/// filter it, and readers resolve resources from it. A dictionary, or an absent category, splits (a `null` one is
-/// refused before this, `[split-null-value]`).
+/// filter it, and readers resolve resources from it. A dictionary, or an absent category, splits
+/// (a `null` one is refused before this, `[split-null-value]`).
 #[test]
 fn a_resource_category_that_is_not_a_dictionary_refuses() {
     let one_page = |resources: &str, extra: Option<String>| {
