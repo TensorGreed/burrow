@@ -5436,3 +5436,45 @@ one place the number lives.
   some annotations that have none, and a generated appearance is not held to the annotation's
   `/Rect`. `[annotation-in-region]` measures the `/Rect`, so a picture can show annotation ink that
   the rule does not measure; redaction's handling of generated appearances is tracked separately.
+
+## Amendment, 2026-10-19 — one `TJ` number per removed run, and the run's width is the residual
+
+**The defect.** The rewriter replaced each removed glyph with its own `TJ` adjustment, the number
+that reproduces that glyph's advance (§6, *PDFium invents a space where a redaction leaves a gap*).
+A removed run of `n` glyphs therefore left `n` numbers in the output, and each one is a removed
+glyph's width in the clear, in thousandths of the font size. A sequence of glyph widths is the
+glyph-position de-redaction class: with the font known, it narrows each removed character to the
+glyphs of that width. Found by a security review as an out-of-diff finding; the owner's decision
+(2026-10-19, `~/burrow-state.md` (22)) was to fix it in its own slice under the refusal-tier
+process (DECISIONS.md rule 17), since it accepts nothing new.
+
+**The rule.** Within one rewritten show operation, every number between two kept codes -- the
+adjustment for each removed glyph, and any kern of the producer's that sits among or beside them --
+is summed and written once, where the next kept code (or the end of the array) begins. A *run* is
+therefore the stretch between two kept codes of one operation: it spans strings and producer
+numbers inside a `TJ` array, and an empty string does not end it. It does not span operations --
+each `Tj`, `TJ`, `'` and `"` is rewritten on its own -- so a removal covering several show
+operators leaves one number per operator it touched. A kept code always ends a run, so the glyphs
+after it keep their place.
+
+**Placement is unchanged.** The sum is formed in `f64` and written once; a reader parsing it into
+`f32` rounds it once rather than once per term. PDFium sums consecutive `TJ` numbers itself, so
+the kept text lands where it did, well inside the second reading's 0.05 pt tolerance. A sum that
+is not finite refuses `[adjustment-not-expressible]`, as a single adjustment already did.
+
+**The residual, at rule level: a removed run's total width is disclosed.** It has to be: the kept
+text after the run must not move, and the one number that keeps it in place is the run's width
+(plus any producer kerns folded into it). What is no longer disclosed is how that width divides
+among the removed glyphs, and where a producer kern inside the run marked a word boundary. Also
+still disclosed, and unchanged by this amendment: the number of operations a removal touched (one
+number per operation), the synthetic space PDFium's text layer reports at the gap, and whatever the
+kept text's positions say about the gap's ends.
+
+**Tests.** `pdfsyntax::geometry`'s unit tests assert the run's one number and its value for three
+glyphs of different advances, a producer kern folded into the run, the near-miss of two runs with
+a kept glyph between them staying two numbers, and the twin of a single removed glyph.
+`tests/one_adjustment_per_run.rs` redacts three Helvetica fixtures and reads the output through
+PDFium and `qpdf --qdf`: the removed glyphs are gone, every kept glyph is drawn at the origin PDFium
+drew it at before (within the oracle tolerance), no ink is left in the region, and the rewritten
+array holds one number. The asserted mutation restores one adjustment per glyph; the run tests
+fail under it and the single-glyph twins pass.

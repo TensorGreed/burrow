@@ -2567,12 +2567,22 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
         _ => {}
     }
     out.push(b'[');
+    // ONE NUMBER PER GAP, NOT ONE PER REMOVED GLYPH (F-2, ADR 0029). Every number this array
+    // will hold between two kept strings -- the adjustment for each removed glyph, and any kern
+    // of the producer's that sits among them -- is summed here and written once, when the next
+    // kept code (or the array's end) arrives. One adjustment per glyph was the defect: it wrote
+    // each removed glyph's advance as its own number, which is each removed glyph's width in the
+    // clear -- the glyph-position de-redaction class. What is left is the gap's total, which
+    // has to be disclosed, because the kept text after it must not move.
+    let mut gap: Option<f64> = None;
     for (at, item) in items {
         match item {
-            // THE PRODUCER'S OWN KERNS, CARRIED THROUGH IN PLACE. They sit between glyphs the
-            // cut does not touch, and dropping or reordering one moves everything after it.
+            // THE PRODUCER'S OWN KERNS, CARRIED THROUGH AT THEIR POSITION. They sit between
+            // glyphs, and dropping or reordering one moves everything after it. A kern that sits
+            // inside a removed run is folded into that run's one number: on its own it would
+            // mark where one removed word ended and the next began.
             Operand::Number { value, .. } => {
-                out.extend_from_slice(format!("{value} ").as_bytes());
+                gap = Some(gap.unwrap_or(0.0) + value);
             }
             Operand::Str { span } => {
                 let raw = content.get(span.0..span.1).ok_or_else(|| {
@@ -2580,7 +2590,7 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
                     Error::Internal("pdf geometry: a string's span left its stream".to_owned())
                 })?;
                 let bytes = super::strings::decode_string(raw)?;
-                emit_run(&mut out, &bytes, cuts, at)?;
+                emit_run(&mut out, &bytes, cuts, at, &mut gap)?;
             }
             _ => {
                 return Refusal::ShowArrayItemNotShowable.refuse(
@@ -2589,8 +2599,27 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
             }
         }
     }
+    flush_gap(&mut out, &mut gap)?;
     out.extend_from_slice(b"] TJ");
     Ok(out)
+}
+
+/// Write the gap's one number, if there is one, before whatever follows it.
+///
+/// The sum is formed in `f64` and written once. A reader that parses it into `f32` (PDFium does)
+/// rounds it once instead of once per term; PDFium also sums consecutive `TJ` numbers itself, so
+/// the kept text after the gap lands where it did before, to well inside the second reading's
+/// tolerance.
+fn flush_gap(out: &mut Vec<u8>, gap: &mut Option<f64>) -> Result<()> {
+    let Some(number) = gap.take() else {
+        return Ok(());
+    };
+    if !number.is_finite() {
+        return Refusal::AdjustmentNotExpressible
+            .refuse("a run of adjustments whose sum is not a finite 'TJ' number");
+    }
+    out.extend_from_slice(format!("{number} ").as_bytes());
+    Ok(())
 }
 
 /// The one string operand of a `Tj`, `'` or `"`.
@@ -2602,8 +2631,19 @@ fn show_operand(operation: &Operation, at: usize) -> Result<&Operand> {
     }
 }
 
-/// One string, emitted as kept runs and adjustments for the codes cut out of it.
-fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) -> Result<()> {
+/// One string, emitted as kept runs, with the codes cut out of it added to `gap`.
+///
+/// A removed glyph writes nothing here: its adjustment joins `gap`, which the caller's next kept
+/// code -- in this string or a later item of the same `TJ` -- writes as one number. So a run of
+/// removed glyphs is one number however long it is, and however many strings and kerns it spans
+/// within the operation. It does not span operations: each show operator is rewritten on its own.
+fn emit_run(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    cuts: &[&Glyph],
+    operand: usize,
+    gap: &mut Option<f64>,
+) -> Result<()> {
     let mut here: Vec<&Glyph> = cuts
         .iter()
         .copied()
@@ -2612,6 +2652,9 @@ fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) ->
     here.sort_by_key(|glyph| glyph.source.code_index);
 
     let Some(first) = here.first() else {
+        if !bytes.is_empty() {
+            flush_gap(out, gap)?;
+        }
         emit_hex(out, bytes);
         return Ok(());
     };
@@ -2650,9 +2693,12 @@ fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) ->
                     emit_hex(out, &kept);
                     kept.clear();
                 }
-                out.extend_from_slice(format!("{} ", adjustment_for(glyph)?).as_bytes());
+                *gap = Some(gap.unwrap_or(0.0) + adjustment_for(glyph)?);
             }
         } else {
+            if kept.is_empty() {
+                flush_gap(out, gap)?;
+            }
             kept.extend_from_slice(chunk);
         }
     }
@@ -5440,6 +5486,15 @@ mod tests {
                         },
                     )
                 }),
+                // A run's one number (F-2): two adjustments each finite, their sum not.
+                (Invariant, || {
+                    let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+                    for glyph in &mut glyphs[0..2] {
+                        glyph.displacement = 1e305;
+                        glyph.scaled_font_size = 1.0;
+                    }
+                    cut(&content, &glyphs[0..2])
+                }),
             ],
             Refusal::GraphicsStateOperandNotAName => {
                 vec![(Content, || walk("/F1 10 Tf (GS0) gs BT 0 0 Td (A) Tj ET"))]
@@ -7325,6 +7380,72 @@ mod tests {
             "the adjustment dropped the word spacing: {}",
             String::from_utf8_lossy(&out)
         );
+    }
+
+    /// The numbers in the rewritten `TJ` array, in order.
+    fn array_numbers(out: &[u8]) -> Vec<f64> {
+        let text = String::from_utf8_lossy(out).into_owned();
+        let end = text.find("] TJ").expect("a rewritten `TJ`");
+        let start = text[..end].rfind('[').expect("the array opens");
+        text[start + 1..end]
+            .split_whitespace()
+            .filter_map(|token| token.parse::<f64>().ok())
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_run_leaves_one_number_not_one_per_glyph() {
+        // F-2 (ADR 0029). Three removed glyphs of three different advances (2, 3.5 and 7 at
+        // 10pt, so -200, -350 and -700) between two kept ones. One adjustment per glyph wrote
+        // all three, which is each removed glyph's width in the clear; the rule writes their
+        // sum once, so only the run's total is disclosed.
+        let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET");
+        for (glyph, advance) in glyphs[1..4].iter_mut().zip([2.0, 3.5, 7.0]) {
+            glyph.displacement = advance;
+        }
+        let out = remove_glyphs(&content, None, &glyphs[1..4], &unwatched()).expect("removes");
+        assert_eq!(
+            array_numbers(&out),
+            vec![-1250.0],
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("[<41> -1250 <45> ] TJ"), "{text}");
+    }
+
+    #[test]
+    fn a_producers_kern_inside_a_removed_run_is_folded_into_its_one_number() {
+        // A kern between two removed glyphs, written on its own, would mark where one removed
+        // word ended and the next began. And the kerns on the run's edges join it too: the gap
+        // between two kept codes is one number. -500 x 3 for B, C and D, plus -25 and 40.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td [(AB) -25 (CD) 40 (E)] TJ ET");
+        let out = remove_glyphs(&content, None, &glyphs[1..4], &unwatched()).expect("removes");
+        assert_eq!(
+            array_numbers(&out),
+            vec![-1485.0],
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    #[test]
+    fn two_removed_runs_with_a_kept_glyph_between_stay_two_numbers() {
+        // THE NEAR-MISS. A kept glyph ends a run: merging across it would move that glyph.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET");
+        let cut = [glyphs[1].clone(), glyphs[3].clone()];
+        let out = remove_glyphs(&content, None, &cut, &unwatched()).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert_eq!(array_numbers(&out), vec![-500.0, -500.0], "{text}");
+        assert!(text.contains("[<41> -500 <43> -500 <45> ] TJ"), "{text}");
+    }
+
+    #[test]
+    fn a_single_removed_glyph_is_one_number_either_way() {
+        // THE TWIN of the run test: one glyph is one number under either rule.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        let out = remove_glyphs(&content, None, &glyphs[1..2], &unwatched()).expect("removes");
+        assert_eq!(array_numbers(&out), vec![-500.0]);
     }
 
     #[test]
