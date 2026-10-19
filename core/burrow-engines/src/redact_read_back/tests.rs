@@ -69,17 +69,29 @@ impl SecondReading for Fake {
     }
 }
 
+/// A character at `(x, y)` whose box is the point itself, so only its origin can place it.
 fn visible(x: f64, y: f64) -> PlacedChar {
-    PlacedChar {
-        origin: (x, y),
-        generated: false,
-    }
+    boxed((x, y), (x, y, x, y))
 }
 
 fn generated(x: f64, y: f64) -> PlacedChar {
     PlacedChar {
-        origin: (x, y),
         generated: true,
+        ..visible(x, y)
+    }
+}
+
+/// A character at `origin` whose box is `(left, bottom, right, top)`.
+fn boxed(origin: (f64, f64), (left, bottom, right, top): (f64, f64, f64, f64)) -> PlacedChar {
+    PlacedChar {
+        origin,
+        bounds: Rect {
+            left,
+            bottom,
+            right,
+            top,
+        },
+        generated: false,
     }
 }
 
@@ -158,6 +170,141 @@ fn r1_refuses_an_origin_the_renderer_places_inside_the_region() {
 fn r1_twin_a_generated_character_inside_the_region_passes() {
     // PDFium invents a space in the gap a redaction cuts (ADR 0029 §6).
     let fake = Fake::with_chars(vec![visible(72.0, 700.0), generated(150.0, 640.0)]);
+    assert_eq!(rule_of(verdict(&fake, &agreement(2))), "Ok");
+}
+
+// The region below is `[100, 200] x [592, 692]`; shrunk by the tolerance, `[100.05, 199.95] x
+// [592.05, 691.95]`. Every box here has its ORIGIN OUTSIDE the region, so the origin alone would
+// pass every one of them: what refuses is the box.
+
+#[test]
+fn r1_refuses_a_box_that_straddles_the_regions_edge_from_an_origin_outside_it() {
+    // THE FIXTURE (owner, 2026-10-19): a kept character whose origin is left of the region and
+    // whose box crosses the left edge. Counted, though it is not wholly inside.
+    let straddling = boxed((90.0, 640.0), (90.0, 635.0, 101.0, 650.0));
+    assert!(
+        straddling.origin.0 < 100.0 && straddling.bounds.left < 100.0,
+        "the fixture must begin outside the region, or it tests the origin rule"
+    );
+    let fake = Fake::with_chars(vec![visible(72.0, 700.0), straddling]);
+    assert_eq!(
+        rule_of(verdict(&fake, &agreement(2))),
+        "second-reading-glyph-in-region"
+    );
+}
+
+#[test]
+fn r1_twin_a_box_wholly_outside_that_touches_the_edge_passes() {
+    // THE TWIN: the same character, its box ending exactly on the region's left edge. Touching is
+    // not crossing; nor is reaching within the tolerance of it. Just past the tolerance is.
+    let at = |right: f64| {
+        Fake::with_chars(vec![
+            visible(72.0, 700.0),
+            boxed((90.0, 640.0), (90.0, 635.0, right, 650.0)),
+        ])
+    };
+    assert_eq!(rule_of(verdict(&at(100.0), &agreement(2))), "Ok");
+    assert_eq!(
+        rule_of(verdict(&at(100.0 + TOLERANCE_PT * 0.8), &agreement(2))),
+        "Ok",
+        "a box within the tolerance of the edge is agreement"
+    );
+    assert_eq!(
+        rule_of(verdict(&at(100.0 + TOLERANCE_PT * 1.2), &agreement(2))),
+        "second-reading-glyph-in-region"
+    );
+}
+
+#[test]
+fn r1_refuses_a_box_across_each_edge() {
+    // One per edge, so that no single comparison can be dropped without a test failing; and the
+    // twin of each, the same box moved to touch that edge from outside, passes.
+    let cases = [
+        (
+            "left",
+            (90.0, 640.0),
+            (90.0, 635.0, 101.0, 650.0),
+            (90.0, 635.0, 100.0, 650.0),
+        ),
+        (
+            "right",
+            (210.0, 640.0),
+            (199.0, 635.0, 210.0, 650.0),
+            (200.0, 635.0, 210.0, 650.0),
+        ),
+        (
+            "bottom",
+            (150.0, 580.0),
+            (145.0, 580.0, 155.0, 593.0),
+            (145.0, 580.0, 155.0, 592.0),
+        ),
+        (
+            "top",
+            (150.0, 700.0),
+            (145.0, 691.0, 155.0, 705.0),
+            (145.0, 692.0, 155.0, 705.0),
+        ),
+    ];
+    for (edge, origin, across, touching) in cases {
+        let fake = Fake::with_chars(vec![visible(72.0, 700.0), boxed(origin, across)]);
+        assert_eq!(
+            rule_of(verdict(&fake, &agreement(2))),
+            "second-reading-glyph-in-region",
+            "a box across the {edge} edge"
+        );
+        let twin = Fake::with_chars(vec![visible(72.0, 700.0), boxed(origin, touching)]);
+        assert_eq!(
+            rule_of(verdict(&twin, &agreement(2))),
+            "Ok",
+            "a box touching the {edge} edge from outside"
+        );
+    }
+}
+
+#[test]
+fn r1_refuses_a_box_larger_than_the_region_around_it() {
+    // Neither inside nor straddling one edge: a box that covers the whole region from an origin
+    // outside it. Crossing, on every edge at once.
+    let fake = Fake::with_chars(vec![
+        visible(72.0, 700.0),
+        boxed((50.0, 560.0), (50.0, 560.0, 250.0, 720.0)),
+    ]);
+    assert_eq!(
+        rule_of(verdict(&fake, &agreement(2))),
+        "second-reading-glyph-in-region"
+    );
+}
+
+#[test]
+fn r1_reads_a_box_reported_with_its_corners_swapped() {
+    let fake = Fake::with_chars(vec![
+        visible(72.0, 700.0),
+        boxed((90.0, 640.0), (101.0, 650.0, 90.0, 635.0)),
+    ]);
+    assert_eq!(
+        rule_of(verdict(&fake, &agreement(2))),
+        "second-reading-glyph-in-region"
+    );
+}
+
+#[test]
+fn a_box_that_is_not_a_number_is_no_answer() {
+    for at in 0..4 {
+        let mut b = [90.0, 635.0, 95.0, 650.0];
+        b[at] = f64::NAN;
+        let fake = Fake::with_chars(vec![
+            visible(72.0, 700.0),
+            boxed((90.0, 640.0), (b[0], b[1], b[2], b[3])),
+        ]);
+        assert_eq!(
+            rule_of(verdict(&fake, &agreement(2))),
+            "second-reading-unavailable",
+            "a NaN in the box's coordinate {at}"
+        );
+    }
+    let mut twin = boxed((90.0, 640.0), (f64::NAN, 635.0, 95.0, 650.0));
+    twin.generated = true;
+    let fake = Fake::with_chars(vec![visible(72.0, 700.0), twin]);
     assert_eq!(rule_of(verdict(&fake, &agreement(2))), "Ok");
 }
 
@@ -444,17 +591,19 @@ fn a_rejection_names_no_coordinate() {
 // ---- positions, not text ------------------------------------------------------------------
 
 /// The PDFium text functions this crate's source may name: where a character is, whether PDFium
-/// invented it, and the calls that open and close the page's text. Nothing else.
-const PERMITTED: [&str; 5] = [
+/// invented it, the box PDFium gives it, and the calls that open and close the page's text.
+/// Nothing else.
+const PERMITTED: [&str; 6] = [
     "FPDFText_ClosePage",
     "FPDFText_CountChars",
+    "FPDFText_GetCharBox",
     "FPDFText_GetCharOrigin",
     "FPDFText_IsGenerated",
     "FPDFText_LoadPage",
 ];
 
 /// Names the scan must REJECT, one probe each: what a character says, a page's text, and the ink
-/// box R1 does not read until #206's ink half. Not the rule -- the rule is the equality with
+/// loose box R1 does not read. Not the rule -- the rule is the equality with
 /// [`PERMITTED`], which rejects every other name too -- but the shapes the scan is shown to see.
 const REJECTED: &[&str] = &[
     "FPDFText_GetUnicode",
@@ -464,7 +613,6 @@ const REJECTED: &[&str] = &[
     "FPDFText_GetFontInfo",
     "FPDFText_FindStart",
     "FPDFText_GetSchResultIndex",
-    "FPDFText_GetCharBox",
     "FPDFText_GetLooseCharBox",
     "FPDFLink_LoadWebLinks",
     "FPDFLink_GetURL",
@@ -542,7 +690,7 @@ fn the_name_scan_matches_its_probes() {
 }
 
 #[test]
-fn the_pdfium_text_functions_named_are_the_five_permitted() {
+fn the_pdfium_text_functions_named_are_the_six_permitted() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![root];
     let mut examined = 0_usize;

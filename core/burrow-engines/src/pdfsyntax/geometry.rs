@@ -1011,7 +1011,9 @@ impl Glyph {
     ///
     /// **Not covered:** a font whose outlines draw outside the box it declares (and, with no
     /// usable box under the narrower rule, outside [`FLOOR_ENVELOPE`]). Nothing in the file
-    /// contradicts such a box; PDFium's own ink boxes are what can (#206's ink half). The envelope
+    /// contradicts such a box; PDFium's own character boxes are what can. Natively the second
+    /// reading counts them against the region (`redact_read_back`'s R1, 2026-10-19), where PDFium's
+    /// box follows the outline; the web path has no second reading (#206's ink half). The envelope
     /// is a guess about real fonts, not a bound on any.
     #[must_use]
     pub fn conservative_box(&self) -> Rect {

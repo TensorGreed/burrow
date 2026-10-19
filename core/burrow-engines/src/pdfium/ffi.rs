@@ -239,10 +239,11 @@ unsafe extern "C" {
 
     // ---- fpdf_text.h: WHERE glyphs are, never WHAT they say (#206) ---------------------
     //
-    // POSITIONS ONLY, AND THE LIST IS CLOSED. These five open and close a page's text, count its
-    // characters, and answer where PDFium places each one (its pen origin) and whether PDFium
-    // invented it. The ink box (`FPDFText_GetCharBox`) is deliberately not declared until #206's
-    // ink half, which follows #344 (see `redact_read_back`'s R1). No function that returns a
+    // POSITIONS ONLY, AND THE LIST IS CLOSED. These six open and close a page's text, count its
+    // characters, and answer where PDFium places each one (its pen origin and its character box)
+    // and whether PDFium invented it. The box is read so that R1 counts a character whose box
+    // crosses the region's edge, not only one whose origin is inside (owner, 2026-10-19; see
+    // `redact_read_back`'s R1). No function that returns a
     // character's Unicode or a page's text is named anywhere in this crate's library source
     // (`src/`) -- `FPDFText_GetUnicode`,
     // `FPDFText_GetText`, `FPDFText_GetBoundedText` and the rest. The one exception is the
@@ -252,7 +253,7 @@ unsafe extern "C" {
     // `codes/qpdf.rs` keeps for qpdf's error text.
     // `redact_read_back::tests::the_pdfium_text_functions_named_are_the_five_permitted` holds the
     // set of `FPDFText_*`, `FPDFTextObj_*` and `FPDFLink_*` names in code, `link_name` included,
-    // to exactly these five.
+    // to exactly these six.
 
     /// `FPDF_EXPORT FPDF_TEXTPAGE FPDF_CALLCONV FPDFText_LoadPage(FPDF_PAGE page)` —
     /// `fpdf_text.h:31`. Null on failure. Released with `FPDFText_ClosePage`.
@@ -284,6 +285,21 @@ unsafe extern "C" {
         x: *mut f64,
         y: *mut f64,
     ) -> c_int;
+
+    /// ```c
+    /// FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFText_GetCharBox(FPDF_TEXTPAGE text_page,
+    ///     int index, double* left, double* right, double* bottom, double* top);
+    /// ```
+    /// `fpdf_text.h:282-287`. The character's box, in page space: PDFium's tight box from the
+    /// glyph's own outline where it has one. Non-zero for success.
+    fn FPDFText_GetCharBox(
+        text_page: FpdfTextPage,
+        index: c_int,
+        left: *mut f64,
+        right: *mut f64,
+        bottom: *mut f64,
+        top: *mut f64,
+    ) -> c_int;
 }
 
 /// Opaque stand-in for PDFium's `struct fpdf_textpage_t__`. `fpdfview.h:90`.
@@ -301,11 +317,13 @@ pub(crate) struct FpdfTextPageOpaque {
 /// Like a page handle, it never leaves the engine thread and never outlives its page.
 pub(crate) type FpdfTextPage = *mut FpdfTextPageOpaque;
 
-/// One character's placement as PDFium reads it: its origin, and whether it was generated.
-/// `None` where PDFium reported failure for either.
+/// One character's placement as PDFium reads it: its origin, its box, and whether it was
+/// generated. `None` where PDFium reported failure for any of them.
 pub(crate) struct CharPlacement {
     /// `(x, y)`, page space.
     pub(crate) origin: (f64, f64),
+    /// `(left, bottom, right, top)`, page space.
+    pub(crate) bounds: (f64, f64, f64, f64),
     /// `FPDFText_IsGenerated` said 1.
     pub(crate) generated: bool,
 }
@@ -351,20 +369,30 @@ pub(crate) unsafe fn text_char_placement(
     index: c_int,
 ) -> Option<CharPlacement> {
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let (mut left, mut right, mut bottom, mut top) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     // SAFETY: the caller guarantees the text page is live, `index` is in range and this is the
     // engine thread. Every out-parameter points at a live, aligned local for the duration of the
     // call, and none is read unless the call that writes it reported success.
-    let (generated, placed) = unsafe {
+    let (generated, placed, boxed) = unsafe {
         (
             FPDFText_IsGenerated(text_page, index),
             FPDFText_GetCharOrigin(text_page, index, &raw mut x, &raw mut y),
+            FPDFText_GetCharBox(
+                text_page,
+                index,
+                &raw mut left,
+                &raw mut right,
+                &raw mut bottom,
+                &raw mut top,
+            ),
         )
     };
-    if generated < 0 || placed == 0 {
+    if generated < 0 || placed == 0 || boxed == 0 {
         return None;
     }
     Some(CharPlacement {
         origin: (x, y),
+        bounds: (left, bottom, right, top),
         generated: generated == 1,
     })
 }
