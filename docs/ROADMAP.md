@@ -65,7 +65,7 @@ and the table above is only honest if it says what left it and why.
 |---|---|---|
 | **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **DISCHARGED** (2026-09-14): ADR 0022's verification reads every operation's output back through a fresh engine, sees four pages where five were promised, and returns `OutputRejected`. Its real-engine tests and the `#[ignore]`d engine-seam pin went with a damaged-fixture test that was replaced (2026-10-05; see #259), so the refusal is covered by fake-engine tests only until #259 restores them — ADR 0022's 2026-10-05 amendment. **The underlying disagreement is not fixed** — which of qpdf's two readings is right is a recovery-posture decision, still open on #61 and deliberately separate. |
 | **#180**, **#182** | Two redactions that return `Ok` over a secret still on the page, because burrow and PDFium read one file two ways: a font part written as a stream (#180), and `/LastChar` ignored (#182) | Blocked **the redaction tool reaching the site** until each was refused by name. **Discharged** (2026-10-16): #180 by #363, which refuses a font part written as a stream (`[descendant-fonts]`, `[width-source]`, `[encoding-not-a-dictionary]`); #182 by #370, which refuses a drawn code past an early `/LastChar` that `/Widths` still covers (`[last-char]`). Each has a fixture, a twin that redacts, and an asserted mutation; both were refusal-tier changes with the census and `outcomes.tsv` unchanged. |
-| **#125** | A redaction refusal whose page-side signal does not fire | Blocked **the redaction tool reaching the site**, and nothing else — M1's five operations are live and unaffected. [ADR 0029](adr/0029-what-redaction-does-and-what-it-refuses-to-do.md) §5: *a refusal keyed on something the operation cannot see is a bypass.* Four of redaction's five refusals have no adequate page-side signal — two read only the page's content stream, so an image or a path inside a Form XObject is past them, and two have no signal at all because the carrier is on the unreachable catalogue. **A refusal that does not fire is not a missing feature.** It is the operation accepting a document it has declared it cannot redact safely and then emitting something that looks redacted, which is the one failure M2 exists to prevent. Discharged when each of the five has fired on a fixture built to evade it, with a near-miss twin that is not refused. **`/StructTreeRoot`: discharged by slice 3** (2026-10-15), owner-accepted at 1.01% of real documents (57 tiles, NVIDIA_SLA.pdf): every document with a structure tree refuses `[structure-tree]`, on the catalogue's key or a typed element anywhere in the reference set, because no page-side signal survives `evade-struct-without-structparents`. A deliberate over-refusal; the producer-set measurement waits on `word-tagged.pdf`; `glyph_geometry`'s real-producer redaction test now redacts `producer-writer-untagged.pdf`, the Writer export with its tagging taken off by `tools/make-untagged-writer.py`, as interim coverage until #359 supplies a real untagged export. **Discharged** (2026-10-19): by slices 1–5 (#125's slice PRs, the last #397): each of the five refusals fires on a fixture built to evade it, with a near-miss twin that is not refused; the direct-/Root AcroForm evasions have no Ok twin, measured, stated in ADR 0029 §5. #125's checkboxes are all ticked. |
+| **#125** | A redaction refusal whose page-side signal does not fire | **Discharged** (2026-10-19): by slices 1–5 (#125's slice PRs, the last #397): each of the five refusals fires on a fixture built to evade it, with a near-miss twin that is not refused; the direct-/Root AcroForm evasions have no Ok twin, measured, stated in ADR 0029 §5. #125's checkboxes are all ticked; the issue itself closes with this merge. Historically it blocked **the redaction tool reaching the site**, and nothing else — M1's five operations are live and unaffected. [ADR 0029](adr/0029-what-redaction-does-and-what-it-refuses-to-do.md) §5: *a refusal keyed on something the operation cannot see is a bypass.* Four of redaction's five refusals had no adequate page-side signal — two read only the page's content stream, so an image or a path inside a Form XObject is past them, and two have no signal at all because the carrier is on the unreachable catalogue. **A refusal that does not fire is not a missing feature.** It is the operation accepting a document it has declared it cannot redact safely and then emitting something that looks redacted, which is the one failure M2 exists to prevent. The discharge condition was that each of the five fire on a fixture built to evade it, with a near-miss twin that is not refused. **`/StructTreeRoot`: discharged by slice 3** (2026-10-15), owner-accepted at 1.01% of real documents (57 tiles, NVIDIA_SLA.pdf): every document with a structure tree refuses `[structure-tree]`, on the catalogue's key or a typed element anywhere in the reference set, because no page-side signal survives `evade-struct-without-structparents`. A deliberate over-refusal; the producer-set measurement waits on `word-tagged.pdf`; `glyph_geometry`'s real-producer redaction test now redacts `producer-writer-untagged.pdf`, the Writer export with its tagging taken off by `tools/make-untagged-writer.py`, as interim coverage until #359 supplies a real untagged export. |
 
 **A discharge is a checkable thing, not a judgement call at deploy time.** #61's was #65 /
 [ADR 0022](adr/0022-every-operation-verifies-its-own-output.md) — every operation verifying its
@@ -86,7 +86,7 @@ directly from this repository's CI, never built on Cloudflare's infrastructure.
 [ADR 0024](adr/0024-how-burrow-is-deployed.md) records why that host, why direct upload, and
 why the workflow is split so the job that compiles holds no credential.
 
-**The blockers table above gates this.** Neither open row blocks the live site: #62 is scoped *"Blocks M3/M4
+**The blockers table above gates this.** The only row scoped away from the web is #62, and it does not block the live site: it is scoped *"Blocks M3/M4
 only… Does not block the web"*, so the web deploy is not blocked by it — and the paragraph
 under that table saying the remaining row "blocks **deployment**" is about the M3/M4
 deployment the row is scoped to, not this one. That sentence predates the row being narrowed
@@ -837,21 +837,21 @@ page afterwards — and [ADR 0029](adr/0029-what-redaction-does-and-what-it-refu
 it discloses, and what verification is allowed to assert.
 
 **[#125](https://github.com/TensorGreed/burrow/issues/125) blocked the redaction tool from
-reaching the site**, and is in *Discharged* above (2026-10-19). Four of the five refusals have no adequate
-page-side signal, and ADR 0029 §5's rule is that *a refusal keyed on something the operation
-cannot see is a bypass*. The tool does not go in front of a person until each signal has fired on
-a fixture built to evade it.
+reaching the site**, and is in *Discharged* above (2026-10-19). When ADR 0029 was written, four of the five refusals had no adequate
+page-side signal (slices 1–5 replaced them), and ADR 0029 §5's rule is that *a refusal keyed on something the operation
+cannot see is a bypass*. The tool was held back from a person until each signal had fired on
+a fixture built to evade it; that held until the slices of 2026-10-19.
 
 **It is a check, not a note.** `apps/web/src/production-build.test.ts` holds two lists — routes
 that must not ship, and operation names the shipped bundle must not contain. **`/redact-pdf` is
-on the first and `redact` is on the second**, and both come off when **#125 closes**, not when
-the page appears.
+on the first and `redact` is on the second**, and both come off when the redaction route's exit rule is met, not when
+the page appears. #125 was one input to that rule, not the whole of it.
 
 **The reason recorded is #125, not "not built yet", and that distinction is the whole of it.**
 That file records `compress` having sat on the held list only because it was unwritten, and names
 it as the conflation to avoid — *"HELD MEANS HELD FOR A REASON, not merely 'not built yet'."*
-This is a hold: ADR 0029 §5 decided five refusals and four of them have no signal that fires, so
-a redaction tool shipped today would accept a document it has declared it cannot redact safely.
+This was a hold: ADR 0029 §5 decided five refusals and, at the time, four of them had no signal that fired, so
+a redaction tool shipped then would have accepted a document it has declared it cannot redact safely.
 
 **And the entries are probed, because an entry for a page that does not exist asserts nothing.**
 `the held-list assertions FIRE` plants a fake `/redact-pdf` and a fake `"redact"` op into a
@@ -861,7 +861,7 @@ be caught, so the check cannot pass by matching everything. Verified by mutation
 file with the route predicate returning `[]` fails, naming the reason.
 
 So the tripwire is demonstrated live today, and the day the real page appears it trips unless
-#125 is closed and the entry removed deliberately.
+the exit rule is met and the entry removed deliberately.
 
 ### The work
 
