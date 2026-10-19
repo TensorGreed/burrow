@@ -2575,8 +2575,9 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
     // clear -- the glyph-position de-redaction class. What is left is the gap's total. Where
     // kept text follows in this operation it has to be disclosed, because that text must not
     // move. A trailing gap (no kept code after it here) is written too, and discloses its width
-    // even where the next operator resets the pen (filed separately). One number per operation
-    // a removal touched is that operation's removed width.
+    // even where the next operator resets the pen (filed separately). One number per removed
+    // run (usually one per operation a removal touched), each that run's width plus any
+    // producer kerns folded into it.
     let mut gap: Option<f64> = None;
     for (at, item) in items {
         match item {
@@ -2619,8 +2620,11 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
 /// `f64`'s `Display` never uses an exponent, so a sum that cancels to a residue like `1e-250`
 /// would print as some 250 digits -- past [`MAX_TOKEN_BYTES`](super::lexer::MAX_TOKEN_BYTES),
 /// which the re-walk refuses without naming why. A residue below [`NEGLIGIBLE_GAP`] is written as
-/// `0`: no reader resolves it. Anything still longer than a token (a magnitude past ~1e250)
-/// refuses `[adjustment-not-expressible]` here, by name.
+/// `0`. That threshold is relative to the em (below 1e-9 em in page space), not an absolute
+/// bound: under a very large text scale a residue written as `0` can shift a kept glyph. A kept
+/// glyph shifted into the region is refused by the second reading; one shifted elsewhere comes
+/// out shifted -- a fidelity defect, not a leak. Anything still longer than a token (a magnitude
+/// past ~1e250) refuses `[adjustment-not-expressible]` here, by name.
 fn flush_gap(out: &mut Vec<u8>, gap: &mut Option<f64>) -> Result<()> {
     let Some(number) = gap.take() else {
         return Ok(());
@@ -2647,8 +2651,11 @@ fn flush_gap(out: &mut Vec<u8>, gap: &mut Option<f64>) -> Result<()> {
 
 /// A gap smaller than this, in thousandths of the font size, is written as `0`.
 ///
-/// At a 1000-point font it is a millionth of a point: no reader's `f32` position resolves it,
-/// and PDFium's own tolerance in the second reading is 0.05 pt.
+/// The threshold is relative to the em -- below 1e-9 em in page space -- not an absolute bound.
+/// At a 1000-point font it is a millionth of a point, well inside PDFium's 0.05 pt tolerance in
+/// the second reading; under a very large text scale a residue written as `0` can shift a kept
+/// glyph. One shifted into the region is refused by the second reading; one shifted elsewhere
+/// comes out shifted (fidelity, not a leak).
 const NEGLIGIBLE_GAP: f64 = 1e-6;
 
 /// The one string operand of a `Tj`, `'` or `"`.
