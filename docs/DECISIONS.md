@@ -228,6 +228,21 @@ one is decided in an issue, with the same three parts.
     visitor loads, which keep the live-leak condition above; nor any change to a policy or a hard
     limit, which still stops for the owner.
 
+    **Amended 2026-10-18: base lines have no drift tolerance.** A base line is anything a visitor
+    loads, the render lines included. Any growth in one is re-recorded, and the PR body names the
+    approval (this rule or the owner). Held bundles keep the 2% `drift_tolerance`. The recording is
+    stamped with its architecture (`measured_arch`). On that architecture the check is 0% for every
+    base and render line, and each total must equal the exact sum of its measured parts. CI builds
+    on x86_64, and CI's x86_64 build is the one that ships. There, each base and render line has a
+    byte allowance recorded next to it (`cross_arch_allowance_brotli`), set at twice the largest
+    cross-architecture difference measured from saved runs, and each total is checked against the
+    sum of its lines' allowances. Going past an allowance is a stop, not a re-record. *Decided:*
+    owner, 2026-10-18. The allowances were measured on 2026-10-19 from ten Deploy runs' x86_64
+    artifacts against aarch64 builds of the same commits; the largest is 150 bytes, on
+    `burrow_wasm_bg.wasm`. *Does not cover:* how an allowance is re-measured when a toolchain
+    moves, beyond "from saved runs, never by hand"; and the per-line budgets and the headroom
+    policy, which are unchanged.
+
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
     output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
     one). It is enough to merge a slice. Before redaction is un-held, the same property needs an

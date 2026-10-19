@@ -43,9 +43,11 @@ import {
   HASH_COUPLING_BYTES,
   type Live,
   type Recorded,
+  archName,
   classify,
   driftFindings,
   explain,
+  totalFinding,
 } from "./size-budget-drift.js";
 import { baseLineDeltaTable, baseLineDeltas } from "../../../tools/size-budget-base-delta.mjs";
 import { HARNESS_DIR, PRODUCTION_DIR } from "./build-output.js";
@@ -59,6 +61,7 @@ interface Line {
   measured_brotli: number;
   measured_sha256?: string;
   measured_sha256_normalised?: string;
+  cross_arch_allowance_brotli?: number;
   budget_brotli: number;
   why?: string;
 }
@@ -80,6 +83,7 @@ const budget: {
   };
   not_byte_reproducible: Record<string, string>;
   drift_tolerance: number;
+  measured_arch: string;
 } = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
 // THE HEAVIEST LANDING ROUTE, not `index.html`. People arrive from a search for "merge pdf"
@@ -144,6 +148,12 @@ const redactLive: Record<string, Live> = Object.fromEntries(
 );
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
+
+// THE RECORDING'S ARCHITECTURE (DECISIONS rule 18, 2026-10-18 amendment). On it, base and render
+// lines -- everything a visitor loads -- are held at 0%; off it (CI's x86_64, which is the build
+// that ships), each is held to its own measured `cross_arch_allowance_brotli`.
+const runningArch = archName(process.arch);
+const sameArch = runningArch === budget.measured_arch;
 
 describe("the first-load size budget", () => {
   it("weighs every route in the build, by name", () => {
@@ -657,6 +667,7 @@ describe("the recording describes the build it claims to", () => {
       live,
       notByteReproducible: budget.not_byte_reproducible,
       tolerance: budget.drift_tolerance,
+      base: { sameArch },
     });
     expect(findings.map(explain)).toEqual([]);
   });
@@ -676,8 +687,55 @@ describe("the recording describes the build it claims to", () => {
       live: renderLive,
       notByteReproducible: budget.render.not_byte_reproducible,
       tolerance: budget.drift_tolerance,
+      base: { sameArch },
     });
     expect(findings.map(explain)).toEqual([]);
+  });
+
+  it("says which architecture it compared on, and which rule that selected", () => {
+    expect(budget.measured_arch, "the recording names no architecture").toMatch(
+      /^(aarch64|x86_64)$/,
+    );
+    // eslint-disable-next-line no-console -- a test reporting what it compared against
+    console.log(
+      `  base/render drift: running ${runningArch}, recorded on ${budget.measured_arch}: ` +
+        (sameArch ? "0% on every base and render line" : "each line's cross-arch allowance"),
+    );
+  });
+
+  it("gives every base and render line a cross-architecture allowance", () => {
+    const lines = { ...budget.artifacts, ...budget.render.artifacts };
+    const missing = Object.entries(lines)
+      .filter(([, l]) => !Number.isInteger(l.cross_arch_allowance_brotli))
+      .map(([key]) => key);
+    expect(missing, "base/render lines with no measured allowance").toEqual([]);
+    // The held bundles keep the percentage, so an allowance there would be a number nothing reads.
+    const stray = Object.entries(budget.redact.artifacts)
+      .filter(([, l]) => l.cross_arch_allowance_brotli !== undefined)
+      .map(([key]) => key);
+    expect(stray, "held lines carry an allowance nothing reads").toEqual([]);
+  });
+
+  it("finds the base and render totals equal to the build, or within the summed allowances", () => {
+    const allowance = (lines: Record<string, Line>) =>
+      Object.values(lines).map((l) => l.cross_arch_allowance_brotli ?? 0);
+    const findings = [
+      totalFinding({
+        name: "total",
+        recorded: budget.total.measured_brotli,
+        live: measurement.total.brotli,
+        sameArch,
+        allowances: allowance(budget.artifacts),
+      }),
+      totalFinding({
+        name: "render total",
+        recorded: budget.render.total.measured_brotli,
+        live: renderMeasurement.total.brotli,
+        sameArch,
+        allowances: [...allowance(budget.artifacts), ...allowance(budget.render.artifacts)],
+      }),
+    ].filter((f) => f !== null);
+    expect(findings).toEqual([]);
   });
 
   it("gives every render exemption a reason, and exempts nothing it does not budget", () => {
@@ -1241,11 +1299,12 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
   // unless it compared every one. These are that count's probes, run on every run: a count that
   // cannot go short is not a count. The expected number is this file's base lines, so it is
   // derived, not a literal.
-  const expected = Object.keys(budget.artifacts).sort();
-  const asMain = budget.artifacts;
+  const asMain = { ...budget.artifacts, ...budget.render.artifacts };
+  const expected = Object.keys(asMain).sort();
+  const allGroups = { ...groups, ...renderGroups };
 
   it("compares every base line when main records them all and the build has them all", () => {
-    const delta = baseLineDeltas(asMain, budget.artifacts, groups);
+    const delta = baseLineDeltas(asMain, asMain, allGroups);
     expect(delta.expected).toEqual(expected);
     expect(delta.examined).toEqual(expected);
     expect(delta.missing).toEqual([]);
@@ -1258,17 +1317,17 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
     const main = { ...asMain };
     delete main[victim];
     expect(Object.keys(main), "the plant must remove a line").toHaveLength(expected.length - 1);
-    const delta = baseLineDeltas(main, budget.artifacts, groups);
+    const delta = baseLineDeltas(main, asMain, allGroups);
     expect(delta.missing).toEqual([victim]);
     expect(delta.examined).toHaveLength(expected.length - 1);
   });
 
   it("goes short, naming the line, when the build does not contain it", () => {
     const victim = expected[expected.length - 1];
-    const build = { ...groups };
+    const build = { ...allGroups };
     delete build[victim];
     expect(victim in build, "the plant must remove a group").toBe(false);
-    expect(baseLineDeltas(asMain, budget.artifacts, build).missing).toEqual([victim]);
+    expect(baseLineDeltas(asMain, asMain, build).missing).toEqual([victim]);
   });
 
   it("prints a one-byte growth as +1, which the KiB table rounds away", () => {
@@ -1278,5 +1337,110 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
     const main = { [victim]: { measured_brotli: groups[victim].brotli } };
     const table = baseLineDeltaTable(baseLineDeltas(main, { [victim]: main[victim] }, grown));
     expect(table).toMatch(new RegExp(`\\| \`${victim}\` \\|.*\\| \\+1 \\|$`, "m"));
+  });
+});
+
+describe("base lines at 0%, held bundles at 2% (DECISIONS rule 18, 2026-10-18 amendment)", () => {
+  // Per-rule probes, on every run. Each plant asserts it applied before the rule is read.
+  const recordedBrotli = 10_000;
+  const line = (extra: Partial<Recorded> = {}): Record<string, Recorded> => ({
+    a: {
+      measured_raw: 1,
+      measured_brotli: recordedBrotli,
+      measured_sha256: "raw0",
+      measured_sha256_normalised: "norm0",
+      cross_arch_allowance_brotli: 40,
+      ...extra,
+    },
+  });
+  const rebuilt = (brotli: number): Record<string, Live> => ({
+    a: { raw: 1, brotli, sha256: "raw1", sha256Normalised: "norm1" },
+  });
+  const hashOnly = (brotli: number): Record<string, Live> => ({
+    a: { raw: 1, brotli, sha256: "raw1", sha256Normalised: "norm0" },
+  });
+  const exempt = { notByteReproducible: { a: "rebuilt per machine" }, tolerance: 0.02 };
+  const kinds = (f: ReturnType<typeof driftFindings>) => f.map((x) => x.kind);
+
+  it("fails a base line one byte larger on the recording's architecture, naming it", () => {
+    const build = rebuilt(recordedBrotli + 1);
+    expect(build.a.brotli - recordedBrotli, "the plant must add one byte").toBe(1);
+    const findings = driftFindings({
+      ...exempt,
+      recorded: line(),
+      live: build,
+      base: { sameArch: true },
+    });
+    expect(kinds(findings)).toEqual(["base-drift"]);
+    expect(explain(findings[0])).toMatch(/^a: a base line/);
+    // The same byte under the held-bundle rule passes, so it is the base rule that caught it.
+    expect(driftFindings({ ...exempt, recorded: line(), live: build })).toEqual([]);
+  });
+
+  it("fails a render line one byte larger, where only engine hashes differ", () => {
+    // The render lines are base lines now, and the 64-byte hash-coupling bound does not apply.
+    const build = hashOnly(recordedBrotli + 1);
+    expect(build.a.sha256Normalised, "the plant must be hash-coupled").toBe("norm0");
+    const findings = driftFindings({
+      notByteReproducible: {},
+      tolerance: 0.02,
+      recorded: line(),
+      live: build,
+      base: { sameArch: true },
+    });
+    expect(kinds(findings)).toEqual(["base-drift"]);
+  });
+
+  it("passes a base line at its exact allowance off the recording's architecture", () => {
+    const build = rebuilt(recordedBrotli + 40);
+    expect(build.a.brotli - recordedBrotli).toBe(40);
+    expect(
+      driftFindings({ ...exempt, recorded: line(), live: build, base: { sameArch: false } }),
+    ).toEqual([]);
+  });
+
+  it("fails a base line one byte past its allowance, as a stop rather than a re-record", () => {
+    const build = rebuilt(recordedBrotli - 41);
+    expect(recordedBrotli - build.a.brotli, "the plant must be the allowance plus one").toBe(41);
+    const findings = driftFindings({
+      ...exempt,
+      recorded: line(),
+      live: build,
+      base: { sameArch: false },
+    });
+    expect(kinds(findings)).toEqual(["cross-arch-drift"]);
+    expect(explain(findings[0])).toContain("STOP, NOT A RE-RECORD");
+  });
+
+  it("fails a base line with no allowance off the recording's architecture", () => {
+    const recorded = line({ cross_arch_allowance_brotli: undefined });
+    expect(recorded.a.cross_arch_allowance_brotli).toBeUndefined();
+    const findings = driftFindings({
+      ...exempt,
+      recorded,
+      live: rebuilt(recordedBrotli),
+      base: { sameArch: false },
+    });
+    expect(kinds(findings)).toEqual(["no-allowance"]);
+  });
+
+  it("passes a held bundle grown 1% and fails one grown 3%", () => {
+    const one = rebuilt(recordedBrotli * 1.01);
+    const three = rebuilt(recordedBrotli * 1.03);
+    expect(one.a.brotli).toBe(10_100);
+    expect(three.a.brotli).toBe(10_300);
+    expect(driftFindings({ ...exempt, recorded: line(), live: one })).toEqual([]);
+    expect(kinds(driftFindings({ ...exempt, recorded: line(), live: three }))).toEqual(["drift"]);
+  });
+
+  it("fails a total one byte off on the recording's architecture, and bounds it elsewhere", () => {
+    const at = { name: "total", recorded: 1_000, allowances: [40, 20] };
+    expect(totalFinding({ ...at, live: 1_000, sameArch: true })).toBeNull();
+    expect(totalFinding({ ...at, live: 1_001, sameArch: true })).toContain("total:");
+    expect(totalFinding({ ...at, live: 999, sameArch: true })).toContain("total:");
+    expect(totalFinding({ ...at, live: 1_060, sameArch: false })).toBeNull();
+    expect(totalFinding({ ...at, live: 1_061, sameArch: false })).toContain(
+      "STOP, NOT A RE-RECORD",
+    );
   });
 });
