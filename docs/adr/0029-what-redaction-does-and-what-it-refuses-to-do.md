@@ -5437,10 +5437,11 @@ is not finite refuses `[adjustment-not-expressible]`, as a single adjustment alr
 **The residual, at rule level: a removed run's total width is disclosed.** Where kept text follows
 the run in the same operation, it has to be: that text must not move, and the one number that keeps
 it in place is the run's width (plus any producer kerns folded into it). A *trailing* run -- one
-with no kept code after it in its operation -- also leaves its width as the array's last number
-today. That number is needed only when a later show operation continues from the same pen; where
-the next pen-relevant operator resets the pen, it discloses the width and places nothing. That is
-filed separately and not changed here. What is no longer disclosed is how a run's width divides
+with no kept code after it in its operation -- leaves its width as the array's last number only
+where the next pen-relevant operator continues from the pen it moved (a `Tj` or `TJ` on the same
+line, and, read conservatively, anything that is neither that nor a reset); where that operator
+resets the pen (`Tm`, `Td`, `TD`, `T*`, `'`, `"` or `ET`) the number would place nothing, and it
+is dropped (the 2026-10-19 follow-up below). What is no longer disclosed is how a run's width divides
 among the removed glyphs, and where a producer kern inside the run marked a word boundary. Also
 still disclosed, and unchanged by this amendment: how many operations a removal touched, and for
 each of them the width removed from it -- a removal spanning several show operations leaves one
@@ -5456,3 +5457,40 @@ PDFium and `qpdf --qdf`: the removed glyphs are gone, every kept glyph is drawn 
 drew it at before (within the oracle tolerance), no ink is left in the region, and the rewritten
 array holds one number. The asserted mutation restores one adjustment per glyph; the run tests
 fail under it and the single-glyph twins pass.
+
+### Follow-up, 2026-10-19 -- a trailing run's number is dropped where the next operator resets the pen
+
+**The finding** (the amendment's round-1 security review, M-1, filed under rule 15 and taken as a
+refusal-tier follow-up by the owner's decision (43)): a rewritten array's last number -- the width
+of a run with no kept code after it -- moves the pen and nothing else. Where the next operator
+that touches the pen sets it afresh, the number places nothing and states the removed width. In
+the review's measurement that was most rewritten arrays, since a removal commonly runs to the end
+of a line's last show operation.
+
+**The rule.** The rewriter reads the operators after each rewritten operation, in one backward
+pass over the stream. `Tm`, `Td`, `TD`, `T*`, `'`, `"` and `ET` reset the pen (§9.4.2): a trailing
+number before one of them is dropped. The text-state, colour, general graphics-state and
+marked-content operators (`Tc` `Tw` `Tz` `TL` `Tf` `Tr` `Ts` `gs` `w` `J` `j` `M` `d` `ri` `i`,
+the colour operators, `BMC` `BDC` `EMC` `MP` `DP`) neither read nor set the pen, so the answer is
+the next operator's. Anything else -- `Tj`, `TJ`, `Do`, a nested `BT`, an inline image, a path, an
+unlisted operator, or the end of the stream -- reads as continuing from the pen, and the number is
+written as before. That is the conservative side: a number kept where it was not needed discloses
+a width, which is what the rewriter did before this follow-up; a number dropped where it was needed
+moves kept text. A `q` or `Q` inside a text object is already refused (#300). A number before a
+kept code in the same operation is written whatever follows the operation.
+
+**What it does not change.** The dropped number is still formed and still refused on the same
+terms as a written one -- a sum that is not finite, or one too long to write as a token -- so no
+input moves from refused to `Ok`. Placement is unchanged: the second reading passes on every `Ok`
+tile of the census, as before. The residual that remains: a trailing run's width is still disclosed
+where a show operation follows on the same pen, and where a show operation that follows was itself
+rewritten to nothing (the rule reads the operators, not what they become).
+
+**Tests.** `pdfsyntax::geometry`'s unit tests: the fixture (`C` cut from `(ABC) Tj` before a `Td`,
+no number), its near-miss twin (the same before a `Tj`, one number), each of the seven resetting
+operators, pen-irrelevant operators between, a number before a kept code with a `Td` after, the
+rewritten-to-nothing edge, and the non-finite sum refusing before a `Td`.
+`tests/one_adjustment_per_run.rs` redacts the Helvetica fixture through PDFium: `W` removed from the
+end of a `Tj` before a `0 -30 Td`, zero numbers, the next line's text where it was; its twin is the
+amendment's trailing-run test (a `Tj` next, one number). The asserted mutation makes every operator
+read as continuing; the fixture tests fail under it and the twins pass.

@@ -2498,17 +2498,22 @@ fn glyph_edits(
             .or_default()
             .push(glyph);
     }
+    let continues = pen_continues_after(&operations, watch)?;
     let mut edits: Vec<super::contents::Edit> = Vec::new();
-    for operation in &operations {
+    for (index, operation) in operations.iter().enumerate() {
         // THE DEADLINE, per operation (#175).
         watch.tick()?;
         let cuts: &[&Glyph] = by_operation
             .get(&operation.span)
             .map_or(&[], std::vec::Vec::as_slice);
         if !cuts.is_empty() {
+            // Unknown reads as "continues": a trailing number that was needed and dropped moves
+            // kept text; one that was not needed and kept discloses a width. The vector is the
+            // operations' length, so the default is never taken.
+            let pen_continues = continues.get(index).copied().unwrap_or(true);
             edits.push(super::contents::Edit {
                 span: operation.span,
-                replacement: rewrite_without(content, operation, cuts)?,
+                replacement: rewrite_without(content, operation, cuts, pen_continues)?,
             });
         }
     }
@@ -2527,8 +2532,57 @@ fn count_distinct_operations(remove: &[Glyph]) -> usize {
     spans.len()
 }
 
+/// For each operation, whether the next operator that touches the text pen continues from it.
+///
+/// A rewritten array's last number -- a trailing removed run's width -- moves the pen and
+/// nothing else. It is needed only when a later show operation draws from that pen; where the
+/// next pen-relevant operator sets the pen afresh, the number places nothing and discloses the
+/// width (F-2 round 1, M-1). This decides which, per operation, in one backward pass:
+///
+/// - `Tm`, `Td`, `TD`, `T*`, `'`, `"` and `ET` **reset** the pen: each sets the text matrix from
+///   the line matrix or afresh (PDF 32000-1 §9.4.2), or ends the text object. `false`.
+/// - The text-state, colour, general graphics-state and marked-content operators listed below
+///   neither read nor write the pen; the answer is the next operator's.
+/// - Anything else -- `Tj`, `TJ`, `Do`, `q`, `Q`, a nested `BT`, an inline image, a path, an
+///   operator not listed, or the end of the stream -- reads as **continues**, so the number is
+///   kept. A reader whose `q`/`Q` saves the pen (PDFium's does), or a stream that ends inside a
+///   text object, is not modelled; keeping the number is what the rewriter did before and
+///   leaves placement unchanged.
+///
+/// One backward pass rather than a lookahead per rewritten operation: with a cut operation each
+/// followed by thousands of pen-irrelevant operators, a lookahead is operations x operations.
+fn pen_continues_after(operations: &[Operation], watch: &Watch<'_>) -> Result<Vec<bool>> {
+    let mut continues = vec![true; operations.len()];
+    // Past the last operation: the stream's end, which is not modelled and so "continues".
+    let mut next = true;
+    for (index, operation) in operations.iter().enumerate().rev() {
+        watch.tick()?;
+        if let Some(slot) = continues.get_mut(index) {
+            *slot = next;
+        }
+        next = match operation.operator.as_slice() {
+            b"Tm" | b"Td" | b"TD" | b"T*" | b"'" | b"\"" | b"ET" => false,
+            b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Tf" | b"Tr" | b"Ts" | b"gs" | b"w" | b"J" | b"j"
+            | b"M" | b"d" | b"ri" | b"i" | b"CS" | b"cs" | b"SC" | b"SCN" | b"sc" | b"scn"
+            | b"G" | b"g" | b"RG" | b"rg" | b"K" | b"k" | b"BMC" | b"BDC" | b"EMC" | b"MP"
+            | b"DP" => next,
+            _ => true,
+        };
+    }
+    Ok(continues)
+}
+
 /// One drawing operation, rewritten as a `TJ` with its cuts turned into adjustments.
-fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Result<Vec<u8>> {
+///
+/// `pen_continues` is [`pen_continues_after`]'s answer for this operation: whether a trailing
+/// run's number -- one after the operation's last kept code -- is written. Numbers before a kept
+/// code are written either way.
+fn rewrite_without(
+    content: &[u8],
+    operation: &Operation,
+    cuts: &[&Glyph],
+    pen_continues: bool,
+) -> Result<Vec<u8>> {
     // The operation's items, in the order they were written. A `TJ` has its array; the other
     // three show operators have exactly one string, at the operand index `GlyphSource` records.
     let items: Vec<(usize, &Operand)> = match operation.operator.as_slice() {
@@ -2574,10 +2628,11 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
     // each removed glyph's advance as its own number, which is each removed glyph's width in the
     // clear -- the glyph-position de-redaction class. What is left is the gap's total. Where
     // kept text follows in this operation it has to be disclosed, because that text must not
-    // move. A trailing gap (no kept code after it here) is written too, and discloses its width
-    // even where the next operator resets the pen (filed separately). One number per removed
-    // run (usually one per operation a removal touched), each that run's width plus any
-    // producer kerns folded into it.
+    // move. A trailing gap (no kept code after it here) moves only the pen: it is written where
+    // the next pen-relevant operator continues from that pen, and dropped where that operator
+    // resets it, because there it would place nothing and disclose the width (F-2 round 1,
+    // M-1; `pen_continues_after`). One number per removed run (usually one per operation a
+    // removal touched), each that run's width plus any producer kerns folded into it.
     let mut gap: Option<f64> = None;
     for (at, item) in items {
         match item {
@@ -2603,7 +2658,18 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
             }
         }
     }
-    flush_gap(&mut out, &mut gap)?;
+    // THE TRAILING NUMBER, written only where the pen it moves is read next. The dropped one is
+    // still formed and still refused on the same terms (not finite, or longer than a token):
+    // this slice changes what is written, not what is accepted.
+    let mut dropped = Vec::new();
+    flush_gap(
+        if pen_continues {
+            &mut out
+        } else {
+            &mut dropped
+        },
+        &mut gap,
+    )?;
     out.extend_from_slice(b"] TJ");
     Ok(out)
 }
@@ -7542,6 +7608,103 @@ mod tests {
         let out = remove_glyphs(&content, None, &glyphs[2..5], &unwatched()).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert_eq!(array_numbers(&out), vec![-1500.0], "{text}");
+    }
+
+    /// Cut `C` from `(ABC) Tj` followed by `after`, and return the rewritten stream.
+    fn trailing_c_cut(after: &str) -> String {
+        let (glyphs, content) = walked(&format!("/F1 10 Tf BT 0 0 Td (ABC) Tj {after}"));
+        assert_eq!(
+            glyphs[2].source.code_index, 2,
+            "the fixture's `C` is the third code"
+        );
+        let out = remove_glyphs(&content, None, &glyphs[2..3], &unwatched()).expect("removes");
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn a_trailing_runs_number_is_dropped_before_an_operator_that_resets_the_pen() {
+        // THE FIXTURE (F-2 round 1, M-1). `C` ends its operation, so its adjustment would be the
+        // array's last number. The next pen-relevant operator is `Td`, which sets the pen from
+        // the line matrix: the number would move nothing and state `C`'s width. It is dropped,
+        // and the operation after the `Td` is left as it was.
+        let text = trailing_c_cut("0 -12 Td (DE) Tj ET");
+        assert!(text.contains("[<4142> ] TJ 0 -12 Td (DE) Tj ET"), "{text}");
+        assert_eq!(array_numbers(text.as_bytes()), Vec::<f64>::new(), "{text}");
+    }
+
+    #[test]
+    fn a_trailing_runs_number_is_kept_before_a_show_operation_on_the_same_pen() {
+        // THE NEAR-MISS TWIN: the next operator draws from the pen `C` moved, so the number is
+        // what keeps `D` and `E` in place. Written, as before.
+        let text = trailing_c_cut("(DE) Tj ET");
+        assert!(text.contains("[<4142> -500 ] TJ (DE) Tj ET"), "{text}");
+    }
+
+    #[test]
+    fn every_pen_resetting_operator_drops_the_trailing_number() {
+        // Each of the seven: `Tm` and `Td`/`TD` set the matrices, `T*` is `0 -TL Td`, `'` and
+        // `"` begin with `T*`, and `ET` ends the text object. The twin above is the eighth
+        // shape, `Tj`, which keeps it.
+        for after in [
+            "1 0 0 1 5 5 Tm (DE) Tj ET",
+            "0 -12 Td (DE) Tj ET",
+            "0 -12 TD (DE) Tj ET",
+            "T* (DE) Tj ET",
+            "(DE) ' ET",
+            "1 2 (DE) \" ET",
+            "ET",
+        ] {
+            let text = trailing_c_cut(after);
+            assert!(text.contains("[<4142> ] TJ "), "before `{after}`: {text}");
+        }
+    }
+
+    #[test]
+    fn operators_that_do_not_touch_the_pen_do_not_decide() {
+        // Text state and colour between the run and the `Td` neither read nor set the pen, so
+        // the answer is the `Td`'s: dropped. And the same operators before a `Tj`: kept.
+        let text = trailing_c_cut("2 Tc 0.5 g /F1 12 Tf 0 -12 Td (DE) Tj ET");
+        assert!(text.contains("[<4142> ] TJ 2 Tc"), "{text}");
+        let text = trailing_c_cut("2 Tc 0.5 g /F1 12 Tf (DE) Tj ET");
+        assert!(text.contains("[<4142> -500 ] TJ 2 Tc"), "{text}");
+    }
+
+    #[test]
+    fn a_number_before_a_kept_code_is_written_whatever_follows_the_operation() {
+        // THE RULE'S OTHER HALF: only a trailing number is at stake. `B` is followed by `C` in
+        // its own operation, so its number keeps `C` in place; the `Td` after is irrelevant.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj 0 -12 Td (DE) Tj ET");
+        let out = remove_glyphs(&content, None, &glyphs[1..2], &unwatched()).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("[<41> -500 <43> ] TJ 0 -12 Td"), "{text}");
+    }
+
+    #[test]
+    fn a_show_operation_rewritten_to_nothing_still_continues_the_pen() {
+        // THE CONSERVATIVE EDGE. `C`, `D` and `E` are removed across two operations before a
+        // `Td`. The second operation becomes an empty array whose own trailing number is
+        // dropped; the first still sees a `Tj` next and keeps its number. The rule reads the
+        // operators, not what they become, so a width is disclosed here that need not be --
+        // stated rather than hidden.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj (DE) Tj 0 -12 Td (F) Tj ET");
+        let out = remove_glyphs(&content, None, &glyphs[2..5], &unwatched()).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("[<4142> -500 ] TJ [] TJ 0 -12 Td"), "{text}");
+    }
+
+    #[test]
+    fn a_dropped_trailing_number_is_still_refused_on_the_terms_a_written_one_is() {
+        // WHAT THE SLICE DOES NOT CHANGE: a sum that is not finite refuses before a `Td` exactly
+        // as before a `Tj`. Dropping it would make the rewriter accept, on that input, what it
+        // refused -- and this is a refusal-tier slice.
+        let (mut glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj 0 -12 Td (DE) Tj ET");
+        // Each adjustment is finite; their sum is not.
+        glyphs[1].displacement = 1.0e306;
+        glyphs[2].displacement = 1.0e306;
+        assert_refused_bytes(
+            remove_glyphs(&content, None, &glyphs[1..3], &unwatched()),
+            Refusal::AdjustmentNotExpressible,
+        );
     }
 
     #[test]

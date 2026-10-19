@@ -11,6 +11,9 @@
 //! the kept ones are where PDFium drew them before the removal, and the content stream holds the
 //! number of `TJ` numbers the rule says it must. The twin is a single removed glyph, which is
 //! one number under either rule.
+//!
+//! The follow-up (ADR 0029, 2026-10-19): a trailing run's number is dropped where the next
+//! pen-relevant operator resets the pen, and kept where a show operation continues from it.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -238,5 +241,26 @@ fn a_trailing_run_keeps_a_later_show_operation_on_the_same_pen_in_place() {
         },
         "W",
         1,
+    );
+}
+
+/// F-2 ROUND 1, M-1: A TRAILING RUN BEFORE AN OPERATOR THAT RESETS THE PEN. `W` ends the first
+/// `Tj` as above, but the next operator is a `Td`, which sets the pen from the line matrix: the
+/// array's last number would move nothing and state `W`'s width. It is dropped -- zero numbers --
+/// and `C` and `D`, drawn on the next line, stay where PDFium drew them. The test above is this
+/// one's twin: the same run, a `Tj` next, one number.
+#[test]
+fn a_trailing_run_before_a_pen_reset_leaves_no_number() {
+    redacts_to(
+        "trailing run before a line move",
+        "BT /F2 20 Tf 40 Tc 10 260 Td (ABW) Tj 0 -30 Td (CD) Tj ET",
+        Region {
+            left: 100.0,
+            top: 100.0,
+            width: 50.0,
+            height: 50.0,
+        },
+        "W",
+        0,
     );
 }
