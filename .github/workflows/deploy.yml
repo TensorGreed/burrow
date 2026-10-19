@@ -168,7 +168,11 @@ jobs:
       - name: Fetch main's recording for the base-line delta
         run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
 
+      # On a push to `main` the commit being deployed IS main, so compare it with itself rather
+      # than with a fetched `origin/main` that another merge may already have moved past it.
       - name: Record what is about to be uploaded
+        env:
+          BURROW_SIZE_BASE_REF: ${{ github.ref == 'refs/heads/main' && 'HEAD' || 'origin/main' }}
         run: |
           echo "### Payload" >> "$GITHUB_STEP_SUMMARY"
           node tools/report-size-budget.mjs apps/web/dist >> "$GITHUB_STEP_SUMMARY"
