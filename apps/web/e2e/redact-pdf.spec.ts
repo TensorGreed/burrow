@@ -18,7 +18,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { CATEGORIES } from "../src/components/redact-messages";
 import { isBrowserPolicyReport } from "./console-noise";
-import { isRedactionArtifact, mark, since } from "./request-log";
+import { between, isRedactionArtifact, mark, since } from "./request-log";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = resolve(here, "../../../tests/redaction/fixtures");
@@ -207,11 +207,28 @@ test("the page's console stays empty through a run and a refusal", async ({ page
 test("redacting makes no request beyond redaction's and the picture's pinned engine artifacts", async ({
   page,
 }, testInfo) => {
-  // THE MARKER GOES BEFORE `goto`, so start-up is in the window too: the page must never reach
-  // for the base worker, and a respawn re-fetches only redaction's set. Since S4 the picture is
-  // drawn by the render bundle (D1), which is admitted by name and required below.
-  await mark(`redact-page:${testInfo.project.name}`);
-  const frame = await open(page, REDACTS);
+  // TWO WINDOWS, SPLIT AT THE FILE CHOICE. The first marker goes before `goto`, so start-up is in
+  // the first window: until a file is chosen the page draws nothing, so it must not reach for the
+  // render bundle (the lazy-load witness S4 would otherwise have lost) or for the base worker.
+  // After the choice the picture is drawn by the render bundle (D1), which is admitted by name
+  // and required below.
+  const opened = `redact-page:${testInfo.project.name}`;
+  const chosen = `redact-chosen:${testInfo.project.name}`;
+  await mark(opened);
+  await page.goto("/redact-pdf/");
+  // HYDRATED, AND SETTLED: Astro drops `ssr` from an island once it has hydrated, so anything the
+  // island fetches on its own has been asked for by the time the network goes quiet.
+  await expect(page.locator("astro-island")).not.toHaveCount(0);
+  await expect(page.locator("astro-island[ssr]")).toHaveCount(0);
+  await page.waitForLoadState("networkidle");
+  await mark(chosen);
+  await page.getByTestId("redact-file").setInputFiles(join(fixtures, REDACTS));
+  const frameNode = page.getByTestId("redact-frame");
+  await expect(frameNode).toBeVisible({ timeout: 45_000 });
+  const frame = {
+    width: Number(await frameNode.getAttribute("data-width")),
+    height: Number(await frameNode.getAttribute("data-height")),
+  };
   await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawn", {
     timeout: 45_000,
   });
@@ -219,12 +236,29 @@ test("redacting makes no request beyond redaction's and the picture's pinned eng
   await page.getByTestId("redact-run").click();
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
 
-  const after = since(`redact-page:${testInfo.project.name}`);
+  const site = new URL(page.url()).origin;
+  // BEFORE THE CHOICE: redaction's own set and the page's static files, and nothing of the render
+  // bundle.
+  const before = between(opened, chosen);
+  const early = before.filter(
+    (entry) =>
+      entry.origin !== site ||
+      (!isRedactionArtifact(entry.url, "redaction") && !isPageAsset(entry.url)),
+  );
+  expect(
+    early.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
+    "before a file was chosen the redaction page requested something beyond its own set",
+  ).toEqual([]);
+  expect(
+    before.filter((entry) => entry.url === "/redact-pdf/").length,
+    "the page itself was not logged before the choice, so that window watched nothing",
+  ).toBeGreaterThan(0);
+
+  const after = since(chosen);
   // EVERY REQUEST IS ACCOUNTED FOR (round 2's C): redaction's pinned engine artifacts, or one of
   // the page's own static files by exact shape. Anything else on the origin fails, by name.
   // ON THIS SITE'S ORIGIN, and only then by path: a page asset or an engine artifact fetched from
   // anywhere else is no artifact of this page's.
-  const site = new URL(page.url()).origin;
   const unexpected = after.filter(
     (entry) =>
       entry.origin !== site ||
@@ -244,13 +278,21 @@ test("redacting makes no request beyond redaction's and the picture's pinned eng
     after.filter((entry) => /burrow-render-worker/.test(entry.url)).length,
     "the render worker was not fetched, so the picture was drawn by something else",
   ).toBeGreaterThan(0);
-  expect(
-    after.filter((entry) => entry.url === "/redact-pdf/").length,
-    "the page itself was not logged, so the allow-list below matched nothing",
-  ).toBeGreaterThan(0);
-  // AND NOTHING BUT GETs of the page's own static files: no upload of any kind.
-  const posted = after.filter((entry) => entry.method !== "GET");
+  // AND NOTHING BUT GETs, in either window: no upload of any kind.
+  const posted = [...before, ...after].filter((entry) => entry.method !== "GET");
   expect(posted.map((entry) => `${entry.method} ${entry.url}`)).toEqual([]);
+});
+
+test("the redaction page's allow-list refuses the base worker, and the render worker until it is asked for", () => {
+  // THE NEAR-MISS PROBE for the windows above: a list that admitted everything would pass them.
+  const base = "/engines/burrow-worker.0123456789abcdef.js";
+  const render = "/engines/burrow-render-worker.0123456789abcdef.js";
+  const redact = "/engines/burrow-redact-worker.0123456789abcdef.js";
+  expect(isRedactionArtifact(base, "redaction"), "base worker, before the choice").toBe(false);
+  expect(isRedactionArtifact(base, "with-render"), "base worker, after the choice").toBe(false);
+  expect(isRedactionArtifact(render, "redaction"), "render worker, before the choice").toBe(false);
+  expect(isRedactionArtifact(render, "with-render"), "render worker, after the choice").toBe(true);
+  expect(isRedactionArtifact(redact, "redaction"), "redaction's own worker").toBe(true);
 });
 
 /**
@@ -740,13 +782,17 @@ test("nothing below the picture moves when it arrives (S4)", async ({ page }) =>
   });
   await open(page, TWO_LINES, generated);
   await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawing");
-  const before = await page.getByTestId("redact-run").boundingBox();
+  // DOCUMENT-RELATIVE, NOT VIEWPORT-RELATIVE: `boundingBox` moves with any scroll between the two
+  // reads, and a scroll is not the layout shift this test is about.
+  const top = () =>
+    page
+      .getByTestId("redact-run")
+      .evaluate((node) => node.getBoundingClientRect().top + window.scrollY);
+  const before = await top();
   release();
   await drawnPicture(page);
-  await page.evaluate(() => window.scrollTo(0, 0));
-  const after = await page.getByTestId("redact-run").boundingBox();
-  expect(before).not.toBeNull();
-  expect(after!.y - before!.y, "the run button moved when the picture arrived").toBe(0);
+  const after = await top();
+  expect(after - before, "the run button moved when the picture arrived").toBe(0);
 });
 
 test("leaving the page lets go of the picture and ends its worker (S4, D1, D4)", async ({
