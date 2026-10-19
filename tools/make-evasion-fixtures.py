@@ -3698,14 +3698,15 @@ def evade_annotation_subtype_as_a_string() -> bytes:
     )
 
 
-def _note_without_appearance(tag: str, rect: bytes, contents: bytes) -> bytes:
-    """The canary page with one `/Text` note at `rect` and NO `/AP`, so PDFium builds its
-    appearance: a stock 20 x 20 point icon at the `/Rect`'s first corner, whatever the `/Rect`'s
-    size."""
+def _note_without_appearance(
+    tag: str, rect: bytes, contents: bytes, subtype: bytes = b"/Text"
+) -> bytes:
+    """The canary page with one note at `rect` and NO `/AP`, so PDFium builds its appearance."""
     pdf = Pdf()
     helv = helvetica(pdf)
     annot = pdf.add(
-        b"<< /Type /Annot /Subtype /Text /Rect " + rect + b" /F 4 /Contents " + contents + b" >>"
+        b"<< /Type /Annot /Subtype " + subtype + b" /Rect " + rect + b" /F 4 /Contents "
+        + contents + b" >>"
     )
     return simple_page(
         pdf,
@@ -3716,20 +3717,81 @@ def _note_without_appearance(tag: str, rect: bytes, contents: bytes) -> bytes:
 
 
 def evade_annotation_note_icon_outside_rect() -> bytes:
-    """A note with no appearance and a half-point `/Rect` just left of the region (and of the
-    engine tests' band): PDFium draws its 20-point icon from the `/Rect`'s corner rightwards into
-    both, which the `/Rect` meets neither of. Measured on main: kept, `Ok`, the note's `/Contents`
-    in the output. Refused [annotation-in-region] by the icon's extent."""
+    """A note whose built appearance reaches the region though its `/Rect` does not. Refused
+    [annotation-in-region]."""
     return _note_without_appearance(
         "NOTE-ICON", b"[25 100 25.5 100.5]", literal(secret("NOTE-ICON")),
     )
 
 
 def nearmiss_annotation_note_icon_clear_of_region() -> bytes:
-    """The same note further left, so neither its `/Rect` nor its icon reaches the region. MUST
-    redact."""
+    """The same note further left, so neither its `/Rect` nor its built appearance reaches the
+    region. MUST redact."""
     return _note_without_appearance(
         "NOTE-ICON-CLEAR", b"[5 100 5.5 100.5]", literal("an ordinary note, clear of the region"),
+    )
+
+
+def evade_annotation_note_subtype_as_a_string() -> bytes:
+    """The note fixture with its `/Subtype` written as a string, which PDFium reads as the name.
+    Refused [annotation-in-region]."""
+    return _note_without_appearance(
+        "NOTE-STRING", b"[25 100 25.5 100.5]", literal(secret("NOTE-STRING")), subtype=b"(Text)",
+    )
+
+
+def _ink_without_appearance(
+    tag: str, width: bytes, style_stream: bytes | None, contents: bytes
+) -> bytes:
+    """The canary page with one ink annotation just left of the region and NO `/AP`, so PDFium builds
+    its appearance. `width` is written into the annotation; `style_stream`, when given, is the
+    dictionary of a stream its `/BS` names."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    style = b""
+    if style_stream is not None:
+        style = b" /BS " + str(pdf.stream(style_stream, b"")).encode() + b" 0 R"
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Ink /Rect [2 100 22 120] /C [0 0 0] /F 4" + width + style
+        + b" /InkList [[22 100 22 120]] /Contents " + contents + b" >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run(tag) + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+    )
+
+
+def evade_annotation_ink_border_reaches_region() -> bytes:
+    """Ink whose built appearance, widened by its `/Border` width, reaches the region though its
+    `/Rect` does not. Refused [annotation-in-region]."""
+    return _ink_without_appearance(
+        "INK-BORDER", b" /Border [0 0 40]", None, literal(secret("INK-BORDER")),
+    )
+
+
+def nearmiss_annotation_ink_border_clear_of_region() -> bytes:
+    """The same ink with a narrower `/Border` width, so its built appearance stays clear of the
+    region. MUST redact."""
+    return _ink_without_appearance(
+        "INK-BORDER-CLEAR", b" /Border [0 0 6]", None, literal("an ordinary ink, clear of the region"),
+    )
+
+
+def evade_annotation_ink_style_stream_reaches_region() -> bytes:
+    """Ink whose built appearance, widened by the `/W` of a `/BS` that is a stream, reaches the
+    region though its `/Rect` does not. Refused [annotation-in-region]."""
+    return _ink_without_appearance(
+        "INK-BS", b"", b"/W 40", literal(secret("INK-BS")),
+    )
+
+
+def nearmiss_annotation_ink_style_stream_clear_of_region() -> bytes:
+    """The same ink with a narrower `/W`, so its built appearance stays clear of the region. MUST
+    redact."""
+    return _ink_without_appearance(
+        "INK-BS-CLEAR", b"", b"/W 6", literal("an ordinary ink, clear of the region"),
     )
 
 
@@ -4016,6 +4078,11 @@ CASES: list[tuple[str, str]] = [
     ("evade-annotation-subtype-as-a-string", "annotation appearance"),
     ("evade-annotation-note-icon-outside-rect", "annotation appearance"),
     ("nearmiss-annotation-note-icon-clear-of-region", "annotation appearance"),
+    ("evade-annotation-note-subtype-as-a-string", "annotation appearance"),
+    ("evade-annotation-ink-border-reaches-region", "annotation appearance"),
+    ("nearmiss-annotation-ink-border-clear-of-region", "annotation appearance"),
+    ("evade-annotation-ink-style-stream-reaches-region", "annotation appearance"),
+    ("nearmiss-annotation-ink-style-stream-clear-of-region", "annotation appearance"),
     ("evade-annotation-popup-of-a-removed-parent", "annotation dependents"),
     ("evade-annotation-reply-to-a-removed-annotation", "annotation dependents"),
     ("evade-annotation-named-from-the-catalogue", "annotation dependents"),
@@ -4152,6 +4219,12 @@ BUILDERS = {
     "evade-annotation-subtype-as-a-string": evade_annotation_subtype_as_a_string,
     "evade-annotation-note-icon-outside-rect": evade_annotation_note_icon_outside_rect,
     "nearmiss-annotation-note-icon-clear-of-region": nearmiss_annotation_note_icon_clear_of_region,
+    "evade-annotation-note-subtype-as-a-string": evade_annotation_note_subtype_as_a_string,
+    "evade-annotation-ink-border-reaches-region": evade_annotation_ink_border_reaches_region,
+    "nearmiss-annotation-ink-border-clear-of-region": nearmiss_annotation_ink_border_clear_of_region,
+    "evade-annotation-ink-style-stream-reaches-region": evade_annotation_ink_style_stream_reaches_region,
+    "nearmiss-annotation-ink-style-stream-clear-of-region":
+        nearmiss_annotation_ink_style_stream_clear_of_region,
     "evade-annotation-popup-of-a-removed-parent": evade_annotation_popup_of_a_removed_parent,
     "evade-annotation-reply-to-a-removed-annotation": evade_annotation_reply_to_a_removed_annotation,
     "evade-annotation-named-from-the-catalogue": evade_annotation_named_from_the_catalogue,

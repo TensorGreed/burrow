@@ -98,6 +98,10 @@ INPUT	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	dca
 PAGE	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-down-state-without-bbox.pdf	52443b17418c1f09d1e42aba9843032872e9f0fd7a8b1da51704430cc147346d
 PAGE	tests/redaction/generated/evade-annotation-down-state-without-bbox.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-ink-border-reaches-region.pdf	42bcbd17649bebd6348885f5e13183473161a049314c54b3861cec235b0c001e
+PAGE	tests/redaction/generated/evade-annotation-ink-border-reaches-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-ink-style-stream-reaches-region.pdf	ecc6e36b0449634143efa89eb3d86e044c7099b1eeed74a8a2cfc08c5e5c9b33
+PAGE	tests/redaction/generated/evade-annotation-ink-style-stream-reaches-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-named-from-the-catalogue.pdf	edc294431f1d1e6a30be3beb68cada5acb13b8e92f4a167dff3760909f4415f6
 PAGE	tests/redaction/generated/evade-annotation-named-from-the-catalogue.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-no-rotate-on-a-turned-page.pdf	1382e1f19609c0065054cfd12a7862a7448e7cc380f12770623653b1ef5d9d95
@@ -106,6 +110,8 @@ INPUT	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-ro
 PAGE	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	0	RULE page-attribute-inherited
 INPUT	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	4f3e9fca76bc05d1119fb3d57ac1ece41cf99a32aa4df53c368c06d40bfc546e
 PAGE	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-note-subtype-as-a-string.pdf	df73c2d41ce8b139a74b18d5a8ec0a93caa1fa451be0cc8443ca7225482e0ee8
+PAGE	tests/redaction/generated/evade-annotation-note-subtype-as-a-string.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	1c4b6eb36089b2ce3802bd49209ff98f0025c238a3a66ebf9c5c8129bfe695f4
 PAGE	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-quads-outside-rect.pdf	fa53e90c337659822bd18a3297cc3f85d7968cf9cdf2cccf8b3a91f974579138
@@ -281,6 +287,10 @@ INPUT	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	e58dc0cda1267
 PAGE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	16ebf128f834e3a72021be1dfa3812a96c52995cbe805da07afc39f14668720e
 PAGE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	FRAME 200 400
+INPUT	tests/redaction/generated/nearmiss-annotation-ink-border-clear-of-region.pdf	e7aa4f56aa8a90b15a4e4872377739c2488334c52eaa5083796dcb27f8a4fe6e
+PAGE	tests/redaction/generated/nearmiss-annotation-ink-border-clear-of-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-ink-style-stream-clear-of-region.pdf	ac75274e51a892aef1dba855217d33b1afde6c9c00051db5c8db7b69ffc08cc1
+PAGE	tests/redaction/generated/nearmiss-annotation-ink-style-stream-clear-of-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	9475226f2e483773d93942e1a466240c2f7f87159ff1693c4cb13b60845c1f1a
 PAGE	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	239cd36ad6051d83700e69c6294efa7a26233696211f115fccec5e0249ef1a25

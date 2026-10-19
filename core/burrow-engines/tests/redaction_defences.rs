@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 109] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 114] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2887,13 +2887,31 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 109] = [
         "evade-annotation-subtype-as-a-string.pdf",
         Some("annotation-quads-outside-rect"),
     ),
-    // A NOTE PDFium BUILDS AN ICON FOR draws it at the `/Rect`'s first corner, 20 points a side,
-    // whatever the `/Rect`'s size: the icon's extent is what reaches the region.
+    // AN ANNOTATION PDFium BUILDS AN APPEARANCE FOR is measured by where that appearance is drawn,
+    // which is what reaches the region: a note, by its subtype as a name or a string, and ink
+    // widened by `/Border` or by a `/BS` that is a stream.
     (
         "evade-annotation-note-icon-outside-rect.pdf",
         Some("annotation-in-region"),
     ),
     ("nearmiss-annotation-note-icon-clear-of-region.pdf", None),
+    (
+        "evade-annotation-note-subtype-as-a-string.pdf",
+        Some("annotation-in-region"),
+    ),
+    (
+        "evade-annotation-ink-border-reaches-region.pdf",
+        Some("annotation-in-region"),
+    ),
+    ("nearmiss-annotation-ink-border-clear-of-region.pdf", None),
+    (
+        "evade-annotation-ink-style-stream-reaches-region.pdf",
+        Some("annotation-in-region"),
+    ),
+    (
+        "nearmiss-annotation-ink-style-stream-clear-of-region.pdf",
+        None,
+    ),
     // REFUSED FOR LAUNCH (#136 D3): the annotation sits in the region. What it probes, the
     // post-launch removal taking its dependents (#239), is held by the lib tests that switch it on.
     (

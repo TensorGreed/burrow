@@ -3749,7 +3749,7 @@ probes_refusal = "annotation appearance"
 pages = 1
 
   [[fixture.placement]]
-  channel = "a /Text note with no /AP whose /Rect misses the region and whose built icon reaches it — evasion"
+  channel = "an annotation PDFium builds an appearance for, reaching the region beyond its /Rect — evasion"
   canary = "BURROW-EVADE-NOTE-ICON"
   verdict = "refuse"
   adr = "§3"
@@ -3757,7 +3757,7 @@ pages = 1
   witness_observes = "canary"
   expect_after = "refused"
   notes = """
-PDFium builds a note's missing appearance as a 20-point icon at the /Rect's first corner, whatever the /Rect's size, so a half-point /Rect just left of the region draws the icon into it. Kept, Ok, on main, measured. Refused [annotation-in-region] by the icon's extent (#136 D3).
+An annotation with no appearance of its own, for which PDFium builds one that reaches past its /Rect. Refused [annotation-in-region] by the built extent (#136 D3).
 """
 
 [[fixture]]
@@ -3768,7 +3768,7 @@ probes_refusal = "annotation appearance"
 pages = 1
 
   [[fixture.placement]]
-  channel = "the same /Text note further left, its /Rect and its icon both clear of the region — near-miss twin"
+  channel = "the same annotation further left, its /Rect and its built appearance both clear of the region — near-miss twin"
   canary = "BURROW-EVADE-NOTE-ICON-CLEAR"
   verdict = "handle"
   adr = "§3"
@@ -3776,7 +3776,102 @@ pages = 1
   witness_observes = "canary"
   expect_after = "gone"
   notes = """
-MUST NOT be refused. A note whose icon is clear of the region is kept, as every note clear of it is.
+MUST NOT be refused. An annotation whose built appearance is clear of the region is kept, as every annotation clear of it is.
+"""
+
+[[fixture]]
+name = "evade-annotation-note-subtype-as-a-string"
+file = "generated/evade-annotation-note-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an annotation PDFium builds an appearance for, its subtype written as a string, reaching the region beyond its /Rect — evasion"
+  canary = "BURROW-EVADE-NOTE-STRING"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads a /Subtype written as a string as the name. An annotation with no appearance of its own, for which PDFium builds one that reaches past its /Rect. Refused [annotation-in-region] by the built extent (#136 D3).
+"""
+
+[[fixture]]
+name = "evade-annotation-ink-border-reaches-region"
+file = "generated/evade-annotation-ink-border-reaches-region.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an annotation PDFium builds an appearance for, widened by its /Border, reaching the region beyond its /Rect — evasion"
+  canary = "BURROW-EVADE-INK-BORDER"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+An annotation with no appearance of its own, for which PDFium builds one that reaches past its /Rect. Refused [annotation-in-region] by the built extent (#136 D3).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-ink-border-clear-of-region"
+file = "generated/nearmiss-annotation-ink-border-clear-of-region.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same annotation with a narrower /Border, its built appearance clear of the region — near-miss twin"
+  canary = "BURROW-EVADE-INK-BORDER-CLEAR"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. An annotation whose built appearance is clear of the region is kept, as every annotation clear of it is.
+"""
+
+[[fixture]]
+name = "evade-annotation-ink-style-stream-reaches-region"
+file = "generated/evade-annotation-ink-style-stream-reaches-region.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an annotation PDFium builds an appearance for, widened by a /BS that is a stream, reaching the region beyond its /Rect — evasion"
+  canary = "BURROW-EVADE-INK-BS"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+An annotation with no appearance of its own, for which PDFium builds one that reaches past its /Rect. Refused [annotation-in-region] by the built extent (#136 D3).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-ink-style-stream-clear-of-region"
+file = "generated/nearmiss-annotation-ink-style-stream-clear-of-region.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same annotation with a narrower /BS /W, its built appearance clear of the region — near-miss twin"
+  canary = "BURROW-EVADE-INK-BS-CLEAR"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. An annotation whose built appearance is clear of the region is kept, as every annotation clear of it is.
 """
 
 [[fixture]]
