@@ -294,9 +294,8 @@ fn a_highlight_with_no_appearance_is_drawn_at_its_quadrilaterals_and_refused() {
 
 #[test]
 fn a_note_without_an_appearance_draws_its_icon_outside_its_rect_and_is_refused() {
-    // PDFium BUILDS A NOTE'S MISSING APPEARANCE as a 20-point icon at the `/Rect`'s first corner,
-    // whatever the `/Rect`'s size. Here a half-point `/Rect` below the band: the icon rises into it,
-    // and the `/Rect` does not meet it.
+    // PDFium BUILDS A NOTE'S MISSING APPEARANCE as a stock icon at the `/Rect`'s first corner,
+    // whatever the `/Rect`'s size, so the icon can reach the band where the `/Rect` does not.
     let note = "/Subtype /Text /Rect [20 320 20.5 320.5] /Contents (NOTEINK)";
     let over = page_with_objects("", note, "", &[]);
     let (inside, _) = dark_pixels_with_annotations(&over, 0, BAND);
@@ -307,7 +306,7 @@ fn a_note_without_an_appearance_draws_its_icon_outside_its_rect_and_is_refused()
     let refused = redact(&over, BAND).expect_err("refused");
     assert!(refused.contains("[annotation-in-region]"), "{refused}");
 
-    // THE TWIN: the same note lower down, so the icon ends below the band.
+    // THE TWIN: the same note placed so the icon stays clear of the band.
     let clear = page_with_objects(
         "",
         "/Subtype /Text /Rect [20 300 20.5 300.5] /Contents (NOTEINK)",
@@ -323,8 +322,8 @@ fn a_note_without_an_appearance_draws_its_icon_outside_its_rect_and_is_refused()
 
 #[test]
 fn a_note_written_backwards_draws_its_icon_at_its_first_corner_and_is_refused() {
-    // THE FIRST CORNER AS WRITTEN, not the normalised lower-left: `[60 325 20 300]` normalises to
-    // 20..60 x 300..325, clear of the band, and PDFium draws the icon at 60..80 x 325..345, in it.
+    // THE FIRST CORNER AS WRITTEN, not the normalised one: the icon is anchored at the corner the
+    // `/Rect` names first, so a `/Rect` written backwards is clear of the band where its icon is not.
     let backwards = page_with_objects("", "/Subtype /Text /Rect [60 325 20 300]", "", &[]);
     let (inside, _) = dark_pixels_with_annotations(&backwards, 0, BAND);
     assert!(
@@ -362,8 +361,7 @@ fn a_note_named_by_a_string_is_still_a_note() {
 #[test]
 fn ink_without_an_appearance_draws_past_its_rect_by_half_its_width_and_is_refused() {
     // PDFium BUILDS AN INK ANNOTATION'S MISSING APPEARANCE with its `/Rect` widened by half the
-    // border width, and strokes to there: a width of 30 on a `/Rect` ending at 320 draws to 335,
-    // five points into the band.
+    // border width, and strokes to there, so a `/Rect` clear of the band can draw into it.
     let wide = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS << /W 30 >> \
@@ -379,7 +377,7 @@ fn ink_without_an_appearance_draws_past_its_rect_by_half_its_width_and_is_refuse
     let refused = redact(&wide, BAND).expect_err("refused");
     assert!(refused.contains("[annotation-in-region]"), "{refused}");
 
-    // THE TWIN: a width of 10 reaches 325, below the band.
+    // THE TWIN: a narrower width, whose half stays clear of the band.
     let narrow = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS << /W 10 >> \
@@ -413,8 +411,8 @@ fn ink_whose_border_width_no_reader_agrees_on_is_refused() {
 
 #[test]
 fn ink_widened_only_by_its_border_array_is_refused() {
-    // NO `/BS`, SO PDFium TAKES THE WIDTH FROM `/Border`'s third item: 30 on a `/Rect` ending at
-    // 320 strokes to 335, five points into the band.
+    // NO `/BS`, SO PDFium TAKES THE WIDTH FROM `/Border`'s third item, and widens the `/Rect` by
+    // half of it into the band.
     let wide = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /Border [0 0 30] \
@@ -430,7 +428,7 @@ fn ink_widened_only_by_its_border_array_is_refused() {
     let refused = redact(&wide, BAND).expect_err("refused");
     assert!(refused.contains("[annotation-in-region]"), "{refused}");
 
-    // THE TWIN: a third item of 10 reaches 325, below the band.
+    // THE TWIN: a narrower third item, whose half stays clear of the band.
     let narrow = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /Border [0 0 10] \
@@ -447,8 +445,8 @@ fn ink_widened_only_by_its_border_array_is_refused() {
 
 #[test]
 fn ink_whose_border_style_is_a_stream_is_widened_by_its_width() {
-    // `/BS` AS A STREAM: PDFium reads the stream's dictionary as the border style, so its `/W` of
-    // 30 widens the `/Rect` ending at 320 to 335, five points into the band.
+    // `/BS` AS A STREAM: PDFium reads the stream's dictionary as the border style, so its `/W`
+    // widens the `/Rect` by half of it into the band.
     let wide = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS 7 0 R /InkList [[20 320 120 320]]",
@@ -463,7 +461,7 @@ fn ink_whose_border_style_is_a_stream_is_widened_by_its_width() {
     let refused = redact(&wide, BAND).expect_err("refused");
     assert!(refused.contains("[annotation-in-region]"), "{refused}");
 
-    // THE TWIN: the same stream with a `/W` of 10 reaches 325, below the band.
+    // THE TWIN: the same stream with a narrower `/W`, whose half stays clear of the band.
     let narrow = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS 7 0 R /InkList [[20 320 120 320]]",
@@ -479,10 +477,9 @@ fn ink_whose_border_style_is_a_stream_is_widened_by_its_width() {
 
 #[test]
 fn ink_with_no_border_width_is_measured_at_a_width_of_one() {
-    // NO `/BS` AND NO `/Border`: PDFium's default width is 1, so the `/Rect` is widened by half a
-    // point. A `/Rect` ending 0.4 points below the band reaches 0.1 into it, and is refused; one
-    // ending 0.6 below reaches 0.1 short of it, and redacts. Too thin to measure in pixels, so this
-    // pins the bound, not a drawing.
+    // NO `/BS` AND NO `/Border`: PDFium's default width is 1, so the `/Rect` is widened by half of
+    // it. A `/Rect` just inside that half of the band is refused; one just outside it redacts. Too
+    // thin to measure in pixels, so this pins the bound, not a drawing.
     let reaching = page_with_objects(
         "",
         "/Subtype /Ink /Rect [20 300 120 329.6] /C [0 0 0] /InkList [[20 329.6 120 329.6]]",

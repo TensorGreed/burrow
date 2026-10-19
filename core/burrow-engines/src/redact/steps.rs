@@ -1474,11 +1474,11 @@ const NOTE_ICON: f64 = 20.0;
 /// `/N`, and for two kinds it moves the `/Rect` while doing so, so the drawing leaves the rectangle
 /// the walk measured. Measured against the pinned PDFium, drawing annotations:
 ///
-/// - **`/Text`**: a stock 20 x 20 point note icon at the `/Rect`'s **first two numbers, as written**
-///   -- not its normalised lower-left: `[400 500 300 400]` draws at 400..420 x 500..520, outside the
-///   rectangle it normalises to.
-/// - **`/Ink`**: the `/Rect` inflated by half the border width -- `/BS /W`, else the third item of
-///   `/Border`, else 1 -- and the strokes clipped there: a width of 40 drew 14.5 points outside.
+/// - **`/Text`**: a stock note icon of side [`NOTE_ICON`], anchored at the `/Rect`'s **first corner
+///   as written** -- not the normalised one, so a `/Rect` written backwards draws its icon outside
+///   the rectangle it normalises to.
+/// - **`/Ink`**: the `/Rect` widened by half the border width -- `/BS /W`, else the third item of
+///   `/Border`, else 1 -- and the strokes clipped there, so ink is widened by half its border width.
 ///
 /// Every other kind PDFium builds for (Square, Circle, FreeText, Popup, and the text-markup kinds)
 /// draws inside its `/Rect`, measured, or at its `/QuadPoints`, which
