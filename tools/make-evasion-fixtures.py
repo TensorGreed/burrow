@@ -90,15 +90,17 @@ def _grey_image_stream(pdf: Pdf, text: str, scale: int = 3) -> tuple[int, int, i
 
 
 def evade_image_in_form() -> bytes:
-    """The image is drawn by a Form XObject. The page's content stream says only `/X1 Do`."""
+    """The image is drawn by a Form XObject. The page's content stream says only `/X1 Do`.
+
+    The ONE image covers `REGION` and reaches the page's top-left corner (`CORNER_INK`), so a
+    redaction of either refuses by `[image-in-region]`."""
     pdf = Pdf()
     helv = helvetica(pdf)
     image, _w, _h = _grey_image_stream(pdf, secret("IMG-FORM"))
-    x0, y0, x1, y1 = REGION
     form = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
         b" /Resources << /XObject << /Im1 " + str(image).encode() + b" 0 R >> >>",
-        b"q " + f"{x1 - x0} 0 0 {y1 - y0} {x0} {y0}".encode() + b" cm /Im1 Do Q\n",
+        b"q " + _region_to_corner_cm() + b" /Im1 Do Q\n",
     )
     content = b"/X1 Do\n" + keep_line_ops()
     res = (
@@ -842,9 +844,9 @@ def _region_rect() -> bytes:
 FULL_BBOX = f"[0 0 {PAGE_W} {PAGE_H}]".encode()
 
 
-# THE PAGE'S TOP-LEFT CORNER, `(0, 0)` to `(10, 10)` from the top in display units: the two-level
-# form fixtures put ink there as well as in `REGION`, so a redaction of a small region at the
-# corner -- the local census's -- reaches it too and reads refused rather than `ok`.
+# THE PAGE'S TOP-LEFT CORNER, `(0, 0)` to `(10, 10)` from the top in display units: the form
+# fixtures (one level and two) put ink there as well as in `REGION`, so a redaction of a small
+# region at the corner -- the local census's -- reaches it too and reads refused rather than `ok`.
 CORNER_INK = (0, PAGE_H - 10, 10, PAGE_H)
 
 
@@ -1044,13 +1046,18 @@ def nearmiss_tiling_pattern_never_filled() -> bytes:
 
 
 def evade_paths_in_form() -> bytes:
-    """The filled paths are inside a Form XObject."""
+    """The filled paths are inside a Form XObject.
+
+    The form also fills `CORNER_INK`, so a redaction of the page's top-left corner reaches a path
+    too and refuses by `[vector-in-region]`."""
     pdf = Pdf()
     helv = helvetica(pdf)
+    left, bottom, right, top = CORNER_INK
+    corner = f"0 g {left} {bottom} {right - left} {top - bottom} re f\n".encode()
     form = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
         b" /Resources << >>",
-        outline_ops(secret("PATH-FORM"), SECRET_X, SECRET_Y, SECRET_SIZE),
+        corner + outline_ops(secret("PATH-FORM"), SECRET_X, SECRET_Y, SECRET_SIZE),
     )
     content = b"/X1 Do\n" + keep_line_ops()
     res = (
