@@ -3166,7 +3166,7 @@ fn pdfbuild_region() -> Region {
 /// are discharged by a broader rule than the region signal, and say so: a tiling or shading pattern
 /// fill by `pattern-may-draw-text`, a filtered inline image by `inline-image-filtered`, a Type 3
 /// procedure by the Type 3 rules.
-const INK_OUTCOMES: [(&str, Option<&str>); 27] = [
+const INK_OUTCOMES: [(&str, Option<&str>); 32] = [
     ("evade-image-in-form.pdf", Some("image-in-region")),
     (
         "evade-image-in-form-two-levels-down.pdf",
@@ -3233,6 +3233,26 @@ const INK_OUTCOMES: [(&str, Option<&str>); 27] = [
     ),
     ("nearmiss-clip-path-clear-of-region.pdf", None),
     ("nearmiss-clip-rectangle-around-region.pdf", None),
+    // A clip set before text or a form inside `q` ... `Q` and painted after it; a rectangle whose
+    // numbers single precision rounds; an outer clip under an inner rectangle; and the clip in
+    // force over the text, clear of the region.
+    (
+        "evade-clip-pending-across-text-in-q.pdf",
+        Some("clip-path-in-region"),
+    ),
+    (
+        "evade-clip-pending-across-form-in-q.pdf",
+        Some("clip-path-in-region"),
+    ),
+    (
+        "evade-clip-rectangle-single-precision-rounds.pdf",
+        Some("clip-path-in-region"),
+    ),
+    (
+        "evade-clip-outer-path-inner-rectangle.pdf",
+        Some("clip-path-in-region"),
+    ),
+    ("nearmiss-clip-path-in-force-clear-of-region.pdf", None),
 ];
 
 #[test]

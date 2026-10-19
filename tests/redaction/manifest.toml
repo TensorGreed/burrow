@@ -1464,6 +1464,91 @@ pages = 1
   notes = "MUST NOT be refused. The text under one rectangle clip that holds the whole page, as producers write around a page or a cell: it admits all of the region, so it holds nothing about the text there."
 
 [[fixture]]
+name = "evade-clip-pending-across-text-in-q"
+file = "generated/evade-clip-pending-across-text-in-q.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — clip pending across text"
+  canary = "BURROW-EVADE-CLIP-PEND-TEXT"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: a clip set before a text object inside q ... Q and painted after the Q. The clip is recorded where it is painted, whatever state was current when the text object was read."
+
+[[fixture]]
+name = "evade-clip-pending-across-form-in-q"
+file = "generated/evade-clip-pending-across-form-in-q.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — clip pending across a form"
+  canary = "BURROW-EVADE-CLIP-PEND-FORM"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: as evade-clip-pending-across-text-in-q, with a form draw inside the q ... Q."
+
+[[fixture]]
+name = "evade-clip-rectangle-single-precision-rounds"
+file = "generated/evade-clip-rectangle-single-precision-rounds.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — clip rectangle single precision rounds"
+  canary = "BURROW-EVADE-CLIP-RECT-F32"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: one rectangle clip that holds the page in double precision, from numbers single precision cannot hold. The twin is nearmiss-clip-rectangle-around-region."
+
+[[fixture]]
+name = "evade-clip-outer-path-inner-rectangle"
+file = "generated/evade-clip-outer-path-inner-rectangle.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — outer clip shapes, inner rectangle holds"
+  canary = "BURROW-EVADE-CLIP-OUTER"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "Refuses [clip-path-in-region]: an outer clip that shapes the text and an inner rectangle that holds the page. Every clip in force counts, not only the innermost."
+
+[[fixture]]
+name = "nearmiss-clip-path-in-force-clear-of-region"
+file = "generated/nearmiss-clip-path-in-force-clear-of-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-CLIP-IN-FORCE"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. The twin of evade-clip-path-shaping-text with the clip clear of the region and still in force over the text. A rule keyed on the text having a clip refuses it."
+
+[[fixture]]
 name = "evade-widget-on-another-page"
 file = "generated/evade-widget-on-another-page.pdf"
 kind = "hand-built"

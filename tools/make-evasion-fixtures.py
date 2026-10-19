@@ -1202,15 +1202,17 @@ def nearmiss_paths_in_form_two_levels_down_outside_region() -> bytes:
 # ===========================================================================================
 
 
-def _clip_page(clip: bytes, tag: str, after_restore: bool = False) -> bytes:
-    """The canary in the region, drawn under `clip` (`... W n`), or after the clip is restored."""
+def _clip_page(clip: bytes, tag: str, after_restore: bool = False, close: bytes = b"") -> bytes:
+    """The canary in the region, drawn under `clip` (`... W n`), or after the clip is restored.
+
+    `close` is written before the final `Q`, to balance a `q` inside `clip`."""
     pdf = Pdf()
     helv = helvetica(pdf)
     text = _secret_run(tag)
     if after_restore:
         content = b"q " + clip + b" W n Q\n" + text
     else:
-        content = b"q " + clip + b" W n\n" + text + b"Q\n"
+        content = b"q " + clip + b" W n\n" + text + close + b"Q\n"
     content += keep_line_ops()
     return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
 
@@ -1237,6 +1239,73 @@ def nearmiss_clip_rectangle_around_region() -> bytes:
     return _clip_page(
         f"0 0 {PAGE_W} {PAGE_H} re".encode(), "CLIP-RECT"
     )
+
+
+# The clip that shapes the text in `evade_clip_path_shaping_text`, reused by the shapes below.
+_CLIP_POLYGON = b"35 92 m 300 92 l 300 118 l 35 108 l h"
+
+
+def _clip_pending_page(between: bytes, tag: str, form: bool = False) -> bytes:
+    """`W` set, then `between` inside `q` ... `Q`, then the `n` that paints the clip, then the
+    canary under it. A reader applies the clip at the `n`, so the text is drawn under it."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"q " + _CLIP_POLYGON + b" W q " + between + b" Q n\n" + _secret_run(tag) + b"Q\n"
+        + keep_line_ops()
+    )
+    res = b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+    if form:
+        empty = pdf.stream(
+            b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]",
+            b"",
+        )
+        res += b" /XObject << /X1 " + str(empty).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def evade_clip_pending_across_text_in_q() -> bytes:
+    """A clip set by `W` before a text object inside `q` ... `Q`, and painted after the `Q`.
+
+    The text object draws while the clip is not yet painted; the `Q` restores the state it was
+    seen in, and the `n` after it is where the clip lands. Refuses `[clip-path-in-region]`."""
+    return _clip_pending_page(b"BT /Helv 20 Tf 0 0 Td ET", "CLIP-PEND-TEXT")
+
+
+def evade_clip_pending_across_form_in_q() -> bytes:
+    """As `evade_clip_pending_across_text_in_q`, with a form draw inside the `q` ... `Q`.
+
+    Refuses `[clip-path-in-region]`."""
+    return _clip_pending_page(b"/X1 Do", "CLIP-PEND-FORM", form=True)
+
+
+def evade_clip_rectangle_single_precision_rounds() -> bytes:
+    """One rectangle clip that holds the whole page in double precision, from numbers single
+    precision cannot hold, so a reader working in single precision may admit a different box.
+
+    The twin is `nearmiss_clip_rectangle_around_region`. Refuses `[clip-path-in-region]`."""
+    return _clip_page(
+        f"0 -2147483456.01 {PAGE_W} 2147483656.01 re".encode(), "CLIP-RECT-F32"
+    )
+
+
+def evade_clip_outer_path_inner_rectangle() -> bytes:
+    """The text under two clips: the outer one shapes it, the inner one is a rectangle holding
+    the whole page. Every clip in force counts, not only the innermost.
+
+    Refuses `[clip-path-in-region]`."""
+    return _clip_page(
+        _CLIP_POLYGON + b" W n q " + f"0 0 {PAGE_W} {PAGE_H} re".encode(), "CLIP-OUTER",
+        close=b"Q ",
+    )
+
+
+def nearmiss_clip_path_in_force_clear_of_region() -> bytes:
+    """A clip clear of the region, still in force over the text. MUST NOT be refused.
+
+    A rule keyed on the text having a clip refuses it. The clip admits none of the region, so it
+    holds nothing about the text there."""
+    return _clip_page(b"35 150 m 300 150 l 300 190 l 35 180 l h", "CLIP-IN-FORCE")
 
 
 # ===========================================================================================
@@ -3955,6 +4024,11 @@ CASES: list[tuple[str, str]] = [
     ("evade-clip-path-shaping-text", "vector paths"),
     ("nearmiss-clip-path-clear-of-region", "vector paths"),
     ("nearmiss-clip-rectangle-around-region", "vector paths"),
+    ("evade-clip-pending-across-text-in-q", "vector paths"),
+    ("evade-clip-pending-across-form-in-q", "vector paths"),
+    ("evade-clip-rectangle-single-precision-rounds", "vector paths"),
+    ("evade-clip-outer-path-inner-rectangle", "vector paths"),
+    ("nearmiss-clip-path-in-force-clear-of-region", "vector paths"),
     ("evade-widget-on-another-page", "/AcroForm"),
     ("evade-field-with-no-widget", "/AcroForm"),
     ("evade-acroform-inline-field", "/AcroForm"),
@@ -4227,6 +4301,11 @@ BUILDERS = {
     "evade-clip-path-shaping-text": evade_clip_path_shaping_text,
     "nearmiss-clip-path-clear-of-region": nearmiss_clip_path_clear_of_region,
     "nearmiss-clip-rectangle-around-region": nearmiss_clip_rectangle_around_region,
+    "evade-clip-pending-across-text-in-q": evade_clip_pending_across_text_in_q,
+    "evade-clip-pending-across-form-in-q": evade_clip_pending_across_form_in_q,
+    "evade-clip-rectangle-single-precision-rounds": evade_clip_rectangle_single_precision_rounds,
+    "evade-clip-outer-path-inner-rectangle": evade_clip_outer_path_inner_rectangle,
+    "nearmiss-clip-path-in-force-clear-of-region": nearmiss_clip_path_in_force_clear_of_region,
     "evade-widget-ft-on-parent": evade_widget_ft_on_parent,
     "nearmiss-annotation-with-a-parent-not-a-field": nearmiss_annotation_with_a_parent_not_a_field,
     "nearmiss-property-list-inside-an-unused-type3-font": nearmiss_property_list_inside_an_unused_type3_font,
