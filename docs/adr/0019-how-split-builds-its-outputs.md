@@ -960,6 +960,6 @@ wherever it lexes object syntax. PDFium keeps the first 256 bytes of such a numb
 whole, so the source and a part, rewritten by qpdf, can read differently to the viewer. Measured,
 and the detail is in ADR 0029's amendment of the same date.
 
-**Cost, measured** against `main` with the same harness: **0 of 99** real documents, **0** committed
-fixtures, **0** on `big_book.pdf`.
+**Cost, measured** against `main` with the same harness: **0 of 99** real documents, **0** of the fixtures
+already on main, **0** on `big_book.pdf`.
 
