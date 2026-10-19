@@ -10,7 +10,11 @@
   //
   // IT IS NOT A PREVIEW. A render does not show what a redaction leaves (ADR 0029), and the page
   // says so beside it. An annotation it draws -- or one it cannot draw, such as a form widget or a
-  // hidden one -- is refused by the run if the area reaches its `/Rect` (#372), never kept.
+  // hidden one -- is refused by the run if the area reaches its `/Rect` (#372), never kept. THAT
+  // RULE MEASURES THE `/Rect`, NOT THE DRAWING: PDFium generates an appearance for some
+  // annotations that have none, and a generated appearance can reach outside the `/Rect`, so the
+  // picture can show annotation ink the rule does not measure. Redaction's handling of generated
+  // appearances is tracked separately (`burrow_engines::Annotations`' rustdoc).
   //
   // #199 AND D1: ONE DOCUMENT PER RENDER WORKER. It ends when the file changes, before a run
   // (`paused`), when the page is left, and when this unmounts. A run's Stop needs nothing of its
@@ -30,6 +34,7 @@
     fractionAt,
     nudged,
     outlineOf,
+    outlineSmallerThanBorder,
     pictureBox,
     shownPictureSize,
     type Fields,
@@ -37,7 +42,10 @@
   } from "./region-picture.js";
 
   interface Props {
-    /** The document to draw, or `null` for none: no file, or a re-fed result (D9). */
+    /**
+     * The chosen document, or `null` when none is chosen (`RedactTool.svelte` mounts this only once
+     * one is). A re-fed result is passed too, and is not drawn: `result` says which it is.
+     */
     file: File | null;
     /** True when the chosen file is a re-fed result, which gets no picture (D9). */
     result: boolean;
@@ -80,7 +88,9 @@
 
   const host = createToolHost(undefined, RENDER, { paused: () => paused });
   const ending = createEndGate({
-    discard: () => host.discardWorker(),
+    // UNMOUNTED MID-RENDER, the settled render disposes of the host, not only its worker: nothing
+    // will ask it for another.
+    discard: () => (destroyed ? host.dispose() : host.discardWorker()),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as number),
   });
@@ -182,7 +192,7 @@
       if (error !== ENGINE_PAUSED) throw error;
     } finally {
       running = false;
-      if (paused) {
+      if (paused && !destroyed) {
         host.discardWorker();
         ending.cancel();
       } else {
@@ -271,6 +281,8 @@
   }
 
   const outline = $derived(frame ? outlineOf(fields, frame) : null);
+  /** The outline cannot be drawn as small as the area: say so (`outlineSmallerThanBorder`). */
+  const smaller = $derived(outline && shown ? outlineSmallerThanBorder(outline, shown) : false);
 
   // LEAVING THE PAGE (#199, D1): the pixels zeroed and the worker ended, as the strip does; a
   // page restored from the back-forward cache draws the picture again, on a new worker.
@@ -323,7 +335,7 @@
       class:picture__surface--dragging={dragging}
       bind:this={surface}
       role="application"
-      aria-label="The page. Choose the area to remove text from."
+      aria-label={PICTURE_COPY.label}
       aria-describedby="picture-hint"
       tabindex="0"
       data-testid="redact-picture-surface"
@@ -342,7 +354,9 @@
       {#if outline}
         <div
           class="picture__outline"
+          class:picture__outline--smaller={smaller}
           data-testid="redact-picture-outline"
+          data-smaller={smaller}
           style:left={`${outline.x * 100}%`}
           style:top={`${outline.y * 100}%`}
           style:width={`${outline.width * 100}%`}
@@ -350,6 +364,9 @@
         ></div>
       {/if}
     </div>
+    {#if smaller}
+      <p class="picture__note" data-testid="redact-picture-smaller">{PICTURE_COPY.smaller}</p>
+    {/if}
     <p class="picture__note">{PICTURE_COPY.notPreview}</p>
     {#if status === "drawing"}
       <p class="visually-hidden" role="status">{PICTURE_COPY.drawing}</p>
@@ -410,5 +427,10 @@
     border: 2px solid var(--refuse);
     background: color-mix(in srgb, var(--refuse) 12%, transparent);
     pointer-events: none;
+  }
+
+  /* DRAWN LARGER THAN IT IS (`outlineSmallerThanBorder`), and marked as such. */
+  .picture__outline--smaller {
+    border-style: dashed;
   }
 </style>

@@ -298,6 +298,22 @@ export function arrival(
   return { kind: "draw", width: got.width, height: got.height };
 }
 
+/** The outline's border, in CSS pixels: `.picture__outline`'s `border-width`. */
+export const OUTLINE_BORDER_CSS_PX = 2;
+
+/**
+ * Whether the area is drawn LARGER THAN IT IS: narrower or shorter on screen than the outline's two
+ * borders, which a border-box outline cannot shrink below. Then the page says so beside it
+ * (`PICTURE_COPY.smaller`) and draws the outline dashed, rather than show a sliver as a box.
+ */
+export function outlineSmallerThanBorder(
+  outline: { width: number; height: number },
+  shown: { width: number; height: number },
+): boolean {
+  const least = 2 * OUTLINE_BORDER_CSS_PX;
+  return outline.width * shown.width < least || outline.height * shown.height < least;
+}
+
 /**
  * The picture's words. Kept here so `region-picture.test.ts` holds them to the page's forbidden
  * claims (`FORBIDDEN_CLAIMS`) and to "Not Only PDF", never "burrow", as `redact-copy.ts` does.
@@ -307,9 +323,14 @@ export const PICTURE_COPY = {
     "Drag across the page to choose the area. Or select the picture and press Enter to start an " +
     "area, an arrow key to move it, Shift with an arrow to change its size, and Alt for steps of " +
     "one point. The boxes below show the area in points.",
+  // WHAT IS NOT DRAWN, SAID: PDFium draws no form field here (no form-fill environment) and no
+  // annotation its `/F` flags hide, so "annotations included" alone would overclaim.
   notPreview:
-    "The picture is the page as a viewer draws it, annotations included. It is not a preview of " +
-    "the result.",
+    "The picture is the page as a viewer draws it, annotations included, except form fields and " +
+    "hidden annotations. It is not a preview of the result.",
+  label: "The page. Choose the area to remove text from.",
+  smaller:
+    "The area is smaller than its outline on the picture. The boxes below give its true size.",
   drawing: "Drawing the page…",
   mismatch:
     "The picture of this page did not match the page's measured size, so it is not shown. Type " +

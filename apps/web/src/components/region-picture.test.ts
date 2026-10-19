@@ -1,9 +1,13 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { readRegion } from "./redact-region.js";
 import {
   ASPECT_TOLERANCE_PX,
   KEY_START,
+  OUTLINE_BORDER_CSS_PX,
   PICTURE_MAX_CSS_WIDTH,
   aspectAgrees,
   fieldsBetween,
@@ -11,6 +15,7 @@ import {
   fractionAt,
   nudged,
   outlineOf,
+  outlineSmallerThanBorder,
   PICTURE_COPY,
   arrival,
   pictureBox,
@@ -280,6 +285,85 @@ describe("the picture's words (#136, S4)", () => {
 
   it("say beside the picture that it is not a preview", () => {
     expect(PICTURE_COPY.notPreview).toMatch(/not a preview/);
+  });
+
+  it("say what the picture does not draw: form fields and hidden annotations (round 1, SF4)", () => {
+    expect(PICTURE_COPY.notPreview).toMatch(/except form fields and hidden annotations/);
+  });
+});
+
+describe("an area smaller than its outline (#136, S4; security round 1, L-1)", () => {
+  const shownSize = { width: 300, height: 400 };
+  it("is said to be smaller when it is narrower or shorter on screen than two borders", () => {
+    const least = 2 * OUTLINE_BORDER_CSS_PX;
+    // Just under two borders wide, and just under two borders high: each on its own.
+    expect(outlineSmallerThanBorder({ width: (least - 0.1) / 300, height: 0.5 }, shownSize)).toBe(
+      true,
+    );
+    expect(outlineSmallerThanBorder({ width: 0.5, height: (least - 0.1) / 400 }, shownSize)).toBe(
+      true,
+    );
+  });
+
+  it("is not, at exactly two borders and above (the near-miss)", () => {
+    const least = 2 * OUTLINE_BORDER_CSS_PX;
+    expect(outlineSmallerThanBorder({ width: least / 300, height: least / 400 }, shownSize)).toBe(
+      false,
+    );
+    expect(outlineSmallerThanBorder({ width: 0.5, height: 0.5 }, shownSize)).toBe(false);
+  });
+});
+
+/**
+ * `RegionPicture.svelte`, with its comments blanked out and offsets kept, as
+ * `page-thumbnails.test.ts` reads the strip: a source scan that says so. What needs a browser is
+ * `e2e/redact-pdf.spec.ts`'s.
+ */
+const component = readFileSync(
+  fileURLToPath(new URL("./RegionPicture.svelte", import.meta.url)),
+  "utf8",
+)
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length))
+  .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length))
+  .replace(/<!--[\s\S]*?-->/g, (m) => " ".repeat(m.length));
+
+describe("the picture lets go of its pixels zeroed (#136, S4; #199, D4; round 1, SF2)", () => {
+  it("zeroes them in release(), before dropping them", () => {
+    expect(component).toMatch(
+      /function release\(\) \{\s*zeroPixels\(image\?\.data\);\s*image = null;\s*\}/,
+    );
+  });
+
+  it("goes through release() at its four sites, and nowhere zeroes or drops by hand", () => {
+    // The definition, then exactly four calls: a different file or page, a page arriving over a
+    // picture still held, pagehide, and unmount. A fifth site cannot appear without this moving.
+    expect([...component.matchAll(/(?<!function )\brelease\(\)/g)].length).toBe(4);
+    expect(component).toMatch(/generation \+= 1;\s*release\(\);\s*if \(shownFor && shownFor\.file/);
+    expect(component).toMatch(/release\(\);\s*image = new ImageData\(/);
+    expect(component).toMatch(
+      /const onPageHide = \(\) => \{\s*hidden = true;\s*generation \+= 1;\s*release\(\);/,
+    );
+    expect(component).toMatch(
+      /onDestroy\(\(\) => \{\s*destroyed = true;\s*generation \+= 1;\s*release\(\);/,
+    );
+    // `image` is set only in release() and right after it, so no picture is dropped unzeroed.
+    expect([...component.matchAll(/(?<!let )\bimage = /g)].length, "an assignment to image").toBe(
+      2,
+    );
+    expect(component, "pixels zeroed by hand, outside release()").not.toMatch(/\.fill\(0\)/);
+  });
+
+  it("disposes of its host when unmounted mid-render, once the render settles (round 1, nit)", () => {
+    expect(component).toMatch(
+      /discard: \(\) => \(destroyed \? host\.dispose\(\) : host\.discardWorker\(\)\)/,
+    );
+    expect(component).toMatch(/if \(paused && !destroyed\) \{/);
+  });
+
+  it("draws the outline with the border outlineSmallerThanBorder assumes", () => {
+    expect(component).toMatch(
+      new RegExp(`\\.picture__outline \\{[^}]*border: ${OUTLINE_BORDER_CSS_PX}px solid`),
+    );
   });
 });
 
