@@ -245,6 +245,9 @@ INPUT	tests/redaction/generated/evade-std14-symbolic-flags.pdf	c3b9744994b46a8f8
 PAGE	tests/redaction/generated/evade-std14-symbolic-flags.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-struct-without-structparents.pdf	17ab032fdb04e43be37af9126856852ce022f41a4ba7acd5b0b8bc12a7000051
 PAGE	tests/redaction/generated/evade-struct-without-structparents.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-structparents-resolving-elsewhere.pdf	34d0e24c98a3834ba2007978e1c8fda6aff30bdb4961a3cb2425cc004d4cebbd
+PAGE	tests/redaction/generated/evade-structparents-resolving-elsewhere.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/evade-structparents-resolving-elsewhere.pdf	1	FRAME 400 200
 INPUT	tests/redaction/generated/evade-text-in-type3-via-form.pdf	e73273c6c58a9e1c800a904a73244e331235f3d11284446d2e6c26368bef2702
 PAGE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	5087b9b5c24c2ee0711fdcbfcc084f09a02e20326538e3863c39a69ae7ad6f9f
@@ -286,12 +289,22 @@ INPUT	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	1c50d2
 PAGE	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-with-a-parent-not-a-field.pdf	c7666592d5b6383149faf41b07e61c6c3912f801668f8b2dbc4ac660245d0137
 PAGE	tests/redaction/generated/nearmiss-annotation-with-a-parent-not-a-field.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-without-a-layer.pdf	06884c631be7579e3e00c4257badef6b7331148507da077bfe7bad011bfb0a15
+PAGE	tests/redaction/generated/nearmiss-annotation-without-a-layer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-appearance-state-without-a-layer.pdf	db586dd09784f48e864dd9d4e8f65434b3bd7a43fde14f7558e4324a77de4456
+PAGE	tests/redaction/generated/nearmiss-appearance-state-without-a-layer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-appearance-stream-without-a-layer.pdf	7756065cf17e53a57e3bc72acaf3e97a415d593bdd9c2e13a961533560a240b3
+PAGE	tests/redaction/generated/nearmiss-appearance-stream-without-a-layer.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	cd3e6f85b6006a0b06cf60dc5f7aa60d3f12c40227b6e0754f66a3c8ed2f6124
 PAGE	tests/redaction/generated/nearmiss-base-encoding-as-a-name.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	a5a4ff7bd767b6807034f2361a7d6cc14e63cbe8d3c76dad05742bf3d3230450
 PAGE	tests/redaction/generated/nearmiss-differences-codes-and-names.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	2844a59246b64171bf1fb06c6179012181c4e8fcc83215cee6d0648ea23814fd
 PAGE	tests/redaction/generated/nearmiss-extgstate-for-transparency.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-field-keys-without-a-field-type.pdf	ca0d078d5e95d13ffe87008cc866dbe0aaa4684eab65163b98f80a46717d47e7
+PAGE	tests/redaction/generated/nearmiss-field-keys-without-a-field-type.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-fields-the-catalogue-does-not-name.pdf	6f29041b9da24caffd8a34dbe6d07421135cf14c4ad85b39f69107dd8269c194
+PAGE	tests/redaction/generated/nearmiss-fields-the-catalogue-does-not-name.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	2047ef1f8df7d4c7c002631c4f857dce5057ded1d28164850c31cf75322faead
 PAGE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-form-subtype-as-a-name.pdf	2a804754bbea01e26bda5c1b4994e2cf11eeb1802aeaa1b4ccaded8032e4e734
@@ -302,10 +315,18 @@ INPUT	tests/redaction/generated/nearmiss-image-in-form-two-levels-down-outside-r
 PAGE	tests/redaction/generated/nearmiss-image-in-form-two-levels-down-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
 PAGE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-image-pattern-never-selected.pdf	d4720194959c5b3e428e981ab0773b795a94b146b60e4eea812fb15128bed56d
+PAGE	tests/redaction/generated/nearmiss-image-pattern-never-selected.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-image-without-a-layer.pdf	d97e9acf1216b9cd6c154f19e44606a273aa5597456e7f3cef7fe9c5757e9acc
+PAGE	tests/redaction/generated/nearmiss-image-without-a-layer.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-inline-image-unfiltered-outside-region.pdf	4ec406464ed26e85de1dff5caed96be2c1c07ec7898b4b154c58ae23d53fdf46
+PAGE	tests/redaction/generated/nearmiss-inline-image-unfiltered-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-kids-all-pages.pdf	dcfa34be68d22d33acf77dc27c991f6d37b2d87dd1f37b5909966cdb3b39b5a7
 PAGE	tests/redaction/generated/nearmiss-kids-all-pages.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-literal-null-threads.pdf	d50e7aa6e6ae1ac3b5e586e64e1bb2e7dd83d311cf0be682d1623fafe8140c32
 PAGE	tests/redaction/generated/nearmiss-literal-null-threads.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-marked-content-without-a-tree.pdf	e532ca7727cb847628d0dc5e278319e22539808e1c2e1bbc083f981e585d5e6a
+PAGE	tests/redaction/generated/nearmiss-marked-content-without-a-tree.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-mediabox-declared-over-the-tree.pdf	d0f30c328c517fbf97fb6a5b442ad2ad14c16dafdd29b2621078b3dd373d6f50
 PAGE	tests/redaction/generated/nearmiss-mediabox-declared-over-the-tree.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	d2d3a4895521dbc45715445b959f18ef99a5cfe54436a1ac6ba263df5f935235
@@ -329,8 +350,12 @@ INPUT	tests/redaction/generated/nearmiss-paths-in-form-outside-region.pdf	af57dc
 PAGE	tests/redaction/generated/nearmiss-paths-in-form-outside-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-paths-in-form-two-levels-down-outside-region.pdf	c7f83348acb1084013575523adadc8219f6ae6c8d35afb346f9374bdfb7b08da
 PAGE	tests/redaction/generated/nearmiss-paths-in-form-two-levels-down-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-paths-in-type3-glyph-clip-only.pdf	86ca3fbb1730b2354bbc6f7e79a4a17e194e3a8b859eec60ebe42c96cbcada0f
+PAGE	tests/redaction/generated/nearmiss-paths-in-type3-glyph-clip-only.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-paths-outside-region.pdf	b2134e96b63c8dc7af4b76dcc76bd99e4e1920a22fbb986edbd5ea6c58b8fbc7
 PAGE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-property-list-inside-an-unused-pattern.pdf	12a67063f8c12d68d73920f2c4a390882829790fc42cc6eba0de01ed36b40cdd
+PAGE	tests/redaction/generated/nearmiss-property-list-inside-an-unused-pattern.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-property-list-inside-an-unused-type3-font.pdf	b5338d62a7382ef5b5639482cb9ba379e3ffdf379c1aa8f507be5e654d09cd96
 PAGE	tests/redaction/generated/nearmiss-property-list-inside-an-unused-type3-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	8bc06a062102ccd520a6cfa35df901a0a4f6a0b74f8adfad1f3705a9e176aaa3
@@ -346,16 +371,28 @@ PAGE	tests/redaction/generated/nearmiss-shading-on-another-page.pdf	0	FRAME 400 
 PAGE	tests/redaction/generated/nearmiss-shading-on-another-page.pdf	1	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-shading-pattern-never-filled.pdf	d74b95c9e2f89b91e1e221ff273316a6adfbf2e28a3a249f6d59d540f7694044
 PAGE	tests/redaction/generated/nearmiss-shading-pattern-never-filled.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-span-over-an-untyped-dictionary.pdf	15ace6296700e287674a84b8527549c9a169f56841cf6a6d9ccb9fb40bad51af
+PAGE	tests/redaction/generated/nearmiss-span-over-an-untyped-dictionary.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-span-over-an-untyped-group.pdf	eba77b9364c103f4d60b4bc83381164cee63666dcd14ccf3406b526f013c9c51
+PAGE	tests/redaction/generated/nearmiss-span-over-an-untyped-group.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	ade3a89fd4049ec784e46f6ccb7058d5e4c2919522124d26872059c733e17357
 PAGE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
 PAGE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-structparents-without-a-tree.pdf	17c615a3afaa5d6a89b4ca41fb4527f3a6fb938bfce464e89edb376f540c4bd7
+PAGE	tests/redaction/generated/nearmiss-structparents-without-a-tree.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/nearmiss-structparents-without-a-tree.pdf	1	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	b4fdbf4c785b63abdad2b25958ef9c56a4527a180df651ae0458a8562e79b151
 PAGE	tests/redaction/generated/nearmiss-tiling-pattern-never-filled.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	e165355c611be327e06b6e3d2dd59f81e696dfb290974c583d33cc69065e3b8a
 PAGE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4
 PAGE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-widget-without-a-field-on-another-page.pdf	29f25afbe1cf7eaf13552ab191cde0742a8e209a302993b95a514b3f540900a6
+PAGE	tests/redaction/generated/nearmiss-widget-without-a-field-on-another-page.pdf	0	FRAME 400 200
+PAGE	tests/redaction/generated/nearmiss-widget-without-a-field-on-another-page.pdf	1	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-widget-without-a-field-type.pdf	6400db29a3465130c21fb8759ec04fd9ae26b7774f0151a6269353bfe67632f1
+PAGE	tests/redaction/generated/nearmiss-widget-without-a-field-type.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	ee1178a4afaf795c778d94533721277b02181a5a0735751952c60cbcfb3f62d1
 PAGE	tests/redaction/generated/nearmiss-widths-as-pdfium-reads-them.pdf	0	FRAME 400 200
 INPUT	tests/conformance/fixtures/blank-1page.pdf	bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0
