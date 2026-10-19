@@ -5661,7 +5661,7 @@ mod tests {
             Refusal::MarkedContentPropertyListMalformed => {
                 vec![(Entry("carried_text_edits"), || {
                     marked(
-                        b"/Span << /MCID 0 /ActualText 4 0 R >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                        b"/Span << /ActualText (x) /MCID >> BDC BT /F1 12 Tf (x) Tj ET EMC",
                         &NamedProperties::default(),
                     )
                 })]
@@ -7846,12 +7846,22 @@ mod tests {
         /// A key with no value is refused, not rebuilt into something the document did not have.
         ///
         /// Measured end to end before this: `/ActualText 4 0 R` (an indirect reference, three
-        /// items after `/MCID 0`) rebuilt as `<< /MCID 0 0 R >>`.
+        /// items after `/MCID 0`) rebuilt as `<< /MCID 0 0 R >>`. That shape, a number where a
+        /// key belongs, is now refused earlier, by the lexer's item rule (#254), so this rule's
+        /// own case is the odd count.
         #[test]
         fn an_odd_property_list_is_refused_rather_than_silently_repaired() {
             assert_refused_by(
-                b"/Span << /MCID 0 /ActualText 4 0 R >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                b"/Span << /ActualText (x) /MCID >> BDC BT /F1 12 Tf (x) Tj ET EMC",
                 super::Refusal::MarkedContentPropertyListMalformed,
+            );
+            let reference = super::super::super::ops::operations(
+                b"/Span << /MCID 0 /ActualText 4 0 R >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+            )
+            .expect_err("a reference in a property list refuses");
+            assert!(
+                format!("{reference:?}").contains("[content-operand-read-differently]"),
+                "{reference:?}"
             );
         }
 

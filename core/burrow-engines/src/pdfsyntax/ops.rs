@@ -84,7 +84,8 @@ pub enum Operand {
         /// Key and value alternating, flat — this module resolves no dictionary.
         items: Vec<Operand>,
     },
-    /// `true`, `false`, `null`, or any other bare word in operand position.
+    /// `true`, `false`, `null`, or a bare word the operand reader does not take as an operator
+    /// (an indirect reference's `R`, for one).
     ///
     /// A keyword only becomes an operand when a later token proves it was not the operator — it
     /// never happens in well-formed content, and refusing it would refuse documents that open.
@@ -345,6 +346,10 @@ fn read_composite(
     let mut items: Vec<Operand> = Vec::new();
     while let Some(token) = lexer.next_token()? {
         let span = lexer.span();
+        // THE ITEM RULE (#254), checked before the item is read. See `item_read_alike`.
+        if !item_read_alike(&token, bracket, depth, items.len()) {
+            return Err(read_differently());
+        }
         match token {
             Token::ArrayClose if bracket == Bracket::Array => {
                 return Ok(Operand::Array {
@@ -384,15 +389,60 @@ fn read_composite(
             Token::Number => push_item(&mut items, seen, number(content, span)?)?,
             Token::Str => push_item(&mut items, seen, Operand::Str { span })?,
             Token::Name(value) => push_item(&mut items, seen, Operand::Name { span, value })?,
-            // Inside brackets a bare word is `true`, `false`, `null` or a `R` reference's `R` --
-            // a VALUE, never an operator. This is the one place the positional rule needs the
-            // context, and it gets it from the bracket rather than from a list of words.
+            // Inside brackets a bare word is a VALUE, never an operator: the positional rule
+            // takes that from the bracket rather than from a list of words. Only `true`, `false`
+            // and `null` reach here; `item_read_alike` has refused any other (#254).
             Token::Keyword(value) => push_item(&mut items, seen, Operand::Keyword { span, value })?,
         }
     }
     Err(Error::Malformed(
         "pdf syntax: an array or dictionary that is never closed".to_owned(),
     ))
+}
+
+/// Whether the token about to be read as an array's or dictionary's next item is one every reader
+/// takes as that item (#254).
+///
+/// Bracket-matching took any token as an item, and readers do not: PDFium gives up partway
+/// through a dictionary at a key that is not a name, or at a bare word as a value other than
+/// `true`, `false` or `null` (an indirect reference's `R` included), and in an array whose
+/// parent is the operation at a `[` directly inside it, whose `]` then closes the outer array;
+/// and not every reader keeps a bare word inside brackets as a value. Where a reader stops, the
+/// words after it can be drawn as content while this reader carried them as one operand, and the
+/// rewriter's read-back re-lexes with this same reader, so it cannot see them. The content-stream
+/// twin of the inline-image rule in `lexer::skip_composite` (#228).
+///
+/// So, inside `<< >>` at any depth, a name at every key and a number, string, name, array,
+/// dictionary or `true`/`false`/`null` at every value; inside `[ ]` at any depth, a bare word
+/// only if it is one of those three; and no `[` directly inside an array that is itself an
+/// operand. A closing bracket is not an item and is judged by `read_composite`. Every token
+/// refused here is refused `[content-operand-read-differently]`.
+///
+/// **Over-refuses**: PDFium skips a bare word inside an array, and reads a nested array inside a
+/// dictionary as one value. The rule is set by the reader that disagrees, not by the one that
+/// happens to agree.
+fn item_read_alike(token: &Token, bracket: Bracket, depth: usize, read: usize) -> bool {
+    let plain_word = |word: &[u8]| matches!(word, b"true" | b"false" | b"null");
+    match (bracket, token) {
+        (_, Token::ArrayClose | Token::DictClose) => true,
+        // A KEY: a name and nothing else.
+        (Bracket::Dict, token) if read.is_multiple_of(2) => matches!(token, Token::Name(_)),
+        // A VALUE, or an array's item: a bare word only if it is a value to every reader.
+        (_, Token::Keyword(word)) => plain_word(word),
+        // AN ARRAY DIRECTLY INSIDE AN OPERAND'S ARRAY. PDFium reads a nested array only below a
+        // dictionary, so here its `[` ends nothing and its `]` closes the outer array.
+        (Bracket::Array, Token::ArrayOpen) => depth > 1,
+        _ => true,
+    }
+}
+
+/// The refusal [`item_read_alike`] answers with.
+fn read_differently() -> Error {
+    Error::Malformed(
+        "pdf syntax [content-operand-read-differently]: a content stream writes an array or \
+         dictionary operand that readers end in different places"
+            .to_owned(),
+    )
 }
 
 /// Push, refusing past [`MAX_OPERANDS`], [`MAX_TOTAL_OPERANDS`] or [`MAX_OPERAND_BYTES`]
@@ -786,11 +836,99 @@ mod tests {
 
     #[test]
     fn a_bare_word_longer_than_the_cap_is_refused_inside_a_composite() {
-        // THE KEYWORD ARM: a bare word inside an array is a `Keyword` operand, measured like the
-        // rest. 256 bytes is refused; 255 lexes.
+        // THE KEYWORD ARM: a bare word inside an array is refused at any length now, unless it is
+        // `true`, `false` or `null` (#254), so the length cap is no longer what refuses it there.
         let word = |n: usize| format!("[(A) {}] TJ", "a".repeat(n)).into_bytes();
-        assert!(operations(&word(super::MAX_OPERAND_BYTES + 1)).is_err());
-        assert_eq!(ops(&word(super::MAX_OPERAND_BYTES)).len(), 1);
+        for n in [super::MAX_OPERAND_BYTES, super::MAX_OPERAND_BYTES + 1] {
+            let refused = format!("{:?}", operations(&word(n)).expect_err("refuses"));
+            assert!(
+                refused.contains("[content-operand-read-differently]"),
+                "{refused}"
+            );
+        }
+    }
+
+    /// Whether `content` refuses by #254's rule.
+    fn read_differently(content: &[u8]) -> bool {
+        operations(content)
+            .is_err_and(|error| format!("{error:?}").contains("[content-operand-read-differently]"))
+    }
+
+    #[test]
+    fn a_dictionary_operand_holds_a_name_at_every_key() {
+        // A word, a number and a string where a key belongs, at the top and one level down.
+        for shape in [
+            &b"/Span << BT /F1 1 Tf (s) Tj ET >> BDC EMC"[..],
+            b"/Tag << 1 /K >> DP",
+            b"/Tag << (k) 1 >> DP",
+            b"/Tag << /A << 2 3 >> >> DP",
+            b"/Tag << /A [ << true 1 >> ] >> DP",
+        ] {
+            assert!(
+                read_differently(shape),
+                "{}",
+                String::from_utf8_lossy(shape)
+            );
+        }
+        // THE NEAR-MISS: names at every key, nested both ways.
+        let read = ops(b"/Tag << /A << /B 2 >> /C [ << /D 1 >> ] >> DP");
+        assert_eq!(read.len(), 1);
+    }
+
+    #[test]
+    fn a_dictionary_operand_holds_only_a_value_at_every_value() {
+        // A word that is not `true`/`false`/`null`, an operator, and a reference's `R`.
+        for shape in [
+            &b"/Tag << /K foo >> DP"[..],
+            b"/Tag << /K BT /F1 1 Tf (s) Tj ET >> DP",
+            b"/Tag << /K truex >> DP",
+            b"/Tag << /K 1 0 R >> DP",
+            b"/Tag << /A << /K Tj >> >> DP",
+        ] {
+            assert!(
+                read_differently(shape),
+                "{}",
+                String::from_utf8_lossy(shape)
+            );
+        }
+        // THE NEAR-MISS: every kind of value the rule admits.
+        let read = ops(
+            b"/Tag << /N 1 /R -2.5 /S (s) /H <00> /M /x /T true /F false /Z null /A [1] /D << >> >> DP",
+        );
+        assert_eq!(read.len(), 1);
+    }
+
+    #[test]
+    fn an_array_operand_holds_no_bare_word_but_a_value() {
+        for shape in [
+            &b"[ BT /F1 1 Tf (s) Tj ET ] 0 d"[..],
+            b"[ (A) foo ] TJ",
+            b"[ 1 0 R ] 0 d",
+            b"/Span << /K [ BT ET ] >> BDC EMC",
+        ] {
+            assert!(
+                read_differently(shape),
+                "{}",
+                String::from_utf8_lossy(shape)
+            );
+        }
+        // THE NEAR-MISS: `true`, `false` and `null` are values in an array too.
+        assert_eq!(ops(b"[ true false null 1 (a) /n ] 0 d").len(), 1);
+    }
+
+    #[test]
+    fn an_array_operand_holds_no_array_directly_inside_it() {
+        for shape in [&b"[ [ ] 1 ] 0 d"[..], b"[ (A) [ (B) ] ] TJ"] {
+            assert!(
+                read_differently(shape),
+                "{}",
+                String::from_utf8_lossy(shape)
+            );
+        }
+        // THE NEAR-MISS: an array inside a dictionary, at any depth, is read as one value, and so
+        // is an array inside a dictionary inside an operand's array.
+        assert_eq!(ops(b"/Tag << /K [ [ 1 ] [ ] ] >> DP").len(), 1);
+        assert_eq!(ops(b"[ << /K [ [ 1 ] ] >> ] 0 d").len(), 1);
     }
 
     #[test]

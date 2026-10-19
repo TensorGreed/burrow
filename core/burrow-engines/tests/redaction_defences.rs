@@ -370,20 +370,23 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
     let kept = "BT /F1 24 Tf 72 300 Td (KIN) Tj ET";
     // `\u{1}` stands for a byte the builder's `&str` cannot carry, swapped in after the build: the
     // same length, so every `/Length` and offset holds.
+    // The first two now refuse at the content stream's own operand rule (#254), which reads the
+    // image's keys as operands of `ID` before the image's rule reads them again; the lexer's
+    // tests hold `[inline-image-nested-value]` to these shapes directly.
     let cases: [(&str, String, Option<&str>); 8] = [
         (
             "a nested value",
             format!(
                 "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /D [[1 0]] /CS /G /BPC 8 ID {payload} EI Q {kept}"
             ),
-            Some("[inline-image-nested-value]"),
+            Some("[content-operand-read-differently]"),
         ),
         (
             "an unknown word as a value inside << >>, ahead of the size keys (third reviews)",
             format!(
                 "q 10 0 0 10 200 50 cm BI /DP << /K foo >> /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
             ),
-            Some("[inline-image-nested-value]"),
+            Some("[content-operand-read-differently]"),
         ),
         (
             "a key with no value before ID",
@@ -486,6 +489,70 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
         redact(&honest).is_ok(),
         "an honest inline image is redacted, not refused"
     );
+}
+
+#[test]
+fn a_content_operand_readers_end_in_different_places_refuses_by_name() {
+    // #254: an array or dictionary operand holding a token that not every reader takes as one of
+    // its items. Bracket-matching carried the text inside as part of one operand, so the walk
+    // never placed it, while a reader that stopped there drew it. Each must refuse by name. This
+    // test pins the refusal's name on one input per shape; which clause of the rule fires is
+    // witnessed by the lib tests, not here.
+    let secret = "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET";
+    let kept = "BT /F1 24 Tf 72 300 Td (KIN) Tj ET";
+    let shapes = [
+        (
+            "a word where a key belongs",
+            format!("/Span << {secret} >> BDC EMC {kept}"),
+        ),
+        (
+            "a word as a value",
+            format!("/Tag << /K {secret} >> DP {kept}"),
+        ),
+        (
+            "an unknown word as a value",
+            format!("/Tag << /K foo {secret} >> DP {kept}"),
+        ),
+        (
+            "a reference as a value",
+            format!("/Tag << /K 1 0 R {secret} >> DP {kept}"),
+        ),
+        (
+            "a number where a key belongs (refusal name only; the key clause is witnessed by the lib tests)",
+            format!("/Tag << 1 {secret} >> DP {kept}"),
+        ),
+        ("a word in an array", format!("[ {secret} ] 0 d {kept}")),
+        (
+            "an array directly inside an operand's array (refusal name only; the nested-array clause is witnessed by the lib tests)",
+            format!("[ [ ] {secret} ] 0 d {kept}"),
+        ),
+        (
+            "a word in an array inside a dictionary",
+            format!("/Span << /K [ [ ] {secret} ] >> BDC EMC {kept}"),
+        ),
+    ];
+    for (why, content) in shapes {
+        let pdf = page_with_content(&content);
+        assert_present(&pdf, b"SECRET", why);
+        assert!(
+            refusal(&pdf, why).contains("[content-operand-read-differently]"),
+            "{why}: refused, but not by #254's rule"
+        );
+    }
+    // THE NEAR-MISSES: the same operands holding only values every reader reads as one, with the
+    // text outside them. Redacted, and the text in the region gone.
+    for (why, content) in [
+        (
+            "a property list of values",
+            format!("/Span << /K 1 /A [ [ 1 ] ] /T true >> BDC {secret} EMC {kept}"),
+        ),
+        ("an array of values", format!("[ 1 2 ] 0 d {secret} {kept}")),
+    ] {
+        let pdf = page_with_content(&content);
+        let (out, _) = redact(&pdf).unwrap_or_else(|error| panic!("{why}: refused: {error:?}"));
+        assert_absent(&out, b"SECRET", why);
+        assert_present(&out, b"KIN", why);
+    }
 }
 
 // ---------------------------------------------------------------------------------------
