@@ -6910,9 +6910,9 @@ mod tests {
 
     #[test]
     fn a_literal_string_with_an_escape_or_a_nested_parenthesis_is_refused() {
-        // CMAP READERS DO NOT ALL END A STRING WHERE THIS LEXER DOES (#255): one ignores `\`,
-        // another does not count nesting. So a string carrying either refuses, whatever follows
-        // it -- a `usecmap` hidden the same way carries no `WMode` for the byte count to see.
+        // CMAP READERS DO NOT ALL END A STRING WHERE THIS LEXER DOES (#255) once it carries an
+        // escape or nesting. So a string carrying either refuses, whatever follows it -- a
+        // `usecmap` hidden the same way carries no `WMode` for the byte count to see.
         for program in [
             b"(\\) /WMode 1 def %)\n/CMapName /Plain-H def".as_slice(),
             b"((a) /WMode 1 def)\n/CMapName /Plain-H def".as_slice(),

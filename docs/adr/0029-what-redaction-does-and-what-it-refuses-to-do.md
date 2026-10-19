@@ -5409,3 +5409,26 @@ box. The verification re-walks with the same reader and inherits the rule.
   glyphs cut by identity, and that is pinned.
 - The oracle's P3 floor was re-derived as the larger of PDFium's loose box and the envelope:
   against the loose box alone, 145 of 238 real glyphs fail a box that is what the rule asks for.
+
+## Amendment, 2026-10-19 — a CMap program other readers could read differently refuses
+
+**A new refusal (#255).** The writing-mode check reads an embedded CMap program with the content
+lexer, which honours `\` escapes and counts nesting in literal strings, and passes over a `WMode`
+written inside a string or a comment. CMap readers do not all agree with it on those points, so a
+program that depends on them can be horizontal to burrow and vertical to a reader. Two rules, each
+`[writing-mode-undetermined]`:
+
+- a program whose bytes spell `WMode` a different number of times than the token scan read a
+  `WMode` declaration -- in a string, in a comment, inside a longer name, or spelled with a `#`
+  escape;
+- a program with a literal string carrying `\` or a nested `(`, whatever follows it, since a
+  `usecmap` can be hidden the same way with no `WMode` in the bytes.
+
+A `WMode` in a comment or a string was previously read as no declaration, and pinned so by a test;
+that test now pins the refusal.
+
+**Cost, measured** against `main` (fce3438): **0 of 4,825** census tiles and **0 of 317** inputs at
+open (the 100 real documents and the committed fixtures) change outcome. None of the 100 real
+documents carries an embedded encoding CMap, so the census does not exercise either rule on one; none
+of their 1,125 CMap streams (`/ToUnicode` included) has a literal string with `\` or a nested `(`,
+or a `WMode` outside a declaration.
