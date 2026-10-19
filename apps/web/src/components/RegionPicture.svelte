@@ -44,11 +44,10 @@
   interface Props {
     /**
      * The chosen document, or `null` when none is chosen (`RedactTool.svelte` mounts this only once
-     * one is). A re-fed result is passed too, and is not drawn: `result` says which it is.
+     * one is). A re-fed result is an ordinary input here and is drawn like any other (D9, owner
+     * 2026-10-19).
      */
     file: File | null;
-    /** True when the chosen file is a re-fed result, which gets no picture (D9). */
-    result: boolean;
     /** The page, 1-based, or `null` when the box names none. */
     page: number | null;
     /** That page's display frame from `page_frames`, or `null` when a frame rule refused it. */
@@ -61,7 +60,7 @@
     onselect: (fields: Fields) => void;
   }
 
-  const { file, result, page, frame, paused, fields, onselect }: Props = $props();
+  const { file, page, frame, paused, fields, onselect }: Props = $props();
 
   type Status = "idle" | "drawing" | "drawn" | "mismatch" | "failed" | "unavailable";
   let status = $state<Status>("idle");
@@ -109,7 +108,7 @@
   // WHAT TO DRAW. A different file ends the worker (one document per worker); a different page
   // of the same file only invalidates what is in flight, and is drawn on the same worker.
   $effect(() => {
-    const chosen = result ? null : file;
+    const chosen = file;
     const wanted = page;
     const shape = frame;
     // THE SAME DOCUMENT AND PAGE IS NOT ASKED FOR AGAIN, whatever became of it: a page that
@@ -324,9 +323,7 @@
 <svelte:window bind:innerHeight={viewportHeight} />
 
 <div class="picture" bind:clientWidth={space} data-testid="redact-picture" data-state={status}>
-  {#if result}
-    <p class="picture__note">{PICTURE_COPY.result}</p>
-  {:else if (status === "drawn" || status === "drawing") && shown}
+  {#if (status === "drawn" || status === "drawing") && shown}
     <p class="picture__note" id="picture-hint">{PICTURE_COPY.hint}</p>
     <div
       class="picture__surface"

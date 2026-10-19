@@ -5426,7 +5426,9 @@ one place the number lives.
 - **The selection picture is still not a preview, and the page says so beside it.** The spike's
   measurement above is the reason it cannot be one: with `FPDF_ANNOT` a FreeText annotation drew
   its secret, so a picture that draws annotations shows what is on the page *before* a run, never
-  what a run leaves. S4 draws no picture of a result (D9).
+  what a run leaves. A re-fed result is an ordinary input (D9, owner, 2026-10-19): its picture is
+  drawn as any chosen file's is, of the page as it stands before the next run, and nothing on the
+  page may imply that the earlier redaction was verified.
 - **What `FPDF_ANNOT` leaves out, and what it adds.** It draws no form widget (burrow creates no
   form-fill environment) and nothing hidden by its `/F` flags. It also generates an appearance for
   some annotations that have none, and a generated appearance is not held to the annotation's

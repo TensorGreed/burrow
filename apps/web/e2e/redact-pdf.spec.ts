@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
 import { CATEGORIES } from "../src/components/redact-messages";
+import { PICTURE_COPY } from "../src/components/region-picture";
+import { FORBIDDEN_CLAIMS } from "../src/redact-copy";
 import { isBrowserPolicyReport } from "./console-noise";
 import { between, isRedactionArtifact, mark, since } from "./request-log";
 
@@ -740,17 +742,29 @@ test("the render worker is gone before a run and does not come back for it (S4, 
   await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "drawn");
 });
 
-test("a re-fed result gets no picture (S4, D9)", async ({ page }) => {
+test("a re-fed result gets its picture like any input, and nothing says the earlier run was verified (S4, D9)", async ({
+  page,
+}) => {
+  // D9 (owner, 2026-10-19): a re-fed result is an ordinary input. If it is accepted its selection
+  // picture shows, drawn afresh by a render worker -- the one before the run was ended for it.
   await open(page, TWO_LINES, generated);
   await drawnPicture(page);
   await area(page, ...FIRST_LINE);
   await page.getByTestId("redact-run").click();
   await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  await expect.poll(() => renderWorkers(page), { timeout: 10_000 }).toBe(0);
   await page.getByTestId("redact-another").click();
   await expect(page.getByTestId("redact-frame")).toBeVisible({ timeout: 45_000 });
-  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "idle");
-  await expect(page.getByTestId("redact-picture")).toContainText("no picture of a result");
-  await expect(page.getByTestId("redact-picture-canvas")).toHaveCount(0);
+  const box = await drawnPicture(page);
+  expect(box.width, "the re-fed result's picture has no width").toBeGreaterThan(0);
+  expect(await renderWorkers(page), "no render worker drew the re-fed result").toBeGreaterThan(0);
+  // The same surface any input gets: the hint and the not-a-preview sentence.
+  await expect(page.getByTestId("redact-picture")).toContainText(PICTURE_COPY.notPreview);
+  // NO TEXT IMPLIES THE EARLIER REDACTION WAS VERIFIED, read off the page as it stands.
+  const shown = await page.locator("main").innerText();
+  const rule = FORBIDDEN_CLAIMS.find(({ name }) => name === "the earlier redaction was verified");
+  expect(rule, "the D9 rule is missing from FORBIDDEN_CLAIMS").toBeDefined();
+  expect(shown, "the page implies the earlier redaction was verified").not.toMatch(rule!.pattern);
 });
 
 test("at 390 px wide the page and its picture fit, with no sideways scroll (S4)", async ({

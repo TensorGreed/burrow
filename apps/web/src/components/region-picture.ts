@@ -337,9 +337,6 @@ export const PICTURE_COPY = {
     "the area in points instead.",
   failed: "This page could not be drawn. Type the area in points instead.",
   unavailable: "Page pictures have stopped. Type the area in points instead.",
-  // D9 (owner, 2026-10-14): no after-picture of the result. A re-fed result is a result, so it
-  // gets no picture, until the owner reads D9 otherwise.
-  result: "There is no picture of a result. Type the next area in points.",
 } as const;
 
 /**

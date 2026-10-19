@@ -360,6 +360,14 @@ describe("the picture lets go of its pixels zeroed (#136, S4; #199, D4; round 1,
     expect(component).toMatch(/if \(paused && !destroyed\) \{/);
   });
 
+  it("draws a re-fed result like any input: no special case, and no words for one (D9, owner 2026-10-19)", () => {
+    expect(component).toMatch(/const chosen = file;/);
+    expect(component, "a prop that tells a result from any other input").not.toMatch(
+      /\bresult\b(?!s)/,
+    );
+    expect(Object.keys(PICTURE_COPY)).not.toContain("result");
+  });
+
   it("draws the outline with the border outlineSmallerThanBorder assumes", () => {
     expect(component).toMatch(
       new RegExp(`\\.picture__outline \\{[^}]*border: ${OUTLINE_BORDER_CSS_PX}px solid`),

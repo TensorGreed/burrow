@@ -460,7 +460,6 @@
   {#if file}
     <RegionPicture
       {file}
-      result={reFed}
       {page}
       frame={frame && !frame.refused ? frame : null}
       paused={phase === "working"}
