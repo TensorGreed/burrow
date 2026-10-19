@@ -114,6 +114,9 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         if let Some(error) = crate::redact::hooks::forced_read_back_failure() {
             return Err(error);
         }
+        // R10: WHAT THE WALK OPENS, recorded so a test can hold it to the returned bytes.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(crate::redact::hooks::Opened::Walk, bytes);
         let options = crate::OpenOptions::new(self.limits, Arc::clone(&self.clock));
         // THE OPEN'S OWN DEADLINE IS A FRESHLY STARTED ONE and it is discarded;
         // `input_rotations` does the same for the same reason. See `Witness::deadline`.

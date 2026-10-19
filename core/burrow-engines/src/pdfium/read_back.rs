@@ -81,6 +81,9 @@ impl SecondReading for PdfiumReading<'_> {
         }
         #[cfg(test)]
         crate::redact::hooks::second_reading_begins();
+        // R10: WHAT EACH READING OPENS, by method. See `hooks::record_open`.
+        #[cfg(test)]
+        crate::redact::hooks::record_open(crate::redact::hooks::Opened::PageCount, bytes);
         let document = self.open(bytes)?;
         page_count_of(&document).map(Some)
     }
@@ -90,6 +93,8 @@ impl SecondReading for PdfiumReading<'_> {
         if let Some(error) = crate::redact::hooks::forced_second_reading_failure() {
             return Err(error);
         }
+        #[cfg(test)]
+        crate::redact::hooks::record_open(crate::redact::hooks::Opened::ReadPage, bytes);
         let document = self.open(bytes)?;
         let pages = page_count_of(&document)?;
         // A HOOK THAT READS ANOTHER PAGE, for the one question no document asks: is a reading of
