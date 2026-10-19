@@ -1226,8 +1226,10 @@ pub fn writing_mode_for(encoding: &Encoding, bytes_per_code: u8) -> Result<Writi
 /// # Errors
 ///
 /// [`Refusal::UndeterminedWritingMode`] when the mode cannot be derived — a predefined name
-/// outside the registry's `-H`/`-V` convention, a `usecmap` of such a name, or a stream
-/// dictionary and program that disagree. Vertical writing is refused later, by
+/// outside the registry's `-H`/`-V` convention, a `usecmap` of such a name, a stream
+/// dictionary and program that disagree, or a program other CMap readers could read
+/// differently: `WMode` written where no declaration was read, or a literal string carrying
+/// `\` or a nested `(` (#255). Vertical writing is refused later, by
 /// [`check_writing_mode`], so that the two questions stay separate: *what does the file say* and
 /// *what will burrow do about it*.
 pub fn writing_mode_of(cmap: &CMap<'_>) -> Result<WritingMode> {
@@ -1287,6 +1289,8 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
     let mut wanted_number = false;
     let mut declared: Option<WritingMode> = None;
     let mut inherited: Option<WritingMode> = None;
+    // How many `WMode` names the token scan read, for the byte count after the loop (#255).
+    let mut declarations_read = 0_usize;
 
     while let Some(token) = lexer.next_token()? {
         let span = lexer.span();
@@ -1325,8 +1329,27 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
             super::lexer::Token::Name(name) => {
                 if name == b"WMode" {
                     wanted_number = true;
+                    declarations_read = declarations_read.saturating_add(1);
                 }
                 previous_name = Some(name);
+            }
+            // A LITERAL STRING CARRYING `\` OR A NESTED `(` refuses (#255). This lexer honours
+            // escapes and counts nesting, as the specification says; CMap readers do not all do
+            // both, so such a string ends in different places for different readers, and what
+            // one reader reads as the string's tail another reads as declarations. None of the
+            // 1,125 CMap streams in the census's 100 real documents carries either (2026-10-19).
+            super::lexer::Token::Str => {
+                let written = program.get(span.0..span.1).unwrap_or_default();
+                if let Some((b'(', rest)) = written.split_first() {
+                    let inside = rest.strip_suffix(b")").unwrap_or(rest);
+                    if inside.iter().any(|byte| matches!(byte, b'\\' | b'(')) {
+                        return Refusal::UndeterminedWritingMode.refuse(
+                            "a CMap program with a literal string carrying '\\' or a nested \
+                             '(', which CMap readers end in different places",
+                        );
+                    }
+                }
+                previous_name = None;
             }
             // `/UniJIS-UCS2-V usecmap` INHERITS A VERTICAL MODE WITHOUT DECLARING ONE. An
             // embedded CMap that does this and states no `/WMode` of its own is vertical, and a
@@ -1362,6 +1385,20 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
     if wanted_number {
         return Refusal::UndeterminedWritingMode
             .refuse("a 'WMode' at the end of a CMap program, with no value after it");
+    }
+    // `WMode` WRITTEN ANYWHERE THE TOKEN SCAN DID NOT READ A DECLARATION refuses (#255): in a
+    // string, in a comment, inside a longer name, or a declaration spelled with `#` escapes.
+    // Each is a place where a CMap reader that tokenises differently from this one could find a
+    // writing mode this scan passed over. A program that declares `WMode` plainly has exactly
+    // as many in its bytes as the scan read.
+    let written = program
+        .windows(b"WMode".len())
+        .filter(|window| *window == b"WMode")
+        .count();
+    if written != declarations_read {
+        return Refusal::UndeterminedWritingMode.refuse(
+            "a CMap program whose bytes spell 'WMode' where its tokens declare no writing mode",
+        );
     }
     match (declared, inherited) {
         (Some(a), Some(b)) if a != b => Refusal::UndeterminedWritingMode
@@ -5606,6 +5643,14 @@ mod tests {
                 (Content, || {
                     walk_cmap(None, b"/CMapName /Plain-H def BI /W 1 /H 1 /BPC 8 /CS /G")
                 }),
+                // A literal string carrying a nested `(` (#255).
+                (Content, || {
+                    walk_cmap(None, b"((a) /WMode 1 def) /CMapName /Plain-H def")
+                }),
+                // `WMode` in a comment, where no declaration was read (#255).
+                (Content, || {
+                    walk_cmap(None, b"% /WMode 1 def\n/CMapName /Plain-H def")
+                }),
             ],
             Refusal::MarkedContentPropertiesUnresolved => {
                 vec![(Entry("carried_text_edits"), || {
@@ -6808,25 +6853,99 @@ mod tests {
     }
 
     #[test]
-    fn a_wmode_inside_a_string_or_a_comment_is_not_a_declaration() {
-        // TOKENISED, NOT SCANNED. A byte search for "/WMode 1" matches both of these, and
-        // refusing an ordinary document because a comment mentions the key is a check that
-        // cannot be left on.
+    fn a_wmode_written_anywhere_but_a_declaration_is_refused() {
+        // TOKENISED, AND THEN COUNTED (#255). A `WMode` in a comment or a string is not a
+        // declaration to this lexer, and this test used to pin that as a derivation: both of
+        // these were horizontal. That reading is the lexer's, and a CMap reader that tokenises
+        // differently can find a declaration there. Each now refuses, at a measured cost of 0 of
+        // the census's 100 real documents; the twin is the same program with the mention
+        // removed, and a plain declaration still derives.
         for program in [
-            b"% /WMode 1 def
-/CMapName /Plain-H def"
-                .as_slice(),
+            b"% /WMode 1 def\n/CMapName /Plain-H def".as_slice(),
             b"(/WMode 1 def) pop /CMapName /Plain-H def".as_slice(),
+            // Inside a longer name, and a declaration spelled with a `#` escape.
+            b"/CMapName /Plain-H def /WModeX 1 def".as_slice(),
+            b"/CMapName /Plain-H def /W#4dode 1 def".as_slice(),
+            // A second mention beside a declaration the scan did read.
+            b"/WMode 0 def % /WMode 1 def".as_slice(),
         ] {
-            let cmap = CMap::Embedded {
-                dictionary_wmode: None,
-                program,
-            };
+            assert_refused_mode(
+                writing_mode_of(&CMap::Embedded {
+                    dictionary_wmode: None,
+                    program,
+                }),
+                Refusal::UndeterminedWritingMode,
+            );
+        }
+        for (twin, mode) in [
+            (
+                b"/CMapName /Plain-H def".as_slice(),
+                WritingMode::Horizontal,
+            ),
+            (
+                b"% a comment\n/CMapName /Plain-H def".as_slice(),
+                WritingMode::Horizontal,
+            ),
+            (
+                b"/WMode 0 def /CMapName /Plain-H def".as_slice(),
+                WritingMode::Horizontal,
+            ),
+            (
+                b"/WMode 1 def /CMapName /Plain-V def".as_slice(),
+                WritingMode::Vertical,
+            ),
+        ] {
             assert_eq!(
-                writing_mode_of(&cmap).expect("derives"),
+                writing_mode_of(&CMap::Embedded {
+                    dictionary_wmode: None,
+                    program: twin,
+                })
+                .expect("derives"),
+                mode,
+                "{}",
+                String::from_utf8_lossy(twin)
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_string_with_an_escape_or_a_nested_parenthesis_is_refused() {
+        // CMAP READERS DO NOT ALL END A STRING WHERE THIS LEXER DOES (#255) once it carries an
+        // escape or nesting. So a string carrying either refuses, whatever follows it -- a
+        // `usecmap` hidden the same way carries no `WMode` for the byte count to see.
+        for program in [
+            b"(\\) /WMode 1 def %)\n/CMapName /Plain-H def".as_slice(),
+            b"((a) /WMode 1 def)\n/CMapName /Plain-H def".as_slice(),
+            b"(\\) /UniJIS-UCS2-V usecmap %)\n/CMapName /Plain-H def".as_slice(),
+            b"((a) /UniJIS-UCS2-V usecmap)\n/CMapName /Plain-H def".as_slice(),
+            b"/Registry (Ad\\157be) def".as_slice(),
+            b"/Registry (A(d)obe) def".as_slice(),
+        ] {
+            assert_refused_mode(
+                writing_mode_of(&CMap::Embedded {
+                    dictionary_wmode: None,
+                    program,
+                }),
+                Refusal::UndeterminedWritingMode,
+            );
+        }
+        // THE TWINS: plain literal strings, as a CIDSystemInfo carries, an empty one, and a hex
+        // string, which this rule does not read.
+        for twin in [
+            b"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def"
+                .as_slice(),
+            b"/Registry () def /CMapName /Plain-H def".as_slice(),
+            b"/Registry <4164> def (a) pop".as_slice(),
+        ] {
+            assert_eq!(
+                writing_mode_of(&CMap::Embedded {
+                    dictionary_wmode: None,
+                    program: twin,
+                })
+                .expect("derives"),
                 WritingMode::Horizontal,
                 "{}",
-                String::from_utf8_lossy(program)
+                String::from_utf8_lossy(twin)
             );
         }
     }
