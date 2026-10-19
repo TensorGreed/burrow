@@ -3698,6 +3698,41 @@ def evade_annotation_subtype_as_a_string() -> bytes:
     )
 
 
+def _note_without_appearance(tag: str, rect: bytes, contents: bytes) -> bytes:
+    """The canary page with one `/Text` note at `rect` and NO `/AP`, so PDFium builds its
+    appearance: a stock 20 x 20 point icon at the `/Rect`'s first corner, whatever the `/Rect`'s
+    size."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Text /Rect " + rect + b" /F 4 /Contents " + contents + b" >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run(tag) + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+    )
+
+
+def evade_annotation_note_icon_outside_rect() -> bytes:
+    """A note with no appearance and a half-point `/Rect` just left of the region (and of the
+    engine tests' band): PDFium draws its 20-point icon from the `/Rect`'s corner rightwards into
+    both, which the `/Rect` meets neither of. Measured on main: kept, `Ok`, the note's `/Contents`
+    in the output. Refused [annotation-in-region] by the icon's extent."""
+    return _note_without_appearance(
+        "NOTE-ICON", b"[25 100 25.5 100.5]", literal(secret("NOTE-ICON")),
+    )
+
+
+def nearmiss_annotation_note_icon_clear_of_region() -> bytes:
+    """The same note further left, so neither its `/Rect` nor its icon reaches the region. MUST
+    redact."""
+    return _note_without_appearance(
+        "NOTE-ICON-CLEAR", b"[5 100 5.5 100.5]", literal("an ordinary note, clear of the region"),
+    )
+
+
 # Over pdfbuild.REGION ((30, 88)-(370, 132)), and in the margin clear of it.
 OVER_REGION = b"/Rect [40 95 200 125]"
 IN_MARGIN = b"/Rect [300 10 390 30]"
@@ -3979,6 +4014,8 @@ CASES: list[tuple[str, str]] = [
     ("evade-annotation-quads-outside-rect", "annotation appearance"),
     ("nearmiss-annotation-quads-inside-rect", "annotation appearance"),
     ("evade-annotation-subtype-as-a-string", "annotation appearance"),
+    ("evade-annotation-note-icon-outside-rect", "annotation appearance"),
+    ("nearmiss-annotation-note-icon-clear-of-region", "annotation appearance"),
     ("evade-annotation-popup-of-a-removed-parent", "annotation dependents"),
     ("evade-annotation-reply-to-a-removed-annotation", "annotation dependents"),
     ("evade-annotation-named-from-the-catalogue", "annotation dependents"),
@@ -4113,6 +4150,8 @@ BUILDERS = {
     "evade-annotation-quads-outside-rect": evade_annotation_quads_outside_rect,
     "nearmiss-annotation-quads-inside-rect": nearmiss_annotation_quads_inside_rect,
     "evade-annotation-subtype-as-a-string": evade_annotation_subtype_as_a_string,
+    "evade-annotation-note-icon-outside-rect": evade_annotation_note_icon_outside_rect,
+    "nearmiss-annotation-note-icon-clear-of-region": nearmiss_annotation_note_icon_clear_of_region,
     "evade-annotation-popup-of-a-removed-parent": evade_annotation_popup_of_a_removed_parent,
     "evade-annotation-reply-to-a-removed-annotation": evade_annotation_reply_to_a_removed_annotation,
     "evade-annotation-named-from-the-catalogue": evade_annotation_named_from_the_catalogue,

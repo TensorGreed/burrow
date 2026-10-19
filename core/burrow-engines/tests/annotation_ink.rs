@@ -291,3 +291,122 @@ fn a_highlight_with_no_appearance_is_drawn_at_its_quadrilaterals_and_refused() {
     assert_eq!(inside, 0);
     assert!(total > 1_000, "the kept highlight is still drawn");
 }
+
+#[test]
+fn a_note_without_an_appearance_draws_its_icon_outside_its_rect_and_is_refused() {
+    // PDFium BUILDS A NOTE'S MISSING APPEARANCE as a 20-point icon at the `/Rect`'s first corner,
+    // whatever the `/Rect`'s size. Here a half-point `/Rect` below the band: the icon rises into it,
+    // and the `/Rect` does not meet it. Kept, `Ok`, before the icon's extent was measured.
+    let note = "/Subtype /Text /Rect [20 320 20.5 320.5] /Contents (NOTEINK)";
+    let over = page_with_objects("", note, "", &[]);
+    let (inside, _) = dark_pixels_with_annotations(&over, 0, BAND);
+    assert!(
+        inside > 50,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&over, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+
+    // THE TWIN: the same note lower down, so the icon ends below the band.
+    let clear = page_with_objects(
+        "",
+        "/Subtype /Text /Rect [20 300 20.5 300.5] /Contents (NOTEINK)",
+        "",
+        &[],
+    );
+    assert_eq!(dark_pixels_with_annotations(&clear, 0, BAND).0, 0);
+    let output = redact(&clear, BAND).expect("a note clear of the region redacts");
+    let (inside, total) = dark_pixels_with_annotations(&output, 0, BAND);
+    assert_eq!(inside, 0);
+    assert!(total > 50, "the kept note is still drawn");
+}
+
+#[test]
+fn a_note_written_backwards_draws_its_icon_at_its_first_corner_and_is_refused() {
+    // THE FIRST CORNER AS WRITTEN, not the normalised lower-left: `[60 325 20 300]` normalises to
+    // 20..60 x 300..325, clear of the band, and PDFium draws the icon at 60..80 x 325..345, in it.
+    let backwards = page_with_objects("", "/Subtype /Text /Rect [60 325 20 300]", "", &[]);
+    let (inside, _) = dark_pixels_with_annotations(&backwards, 0, BAND);
+    assert!(
+        inside > 50,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&backwards, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+}
+
+#[test]
+fn a_note_with_its_own_appearance_is_measured_by_its_rect() {
+    // NOT OVER-REFUSED where PDFium builds nothing: a note with a normal appearance stream is drawn
+    // fitted to its `/Rect`, so a region over where an icon would be, and not the `/Rect`, redacts.
+    let block = appearance("/BBox [0 0 10 10]", "0 g 0 0 10 10 re f");
+    let drawn = page_with("", "/Subtype /Text /Rect [20 320 20.5 320.5]", &block);
+    assert_eq!(dark_pixels_with_annotations(&drawn, 0, BAND).0, 0);
+    let output = redact(&drawn, BAND).expect("a note with its own appearance redacts");
+    assert_eq!(dark_pixels_with_annotations(&output, 0, BAND).0, 0);
+}
+
+#[test]
+fn a_note_named_by_a_string_is_still_a_note() {
+    // PDFium reads `/Subtype` as a byte string, so `(Text)` builds the icon as `/Text` does.
+    let string = page_with_objects("", "/Subtype (Text) /Rect [20 320 20.5 320.5]", "", &[]);
+    let (inside, _) = dark_pixels_with_annotations(&string, 0, BAND);
+    assert!(
+        inside > 50,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&string, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+}
+
+#[test]
+fn ink_without_an_appearance_draws_past_its_rect_by_half_its_width_and_is_refused() {
+    // PDFium BUILDS AN INK ANNOTATION'S MISSING APPEARANCE with its `/Rect` widened by half the
+    // border width, and strokes to there: a width of 30 on a `/Rect` ending at 320 draws to 335,
+    // five points into the band.
+    let wide = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS << /W 30 >> \
+         /InkList [[20 320 120 320]]",
+        "",
+        &[],
+    );
+    let (inside, _) = dark_pixels_with_annotations(&wide, 0, BAND);
+    assert!(
+        inside > 100,
+        "the fixture must draw into the region: {inside} dark pixels"
+    );
+    let refused = redact(&wide, BAND).expect_err("refused");
+    assert!(refused.contains("[annotation-in-region]"), "{refused}");
+
+    // THE TWIN: a width of 10 reaches 325, below the band.
+    let narrow = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 300 120 320] /C [0 0 0] /BS << /W 10 >> \
+         /InkList [[20 320 120 320]]",
+        "",
+        &[],
+    );
+    assert_eq!(dark_pixels_with_annotations(&narrow, 0, BAND).0, 0);
+    let output = redact(&narrow, BAND).expect("ink clear of the region redacts");
+    let (inside, total) = dark_pixels_with_annotations(&output, 0, BAND);
+    assert_eq!(inside, 0);
+    assert!(total > 100, "the kept ink is still drawn");
+}
+
+#[test]
+fn ink_whose_border_width_no_reader_agrees_on_is_refused() {
+    // WHERE THE WIDTH CANNOT BE READ, neither can the extent: refused whatever the region.
+    let unreadable = page_with_objects(
+        "",
+        "/Subtype /Ink /Rect [20 50 120 70] /C [0 0 0] /BS << /W 99999999999 >> \
+         /InkList [[20 60 120 60]]",
+        "",
+        &[],
+    );
+    let refused = redact(&unreadable, BAND).expect_err("refused");
+    assert!(
+        refused.contains("[annotation-appearance-unbounded]"),
+        "{refused}"
+    );
+}

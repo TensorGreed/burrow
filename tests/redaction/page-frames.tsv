@@ -104,6 +104,8 @@ INPUT	tests/redaction/generated/evade-annotation-no-rotate-on-a-turned-page.pdf	
 PAGE	tests/redaction/generated/evade-annotation-no-rotate-on-a-turned-page.pdf	0	FRAME 200 400
 INPUT	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	81cc34eb94715d709dbc8186b4a05f7d0bc2adbd3ebf323b22c514b47dac3729
 PAGE	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	0	RULE page-attribute-inherited
+INPUT	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	4f3e9fca76bc05d1119fb3d57ac1ece41cf99a32aa4df53c368c06d40bfc546e
+PAGE	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	1c4b6eb36089b2ce3802bd49209ff98f0025c238a3a66ebf9c5c8129bfe695f4
 PAGE	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-quads-outside-rect.pdf	fa53e90c337659822bd18a3297cc3f85d7968cf9cdf2cccf8b3a91f974579138
@@ -283,6 +285,8 @@ INPUT	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page
 PAGE	tests/redaction/generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	239cd36ad6051d83700e69c6294efa7a26233696211f115fccec5e0249ef1a25
 PAGE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-note-icon-clear-of-region.pdf	48bd694c7f0ff290ad5335921716f51437fa26f3487b2f02230cbbbbd9e6af16
+PAGE	tests/redaction/generated/nearmiss-annotation-note-icon-clear-of-region.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	c55fb6d7a5a0da1da82c2f7cdb0e5aca0ef70cd4f3c75ffc818aaac581459ac8
 PAGE	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	1c50d2aa72c090e0cf3acc05b544bb3b12c863a903cabfc821ccd7438dea2b7c

@@ -1374,10 +1374,14 @@ fn remove_annotations_in<O: PdfObject>(
                 ));
             }
         };
+        // WHERE PDFIUM DRAWS ONE IT BUILDS AN APPEARANCE FOR, which is not always inside the
+        // `/Rect` (see [`generated_extent`]).
+        let generated = generated_extent(&annotation, &rect, &box_of)?;
         entries.push(Entry {
             at,
             identity: identity_of(&annotation)?,
-            over: box_of.intersects(region),
+            over: box_of.intersects(region)
+                || generated.is_some_and(|extent| extent.intersects(region)),
             rect: box_of,
             parent: identity_of(&annotation.key(&PARENT))?,
             in_reply_to: identity_of(&annotation.key(&IRT))?,
@@ -1457,6 +1461,114 @@ fn remove_annotations_in<O: PdfObject>(
         edited,
         annots_erased,
     })
+}
+
+/// The side of the stock note icon PDFium draws for a `/Text` annotation it builds an appearance
+/// for (`GenerateTextAP`'s `note_length`).
+const NOTE_ICON: f64 = 20.0;
+
+/// Where PDFium may draw an annotation **outside its `/Rect`** because it builds the annotation's
+/// appearance itself, or `None` where it cannot.
+///
+/// PDFium builds an appearance (`CPDF_Annot::GenerateAPIfNeeded`) for an annotation with no `/AP`
+/// `/N`, and for two kinds it moves the `/Rect` while doing so, so the drawing leaves the rectangle
+/// the walk measured. Measured against the pinned PDFium, drawing annotations:
+///
+/// - **`/Text`**: a stock 20 x 20 point note icon at the `/Rect`'s **first two numbers, as written**
+///   -- not its normalised lower-left: `[400 500 300 400]` draws at 400..420 x 500..520, outside the
+///   rectangle it normalises to. A note with a `/Rect` smaller than the icon, or written backwards,
+///   was kept, `Ok`, with the icon and its `/Contents` in an area the `/Rect` does not meet.
+/// - **`/Ink`**: the `/Rect` inflated by half the border width -- `/BS /W`, else the third item of
+///   `/Border`, else 1 -- and the strokes clipped there: a width of 40 drew 14.5 points outside.
+///
+/// Every other kind PDFium builds for (Square, Circle, FreeText, Popup, and the text-markup kinds)
+/// draws inside its `/Rect`, measured, or at its `/QuadPoints`, which
+/// [`AppearanceWalk::refuse_quads_outside_the_rect`] holds inside it.
+///
+/// **Over-approximated, so a misreading refuses rather than leaks.** PDFium builds unless `/AP` is a
+/// dictionary whose `/N` is a dictionary or a stream; here only a stream counts as an appearance,
+/// and a hidden annotation, which PDFium neither builds for nor draws, is measured anyway. A
+/// `/Subtype` that is not a name is measured as both kinds: PDFium reads it as a byte string, so
+/// `(Text)` is a note. The border width is the largest of every value PDFium could take, and one
+/// that is not a number both readers agree on refuses, as an appearance whose extent is unknown.
+fn generated_extent<O: PdfObject>(annotation: &O, rect: &O, box_of: &Rect) -> Result<Option<Rect>> {
+    const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+    const AP: Name = Name::literal(b"/AP\0");
+    const N: Name = Name::literal(b"/N\0");
+    let subtype = annotation.key(&SUBTYPE);
+    let (text, ink) = match subtype.type_code() {
+        object_type::NULL => return Ok(None),
+        object_type::NAME => {
+            let name = subtype.name()?;
+            (name.plain() == b"Text", name.plain() == b"Ink")
+        }
+        _ => (true, true),
+    };
+    if !text && !ink {
+        return Ok(None);
+    }
+    let appearances = annotation.key(&AP);
+    if appearances.type_code() == object_type::DICTIONARY
+        && appearances.key(&N).type_code() == object_type::STREAM
+    {
+        return Ok(None);
+    }
+    let mut extent: Option<Rect> = None;
+    if text {
+        // THE FIRST TWO NUMBERS AS WRITTEN: `four_numbers` has read all four as numbers both
+        // readers agree on, so each reads here.
+        let corner = |at| match super::frame::reading_of(&rect.array_item(at)) {
+            Reading::Number(number) => Ok(number),
+            Reading::NotANumber | Reading::OutOfRange => Err(appearance_unbounded()),
+        };
+        let (left, bottom) = (corner(0)?, corner(1)?);
+        extent = Some(Rect {
+            left,
+            bottom,
+            right: left + NOTE_ICON,
+            top: bottom + NOTE_ICON,
+        });
+    }
+    if ink {
+        let half = border_width_bound(annotation)? / 2.0;
+        let inflated = Rect {
+            left: box_of.left - half,
+            bottom: box_of.bottom - half,
+            right: box_of.right + half,
+            top: box_of.top + half,
+        };
+        extent = Some(extent.map_or(inflated, |icon| icon.union(&inflated)));
+    }
+    Ok(extent)
+}
+
+/// The largest border width PDFium could read for an annotation's built appearance: `/BS /W` where
+/// `/BS` has a `/W`, else the third item of a `/Border` longer than two, else 1 (`GetBorderWidth`).
+/// The largest of all three, so whichever PDFium takes is no wider; never below zero. A `/W` or
+/// third item that is present and not a number both readers agree on refuses.
+fn border_width_bound<O: PdfObject>(annotation: &O) -> Result<f64> {
+    const BS: Name = Name::literal(b"/BS\0");
+    const W: Name = Name::literal(b"/W\0");
+    const BORDER: Name = Name::literal(b"/Border\0");
+    let width = |value: &O| match value.type_code() {
+        object_type::NULL => Ok(0.0),
+        _ => match super::frame::reading_of(value) {
+            Reading::Number(number) => Ok(number),
+            Reading::NotANumber | Reading::OutOfRange => Err(appearance_unbounded()),
+        },
+    };
+    let mut widest: f64 = 1.0;
+    let style = annotation.key(&BS);
+    match style.type_code() {
+        object_type::DICTIONARY => widest = widest.max(width(&style.key(&W))?),
+        object_type::STREAM => widest = widest.max(width(&style.stream_dict().key(&W))?),
+        _ => {}
+    }
+    let border = annotation.key(&BORDER);
+    if border.type_code() == object_type::ARRAY && border.array_len() > 2 {
+        widest = widest.max(width(&border.array_item(2))?);
+    }
+    Ok(widest)
 }
 
 /// One annotation of a page, as `remove_annotations_in` read it.
@@ -1876,13 +1988,20 @@ impl AppearanceWalk<'_> {
         if bounded {
             return Ok(());
         }
-        Err(Error::Unsupported(
-            "pdf redaction [annotation-appearance-unbounded]: an annotation whose appearance has \
-             no bounding box the renderer fits to its rectangle, so where it draws is not where \
-             its rectangle is"
-                .to_owned(),
-        ))
+        Err(appearance_unbounded())
     }
+}
+
+/// The refusal for an annotation whose appearance nothing bounds to a place burrow can measure: one
+/// with no `/BBox` the renderer fits to its rectangle, or one the renderer builds whose extent
+/// cannot be read (see [`generated_extent`]).
+fn appearance_unbounded() -> Error {
+    Error::Unsupported(
+        "pdf redaction [annotation-appearance-unbounded]: an annotation whose appearance has \
+         no bounding box the renderer fits to its rectangle, so where it draws is not where \
+         its rectangle is"
+            .to_owned(),
+    )
 }
 
 /// The extent of a `/QuadPoints` array: x at even indices, y at odd, as the eight numbers of each

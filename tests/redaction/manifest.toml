@@ -3742,6 +3742,44 @@ PDFium reads /Subtype as a byte string, so (Highlight) is a Highlight to it: 1,3
 """
 
 [[fixture]]
+name = "evade-annotation-note-icon-outside-rect"
+file = "generated/evade-annotation-note-icon-outside-rect.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Text note with no /AP whose /Rect misses the region and whose built icon reaches it — evasion"
+  canary = "BURROW-EVADE-NOTE-ICON"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium builds a note's missing appearance as a 20-point icon at the /Rect's first corner, whatever the /Rect's size, so a half-point /Rect just left of the region draws the icon into it. Kept, Ok, on main, measured. Refused [annotation-in-region] by the icon's extent (#136 D3).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-note-icon-clear-of-region"
+file = "generated/nearmiss-annotation-note-icon-clear-of-region.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same /Text note further left, its /Rect and its icon both clear of the region — near-miss twin"
+  canary = "BURROW-EVADE-NOTE-ICON-CLEAR"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A note whose icon is clear of the region is kept, as every note clear of it is.
+"""
+
+[[fixture]]
 name = "evade-annotation-popup-of-a-removed-parent"
 file = "generated/evade-annotation-popup-of-a-removed-parent.pdf"
 kind = "hand-built"
