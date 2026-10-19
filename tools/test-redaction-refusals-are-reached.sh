@@ -40,7 +40,14 @@
 # Red for a compile error is red for the wrong reason, and `require_red` would refuse it -- it
 # matches on the fixture names, never on the exit status alone.
 #
-# Usage: tools/test-redaction-refusals-are-reached.sh [mutation ...]   (default: all of them)
+# AND THE TWIN CHECK ITSELF IS PROBED, on every full run. A spared list nothing can match passes
+# every mutation, so after the mutations a COPY of this script, written beside it (a copy elsewhere
+# resolves the repository wrongly and fails for that reason instead), lists an evasion the
+# structure-tree deletion frees among that mutation's twins. The copy must fail NAMING it -- the
+# FAIL line, not the exit status, which a broken copy would also give.
+#
+# Usage: tools/test-redaction-refusals-are-reached.sh [mutation ...]   (default: all of them, and
+#        the twin-check probe; `twin-check-probe` runs the probe alone)
 
 set -euo pipefail
 
@@ -82,7 +89,8 @@ for i in "${!files[@]}"; do cp "${files[$i]}" "$backup/$i"; done
 restore() {
   for i in "${!files[@]}"; do cp "$backup/$i" "${files[$i]}"; done
 }
-trap 'restore; rm -rf "$backup"' EXIT
+probe_copy=""
+trap 'restore; rm -rf "$backup"; [ -z "$probe_copy" ] || rm -f "$probe_copy"' EXIT
 
 # The mutations: file, the text it must find EXACTLY ONCE, and what replaces it.
 plant() {
@@ -347,14 +355,55 @@ run() {
   esac
 }
 
+# The probe: a copy beside this script with an evasion the structure-tree deletion frees written
+# into that mutation's spared list. It must refuse, and say which twin "moved".
+probe_twin_check() {
+  local planted="evade-structparents-resolving-elsewhere.pdf:"
+  probe_copy="$here/.test-redaction-refusals-are-reached.twin-probe.$$.sh"
+  if ! python3 - "${BASH_SOURCE[0]}" "$probe_copy" "$planted" <<'PY'
+import sys
+
+source, copy, planted = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(source, encoding="utf-8").read()
+# Split so this line is not itself a second occurrence of the list it looks for.
+old = '"nearmiss-structparents-without-a-tree.pdf:' + '|nearmiss-marked-content-without-a-tree.pdf:"'
+assert text.count(old) == 1, f"the structure-tree spared list occurs {text.count(old)} times, not once"
+probed = text.replace(old, '"' + planted + "|" + old[1:])
+assert probed != text and probed.count(planted) == text.count(planted) + 1, "the probe did not apply"
+open(copy, "w", encoding="utf-8").write(probed)
+PY
+  then
+    echo "FAIL  twin-check-probe: the probe could not be planted in the copy"
+    fail=$((fail + 1))
+    return
+  fi
+  local out status want="FAIL  structure-tree: the deletion also moved its twin(s): $planted"
+  set +e
+  out="$(bash "$probe_copy" structure-tree 2>&1)"
+  status=$?
+  set -e
+  rm -f "$probe_copy"
+  probe_copy=""
+  if [ "$status" -ne 0 ] && grep -qF "$want" <<<"$out"; then
+    echo "PASS  twin-check-probe: a copy listing $planted as a twin refused, naming it"
+    pass=$((pass + 1))
+  else
+    echo "FAIL  twin-check-probe: a copy listing $planted as a twin did not refuse naming it (exit $status)"
+    echo "$out" | tail -20
+    fail=$((fail + 1))
+  fi
+}
+
 all=(optional-content split-oc-form-route split-oc-type3-route image-in-region vector-in-region
   shading-in-region form-route acroform-field-ft acroform-catalogue acroform-field structure-tree
   inline-image-filtered pattern-fill type-three-paints)
 selected=("$@")
-[ "${#selected[@]}" -gt 0 ] || selected=("${all[@]}")
-for name in "${selected[@]}"; do run "$name"; done
+[ "${#selected[@]}" -gt 0 ] || selected=("${all[@]}" twin-check-probe)
+for name in "${selected[@]}"; do
+  if [ "$name" = twin-check-probe ]; then probe_twin_check; else run "$name"; fi
+done
 
 echo
 echo "------------------------------------------------------------"
-echo "$pass passed, $fail failed, of ${#selected[@]} mutation(s) (${#all[@]} defined)"
+echo "$pass passed, $fail failed, of ${#selected[@]} check(s) (${#all[@]} mutations defined, and the twin-check probe)"
 [ "$fail" -eq 0 ] && [ "$pass" -eq "${#selected[@]}" ]
