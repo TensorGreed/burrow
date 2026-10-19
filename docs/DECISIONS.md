@@ -279,6 +279,19 @@ one is decided in an issue, with the same three parts.
     lists each round's path. Rebuilding a lost artefact is logged as a miss. *Decided:* owner,
     2026-10-17. *Does not cover:* what goes in each artefact.
 
+25. **The discovery-rate report counts discoveries, by class, and keeps a clock on what is not yet
+    reproduced.** (1) "New live" counts only findings first discovered that week; a GHSA
+    publication of an earlier finding is a closure, not a discovery. (2) Each finding is assigned
+    to a leak class (existing or new), and the report shows new classes per week alongside new
+    findings. (3) An unreproduced item has a two-week clock from its first record: by then it is
+    measured (it becomes live or closed) or dropped as unmeasurable with a one-line reason; the
+    report lists each one with its deadline. (4) The report is due every Friday; a missing report
+    is a rule 11-grade stop for the following Monday's lane work. *Decided:* owner, 2026-10-18,
+    who also had that week's report recounted on basis (1), the four weeks before it backfilled
+    with classes, and the unreproduced items then open listed with their deadlines. *Does not
+    cover:* which lane measures an unreproduced item; and what a report may name in public, which
+    the owner's standing privacy instruction governs (findings stay in the private record).
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new acceptance rule from here (rule 17): **before writing code**, give the
