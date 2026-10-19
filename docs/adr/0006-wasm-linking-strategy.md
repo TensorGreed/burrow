@@ -415,14 +415,19 @@ design requirement:
   operation over every redacted case in `tests/redaction/outcomes.tsv`, gated on that file's
   count. Each was shown to fail: the mutations that hand a verifier the input, a copy, or another
   call's document -- M1b, M3, M3b, M4 and M2web -- survived the suite before these tests and
-  failed it after, and two more that R10's first review planted, M5 and M6, survived recorders
-  placed at the verifiers and failed once the recorders moved to the buffer each engine opens.
-  The web build's walk, which no native build compiled, now shares one call site with the native
-  one, so the same tests hold it. They are tests, not a runtime check: up to the returned buffer,
-  every hop is one Rust buffer, moved and borrowed but never copied before it is verified -- except
-  the copies each verifier's engine reads, which the tests digest where Rust hands them over: the
-  boxed copies qpdf and PDFium open natively, and on the web the slice the walk hands the JS glue,
-  which copies it into qpdf's heap (`verify.rs` names that copy among what the tests leave out).
+  failed it after; two more that R10's first review planted, M5 and M6, survived recorders
+  placed at the verifiers and failed once the recorders moved to the buffer each engine opens;
+  and two from its second review, M7 and M8, in which a verifier's named open was followed by
+  another, survived until the recorder kept unnamed opens too and each case was held to its exact
+  sequence of opens. The web build's walk, which no native build compiled, now shares one call
+  site with the native one. They are tests, not a runtime check: up to the returned buffer, every
+  hop is one Rust buffer, moved and borrowed but never copied before it is verified -- except the
+  copies each verifier's engine reads, which the tests digest where Rust hands them over: the
+  boxed copies qpdf and PDFium open natively. **The web slice is not digested.** The web engine's
+  open carries the same recorder, on the slice the walk hands the JS glue, but no test records
+  through it; the web walk is held by the call site it shares with the native one,
+  `Witness::open_output` (M2web, and M5 natively), and by the browser differential. What the glue
+  then copies into qpdf's heap `verify.rs` names among what the tests leave out.
 
   **What keeps it unmet: the web's final hop.** After the buffer leaves the wasm heap -- the
   wasm-bindgen copy, the `Blob`, `postMessage`, and the page handing that same `Blob` to
