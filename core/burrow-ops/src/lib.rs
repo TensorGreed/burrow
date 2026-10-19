@@ -45,7 +45,7 @@ pub mod verify;
 
 pub use compress::{Outcome, compress};
 pub use merge::{Input, check_total_input_bytes, merge};
-pub use render::{Fit, Render, Rendered, begin as render_begin, render};
+pub use render::{Annotations, Fit, Render, Rendered, begin as render_begin, render};
 pub use reorder::reorder;
 pub use rotate::{Pages, rotate};
 pub use split::{Cuts, Split, begin as split_begin, split};

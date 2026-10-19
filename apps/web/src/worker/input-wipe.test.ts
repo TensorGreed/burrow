@@ -457,8 +457,40 @@ describe("#199: the render worker zeroes the document and the password", () => {
       input.view().every((b) => b === 0),
       "the strip's document survived",
     ).toBe(true);
-    expect(zero(seen[0]!.args[4]), "the strip's password survived").toBe(true);
+    // `render_begin(bytes, pages, boxWidth, boxHeight, annotations, password, limits)`.
+    // By its length, not `instanceof`: the worker runs in its own realm.
+    expect(
+      (seen[0]!.args[5] as { length?: number } | undefined)?.length,
+      "the one-byte password is render_begin's sixth argument",
+    ).toBe(1);
+    expect(zero(seen[0]!.args[5]), "the strip's password survived").toBe(true);
     expect(w.wipes()).toBe(1);
+  });
+
+  // #136 D3: the redaction page's selection picture asks for annotations; a thumbnail strip
+  // never sends the field, and nothing but a strict `true` turns them on.
+  it.each([
+    ["absent, as every thumbnail strip sends it", undefined, false],
+    ["false", false, false],
+    ["a truthy non-boolean", 1, false],
+    ["the string 'true'", "true", false],
+    ["true, as the redaction page sends it", true, true],
+  ])("passes annotations to render_begin only for a strict true: %s", async (_, sent, drawn) => {
+    const w = load(RENDER_MAIN);
+    const seen = refusingSession(w.scope);
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({
+      id: 1,
+      op: "render",
+      blob: input.blob,
+      pages: [1],
+      boxWidth: 10,
+      boxHeight: 10,
+      ...(sent === undefined ? {} : { annotations: sent }),
+      limits,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.args[4]).toBe(drawn);
   });
 });
 

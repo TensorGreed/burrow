@@ -230,6 +230,16 @@ export const FORBIDDEN_CLAIMS: readonly {
     nearMiss: "Share it once you have checked the properties.",
   },
   {
+    // D9 (owner, 2026-10-19): a re-fed result is an ordinary input, and no text may imply that the
+    // redaction it came from was verified. A run checks its own output (ADR 0022), which says
+    // nothing a person may lean on about the file the run started from.
+    name: "the earlier redaction was verified",
+    pattern:
+      /\b(already|previously|earlier|previous|last|first|prior)\b[^.]{0,40}?\b(verified|checked|confirmed|validated)\b|\b(verified|checked|confirmed|validated) (result|redaction|file|copy|output|areas?)\b|\bverification\b/i,
+    caught: "The earlier redaction was verified, so only the new area is checked.",
+    nearMiss: "Download the last result, with only the earlier areas removed.",
+  },
+  {
     name: "text recognition",
     pattern: /\b(OCR|recogni[sz]e[sd]?|recogni[sz]ing|recognition)\b/i,
     caught: "Scanned pages need OCR.",

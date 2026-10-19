@@ -84,6 +84,7 @@ mod tests;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+pub use burrow_engines::Annotations;
 use burrow_engines::{OpenOptions, PageRenderer, Raster};
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
@@ -92,10 +93,15 @@ use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 /// Both dimensions are a **maximum**, not a target: a portrait page in a square box uses the
 /// full height and less than the full width. What comes back is therefore not usually the box,
 /// which is why every [`Rendered`] carries its own size rather than the caller assuming one.
+///
+/// **It also says whether annotations are drawn**, [`Annotations::Omitted`] unless
+/// [`drawing_annotations`](Fit::drawing_annotations) asks otherwise: how a page is drawn is
+/// one choice per strip, made by the caller, like the box (#136 D3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fit {
     width: u32,
     height: u32,
+    annotations: Annotations,
 }
 
 impl Fit {
@@ -106,7 +112,29 @@ impl Fit {
     /// knows the limits.
     #[must_use]
     pub const fn box_of(width: u32, height: u32) -> Self {
-        Self { width, height }
+        Self {
+            width,
+            height,
+            annotations: Annotations::Omitted,
+        }
+    }
+
+    /// The same box, drawing each page's annotations too ([`Annotations::Drawn`]).
+    ///
+    /// For the redaction page's selection picture (#136 D3), and for nothing a thumbnail strip
+    /// shows: see [`Annotations`] for what is and is not drawn, and why it is not a preview.
+    #[must_use]
+    pub const fn drawing_annotations(self) -> Self {
+        Self {
+            annotations: Annotations::Drawn,
+            ..self
+        }
+    }
+
+    /// Whether annotations are drawn.
+    #[must_use]
+    pub const fn annotations(&self) -> Annotations {
+        self.annotations
     }
 
     /// The box's width in pixels.
@@ -279,6 +307,7 @@ impl<E: PageRenderer> Render<E> {
             index,
             width,
             height,
+            self.fit.annotations,
             &per_page,
             &self.deadline,
         )?;

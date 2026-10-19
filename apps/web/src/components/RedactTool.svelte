@@ -5,7 +5,8 @@
   // WHAT IT DOES, AND ONLY THAT: a file, every page's frame (`page_frames`), one page and one
   // region typed in points (D2: one region per run), a run through REDACTION's own worker, a
   // cancel, a download, and "redact another area of this result" (S6b), which runs again on the
-  // output. Pictures and pointer selection are S4.
+  // output. S4 adds the chosen page's picture, drawn by the RENDER worker, for choosing the area
+  // by pointer or keyboard (`RegionPicture.svelte`); it writes the same four boxes.
   //
   // THE WORKER IS REDACTION'S, NOT THE BASE ONE. The redaction bundle is fetched on first use and
   // by nothing else (ADR 0029's 2026-09-21 amendment), through the same `createToolHost` every
@@ -23,6 +24,8 @@
     type RedactMessage,
   } from "./redact-messages.js";
   import { framesOf, readRegion, shownSize } from "./redact-region.js";
+  import RegionPicture from "./RegionPicture.svelte";
+  import type { Fields } from "./region-picture.js";
   import {
     LIMITS,
     ORIGIN_MISMATCH,
@@ -99,6 +102,14 @@
   });
 
   const regionProblem = $derived(region !== null && !region.ok ? region.problem : "");
+
+  /** The picture writes the four boxes, exactly as typing does. */
+  function select(next: Fields) {
+    left = next.left;
+    top = next.top;
+    width = next.width;
+    height = next.height;
+  }
   const pageProblem = $derived(
     frames !== null && pageCount > 0 && page === null
       ? `Type a page number from 1 to ${pageCount}.`
@@ -440,7 +451,24 @@
         </p>
       {/if}
     </fieldset>
+  {/if}
 
+  <!-- MOUNTED FOR AS LONG AS A FILE IS CHOSEN, not with the page or the frames: unmounting it
+       while a render is in flight would terminate PDFium mid-render, the Firefox crash #361
+       records (measured here: a page number typed past the end crashed Firefox's tab). It ends
+       its worker through the same gate as the strip instead. -->
+  {#if file}
+    <RegionPicture
+      {file}
+      {page}
+      frame={frame && !frame.refused ? frame : null}
+      paused={phase === "working"}
+      fields={{ left, top, width, height }}
+      onselect={select}
+    />
+  {/if}
+
+  {#if frames !== null && pageCount > 0}
     {#if pageRefusal}
       <p class="notice" role="alert" data-testid="redact-page-refused">
         <strong>{pageRefusal.title}</strong>

@@ -24,7 +24,7 @@ use core::ffi::{c_char, c_int, c_void};
 
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
-use crate::{DocumentEngine, OpenOptions, PageRenderer, Raster};
+use crate::{Annotations, DocumentEngine, OpenOptions, PageRenderer, Raster};
 
 /// Re-exported for the link check, which proves `FPDF_DestroyLibrary` binds without ever
 /// calling it. The only part of [`ffi`] visible outside this module.
@@ -368,11 +368,16 @@ const SLICES_PER_MEMORY_READING: u32 = 16;
 /// is a property of *rendering*, not of *loading*. ADR 0027's amendment says so in those words,
 /// and the load phase is bounded by refusing to start one at all when the process is already
 /// over budget -- see `crate::estimate::before_page_load`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the web counterpart takes the same set; splitting them would hide the pairing"
+)]
 fn render_progressively(
     bitmap: ffi::FpdfBitmap,
     page: ffi::FpdfPage,
     width: c_int,
     height: c_int,
+    flags: c_int,
     deadline: &Deadline,
     clock: &dyn Clock,
     limits: &Limits,
@@ -388,7 +393,8 @@ fn render_progressively(
     // SAFETY: both handles are live and from the same document, the extent is the bitmap's own,
     // `pause` outlives every call below (it is dropped after `render_page_close`), and this runs
     // inside a job so it is on the engine thread.
-    let mut state = unsafe { ffi::render_page_start(bitmap, page, width, height, pause_ptr) };
+    let mut state =
+        unsafe { ffi::render_page_start(bitmap, page, width, height, flags, pause_ptr) };
 
     let mut slices: u32 = 0;
     let outcome = loop {
@@ -481,11 +487,13 @@ impl PageRenderer for Pdfium {
         index: u64,
         width: u32,
         height: u32,
+        annotations: Annotations,
         options: &OpenOptions<'_>,
         deadline: &Deadline,
     ) -> Result<Raster> {
         let clock = Arc::clone(&options.clock);
         deadline.checkpoint(clock.as_ref())?;
+        let flags: c_int = annotations.render_flags();
 
         // THE CEILING BEFORE ANYTHING IS ALLOCATED, and before the engine is even asked for
         // the page. `check_pixels` is the one implementation both platforms call (ADR 0027).
@@ -559,6 +567,7 @@ impl PageRenderer for Pdfium {
                         page,
                         w,
                         h,
+                        flags,
                         &deadline_in,
                         clock_in.as_ref(),
                         &limits,

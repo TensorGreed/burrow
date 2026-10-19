@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use burrow_engines::{DocumentEngine, OpenOptions, PageRenderer, Raster};
+use burrow_engines::{Annotations, DocumentEngine, OpenOptions, PageRenderer, Raster};
 use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result, Stage};
 
 use super::{Fit, fit_into, render};
@@ -24,6 +24,8 @@ struct Asked {
     index: u64,
     width: u32,
     height: u32,
+    /// Whether the page's annotations were to be drawn (#136 D3).
+    annotations: Annotations,
     /// The `max_pixels` the engine was handed for this call.
     ///
     /// Recorded because the ceilings a strip renders under are the ones it BEGAN with, and
@@ -114,6 +116,7 @@ impl PageRenderer for FakeRenderer {
         index: u64,
         width: u32,
         height: u32,
+        annotations: Annotations,
         options: &OpenOptions<'_>,
         deadline: &Deadline,
     ) -> Result<Raster> {
@@ -121,6 +124,7 @@ impl PageRenderer for FakeRenderer {
             index,
             width,
             height,
+            annotations,
             max_pixels: options.limits.max_pixels,
         });
 
@@ -184,6 +188,42 @@ fn every_page_named_comes_back_in_the_order_it_was_asked_for() {
     assert_eq!(out[0].raster.rgba[0], 2);
     assert_eq!(out[1].raster.rgba[0], 0);
     assert_eq!(out[2].raster.rgba[0], 4);
+}
+
+#[test]
+fn a_strip_draws_no_annotations_unless_its_fit_asks_and_then_every_page_does() {
+    // #136 D3. The default is every thumbnail strip's, and a caller that never heard of
+    // annotations must keep getting it; the redaction page's picture asks, for every page.
+    for (fit, wanted) in [
+        (Fit::box_of(120, 160), Annotations::Omitted),
+        (
+            Fit::box_of(120, 160).drawing_annotations(),
+            Annotations::Drawn,
+        ),
+    ] {
+        assert_eq!(fit.annotations(), wanted);
+        let engine = FakeRenderer::with_pages(3);
+        render(
+            &engine,
+            a_pdf(),
+            &[1, 3],
+            fit,
+            &engine.options(Limits::default()),
+        )
+        .expect("two pages should render");
+        assert_eq!(
+            engine
+                .asked()
+                .iter()
+                .map(|a| a.annotations)
+                .collect::<Vec<_>>(),
+            vec![wanted, wanted],
+            "every page of the strip should be drawn as its fit says"
+        );
+    }
+    // AND THE BOX IS UNCHANGED BY IT: drawing annotations is not a different size.
+    let drawn = Fit::box_of(120, 160).drawing_annotations();
+    assert_eq!((drawn.width(), drawn.height()), (120, 160));
 }
 
 #[test]

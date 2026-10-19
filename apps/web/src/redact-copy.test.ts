@@ -185,11 +185,19 @@ describe("the rules themselves", () => {
       ["Your text is removed for good.", "gone for good"],
       ["Your file is now safe to share.", "safe to share"],
       ["Nothing you removed can be recovered.", "irreversible"],
+      // D9 (owner, 2026-10-19): a re-fed result carries no verdict on the run it came from.
+      ["Your last result is already verified.", "the earlier redaction was verified"],
+      ["Redact another area of this verified result.", "the earlier redaction was verified"],
+      ["The previous run was checked.", "the earlier redaction was verified"],
+      ["This result has passed verification.", "the earlier redaction was verified"],
     ] as const) {
       expect(claimsMade(sentence), sentence).toContain(name);
     }
     // No rule may match everything: a neutral sentence trips none of them.
     expect(claimsMade("The text you selected is removed from the page.")).toEqual([]);
+    // Nor may the D9 rule catch the page's own wording for a re-fed result (near misses).
+    expect(claimsMade("Redact another area of this result")).toEqual([]);
+    expect(claimsMade("Not Only PDF checked the result and would not hand it over.")).toEqual([]);
   });
 
   it("the §7 sentence that negates 'your secret is gone' is exempt, and only that sentence", () => {
@@ -238,7 +246,7 @@ describe("the held /redact-pdf page, as built", () => {
   });
 
   it("makes none of the forbidden claims", () => {
-    expect(FORBIDDEN_CLAIMS).toHaveLength(14);
+    expect(FORBIDDEN_CLAIMS).toHaveLength(15);
     expect(claimsMade(text)).toEqual([]);
     // The exemption is used exactly where §7 puts it, not as a blanket pass.
     expect(text.split(VERIFIES_MARK)).toHaveLength(2);

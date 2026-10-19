@@ -48,6 +48,20 @@ export function since(marker: string): LogEntry[] {
 }
 
 /**
+ * Everything logged after the last occurrence of `start` and before the first `end` after it: a
+ * window with two edges, for a test that asserts something different on each side of a moment.
+ */
+export function between(start: string, end: string): LogEntry[] {
+  const entries = readLog();
+  const markers = entries.map((e) => e.marker);
+  const from = markers.lastIndexOf(start);
+  expect(from, `the marker ${start} was never written`).toBeGreaterThanOrEqual(0);
+  const to = markers.indexOf(end, from + 1);
+  expect(to, `the marker ${end} was never written after ${start}`).toBeGreaterThan(from);
+  return entries.slice(from + 1, to).filter((entry) => entry.marker === undefined);
+}
+
+/**
  * Requests a **respawn** legitimately makes: the four pinned artifacts, and nothing else.
  *
  * A fresh worker re-fetches the engine modules and the bundle. That is not a leak and must not
@@ -83,13 +97,21 @@ export function isPinnedArtifact(url: string, bundles: "base" | "all" = "base"):
  * Requests the HELD redaction page legitimately makes (#136): its own bundle -- the redaction
  * worker and module -- and the two base artifacts it shares, qpdf and the guard control. By exact
  * path, as `isPinnedArtifact`. Not the base worker or the base module, which a redacting page never
- * fetches, and nothing of the render bundle, which it does not use until S4.
+ * fetches.
+ *
+ * THE RENDER BUNDLE ONLY WHEN ASKED (`"with-render"`), and the caller always says which: since S4
+ * the page draws the chosen page through the render worker (D1), but only once a file is chosen.
+ * Before that, `"redaction"` holds the page to its own set, so a page that reached for PDFium where
+ * nothing asked it to still fails. There is no default, so no window is admitted by omission.
  *
  * Redaction's worker recycles after every reply (#199), so every run re-fetches this set; that is
  * a respawn, not an upload.
  */
-export function isRedactionArtifact(url: string): boolean {
+export function isRedactionArtifact(url: string, bundles: "redaction" | "with-render"): boolean {
   return (
+    (bundles === "with-render" &&
+      (/^\/engines\/(pdfium|burrow_wasm_render_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
+        /^\/engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/.test(url))) ||
     /^\/engines\/qpdf\.[0-9a-f]{16}\.wasm$/.test(url) ||
     /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url) ||
     /^\/engines\/burrow-redact-worker\.[0-9a-f]{16}\.js$/.test(url) ||

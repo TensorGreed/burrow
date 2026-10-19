@@ -319,6 +319,9 @@ impl RenderSession {
 /// numbers are validated against the real count, and `max_pixels` is checked against the box
 /// **before the document is opened**, so a caller asking for something impossible is told so
 /// without an untrusted file having been parsed on their behalf.
+///
+/// `annotations` draws each page's annotations too (`FPDF_ANNOT`): the redaction page's
+/// selection picture asks for it (#136 D3), and every thumbnail strip passes `false`.
 #[wasm_bindgen]
 #[must_use]
 pub fn render_begin(
@@ -326,6 +329,7 @@ pub fn render_begin(
     pages: &[u32],
     box_width: u32,
     box_height: u32,
+    annotations: bool,
     password: Option<Box<[u8]>>,
     limits: WebLimits,
 ) -> RenderSession {
@@ -338,13 +342,14 @@ pub fn render_begin(
 
     let wanted: Vec<u64> = pages.iter().map(|n| u64::from(*n)).collect();
 
-    match burrow_core::ops::render_begin(
-        &pdfium(),
-        bytes,
-        &wanted,
-        burrow_core::ops::Fit::box_of(box_width, box_height),
-        &options,
-    ) {
+    let fit = burrow_core::ops::Fit::box_of(box_width, box_height);
+    let fit = if annotations {
+        fit.drawing_annotations()
+    } else {
+        fit
+    };
+
+    match burrow_core::ops::render_begin(&pdfium(), bytes, &wanted, fit, &options) {
         Ok(session) => {
             let pages = u32::try_from(session.pages()).unwrap_or(u32::MAX);
             RenderSession {

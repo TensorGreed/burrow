@@ -1203,6 +1203,48 @@ impl Raster {
     }
 }
 
+/// Whether a render draws the page's annotations as well as the page (#136 D3).
+///
+/// **[`Omitted`](Annotations::Omitted) is the default and every thumbnail strip's choice**:
+/// annotations are not part of the page, and a thumbnail that drew a reviewer's comments would
+/// show content the document's pages do not have. [`Drawn`](Annotations::Drawn) passes PDFium's
+/// `FPDF_ANNOT`, which draws every annotation that has an appearance stream **and generates an
+/// appearance for some annotations that have none** -- and a generated appearance is not held to
+/// the annotation's `/Rect`: it can reach outside it. PDFium still draws **no form widget**
+/// without a form-fill environment, which burrow never creates (spike 0006), and nothing hidden
+/// by its `/F` flags.
+///
+/// **Drawn is the redaction page's selection picture, and it is not a preview.** The owner's
+/// D3 (2026-10-14) wants a person choosing an area to see the annotations there; it is safe to
+/// show them because redaction refuses any region an annotation's `/Rect` reaches,
+/// `[annotation-in-region]`, drawn or not -- so an annotation the picture leaves out (a widget,
+/// a hidden one) is refused just the same, never silently kept. **That rule measures the
+/// `/Rect`, not the drawing**: a generated appearance drawn outside its `/Rect` is outside what
+/// the rule measures, and redaction's handling of generated appearances is tracked separately.
+/// What a render shows is still not what a redaction leaves (ADR 0029, *The render cannot preview
+/// a redaction*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Annotations {
+    /// The page alone: `FPDF_RenderPageBitmap`'s flags are `0`.
+    #[default]
+    Omitted,
+    /// The page and its annotations' appearances: `FPDF_ANNOT`.
+    Drawn,
+}
+
+impl Annotations {
+    /// `FPDF_RenderPageBitmap`'s `flags` for this choice: `0`, or `FPDF_ANNOT`
+    /// (`fpdfview.h`, `0x01`). The one place either platform reads the number from.
+    #[must_use]
+    pub const fn render_flags(self) -> i32 {
+        match self {
+            Self::Omitted => 0,
+            Self::Drawn => 0x01,
+        }
+    }
+}
+
 /// An engine that draws a page.
 ///
 /// **The first capability in this crate that produces PIXELS.** Everything else either reads a
@@ -1301,12 +1343,19 @@ pub trait PageRenderer: DocumentEngine {
     /// - [`Error::Io`](burrow_types::Error::Io) — the bitmap could not be allocated.
     /// - [`Error::Internal`](burrow_types::Error::Internal) — the engine handed back a buffer
     ///   that is not `width * height * 4` bytes, or contradicted itself some other way.
+    ///
+    /// `annotations` says whether the page's annotations are drawn too; see [`Annotations`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the seam's arguments are each one decision the caller makes per page"
+    )]
     fn render(
         &self,
         doc: &Self::Document,
         index: u64,
         width: u32,
         height: u32,
+        annotations: Annotations,
         options: &OpenOptions<'_>,
         deadline: &Deadline,
     ) -> Result<Raster>;
