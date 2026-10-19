@@ -1411,6 +1411,16 @@ fn a_page_whose_contents_streams_do_not_divide_between_tokens_refuses() {
             &["q /GS1 gs ", "!42", "Q"][..],
         ),
         (
+            // qpdf reports a filter it has no decoder for as not filtered, which `stream_data`
+            // reads as `None`. Read raw, its data would end between tokens.
+            "an element qpdf cannot decode",
+            &[
+                "q /GS1 gs ",
+                "!<< /Length 2 /Filter /BurrowUnknownDecode >>\nstream\nQ \nendstream",
+                "Q",
+            ][..],
+        ),
+        (
             "an inline image whose end cannot be found",
             &["q BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 00> EI \n", "Q"][..],
         ),
