@@ -84,7 +84,8 @@ pub enum Operand {
         /// Key and value alternating, flat — this module resolves no dictionary.
         items: Vec<Operand>,
     },
-    /// `true`, `false`, `null`, or any other bare word in operand position.
+    /// `true`, `false`, `null`, or a bare word the operand reader does not take as an operator
+    /// (an indirect reference's `R`, for one).
     ///
     /// A keyword only becomes an operand when a later token proves it was not the operator — it
     /// never happens in well-formed content, and refusing it would refuse documents that open.
