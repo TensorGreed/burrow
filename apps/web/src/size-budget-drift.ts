@@ -51,6 +51,12 @@ export interface Recorded {
   measured_sha256?: string;
   /** The same, with generated engine content hashes replaced by a fixed token. */
   measured_sha256_normalised?: string;
+  /**
+   * A base line's brotli allowance on an architecture other than the recording's (DECISIONS
+   * rule 18, 2026-10-18 amendment): twice the largest cross-architecture difference measured
+   * from saved runs. Read only for base lines, and only off the recording's architecture.
+   */
+  cross_arch_allowance_brotli?: number;
 }
 
 /** What the build actually contains for one artifact. */
@@ -66,7 +72,10 @@ export type Finding =
   | { kind: "false-record"; key: string; field: "raw" | "brotli"; recorded: number; live: number }
   | { kind: "undeclared-rebuild"; key: string }
   | { kind: "drift"; key: string; recorded: number; live: number; tolerance: number }
-  | { kind: "hash-coupled-drift"; key: string; recorded: number; live: number; bound: number };
+  | { kind: "hash-coupled-drift"; key: string; recorded: number; live: number; bound: number }
+  | { kind: "base-drift"; key: string; recorded: number; live: number }
+  | { kind: "no-allowance"; key: string }
+  | { kind: "cross-arch-drift"; key: string; recorded: number; live: number; allowance: number };
 
 /**
  * How far a size may move when only the generated engine hashes changed.
@@ -84,6 +93,17 @@ export interface Inputs {
   notByteReproducible: Record<string, string>;
   /** Fractional size movement tolerated for those, e.g. `0.02`. */
   tolerance: number;
+  /**
+   * Present for BASE lines -- anything a visitor loads, the render lines included (DECISIONS
+   * rule 18, 2026-10-18 amendment) -- and absent for held bundles, which keep `tolerance`.
+   *
+   * On the recording's architecture (`sameArch`) a base line may not move at all: every case
+   * that would have taken `tolerance` or the 64-byte hash-coupling bound takes 0 instead. Off
+   * it, each line moves at most its own `cross_arch_allowance_brotli`, and passing that is a
+   * stop rather than a re-record: the allowance is a measured property of two toolchains, so a
+   * line past it has changed in a way the recording architecture did not see.
+   */
+  base?: { sameArch: boolean };
 }
 
 /**
@@ -98,6 +118,7 @@ export function driftFindings({
   live,
   notByteReproducible,
   tolerance,
+  base,
 }: Inputs): Finding[] {
   const findings: Finding[] = [];
 
@@ -118,12 +139,49 @@ export function driftFindings({
     // THREE CASES, DISTINGUISHED RATHER THAN COLLAPSED. Collapsing the middle one into the
     // first is the bug CI caught: a normalised match is not identical bytes, so it cannot
     // carry an exact size claim.
+    const sameBytes =
+      record.measured_sha256 === actual.sha256 &&
+      record.measured_sha256_normalised === actual.sha256Normalised;
+
     if (record.measured_sha256_normalised !== actual.sha256Normalised) {
       // The artifact's own content changed, not just the engine hashes quoted inside it.
       if (!(key in notByteReproducible)) {
         findings.push({ kind: "undeclared-rebuild", key });
         continue;
       }
+    }
+
+    if (base !== undefined && !sameBytes) {
+      // A BASE LINE WHOSE BYTES DIFFER FROM THE RECORDING. No percentage and no 64-byte bound:
+      // on the recording's architecture it may not move at all, and off it only by its own
+      // measured allowance. Identical bytes fall through to the false-record check below.
+      const moved = Math.abs(actual.brotli - record.measured_brotli);
+      if (base.sameArch) {
+        if (moved > 0) {
+          findings.push({
+            kind: "base-drift",
+            key,
+            recorded: record.measured_brotli,
+            live: actual.brotli,
+          });
+        }
+      } else if (record.cross_arch_allowance_brotli === undefined) {
+        // Without an allowance the line has no bound off the recording's architecture, which
+        // must fail rather than pass: a missing number is how this would be switched off.
+        findings.push({ kind: "no-allowance", key });
+      } else if (moved > record.cross_arch_allowance_brotli) {
+        findings.push({
+          kind: "cross-arch-drift",
+          key,
+          recorded: record.measured_brotli,
+          live: actual.brotli,
+          allowance: record.cross_arch_allowance_brotli,
+        });
+      }
+      continue;
+    }
+
+    if (record.measured_sha256_normalised !== actual.sha256Normalised) {
       const moved = Math.abs(actual.brotli - record.measured_brotli);
       if (record.measured_brotli > 0 && moved / record.measured_brotli > tolerance) {
         findings.push({
@@ -238,6 +296,24 @@ export function explain(finding: Finding): string {
         `its size moved from ${finding.recorded} to ${finding.live} brotli — more than the ` +
         `${finding.bound}-byte bound that substitution can explain. Something else changed too.`
       );
+    case "base-drift":
+      return (
+        `${finding.key}: a base line (every visitor loads it) moved from ${finding.recorded} to ` +
+        `${finding.live} brotli on the recording's architecture, and base lines have no drift ` +
+        `tolerance (DECISIONS rule 18). Re-record it, and name the approval in the PR body.`
+      );
+    case "no-allowance":
+      return (
+        `${finding.key}: a base line with no cross_arch_allowance_brotli, so nothing bounds it ` +
+        `off the recording's architecture. Measure one from saved runs (rule 18).`
+      );
+    case "cross-arch-drift":
+      return (
+        `${finding.key}: moved from the recorded ${finding.recorded} to ${finding.live} brotli ` +
+        `on an architecture other than the recording's, past its ${finding.allowance}-byte ` +
+        `cross-architecture allowance. STOP, NOT A RE-RECORD (DECISIONS rule 18): the ` +
+        `allowance is measured, so this is a change the recording architecture did not see.`
+      );
     case "drift":
       return (
         `${finding.key}: declared not byte-reproducible, but its size moved from ` +
@@ -247,4 +323,43 @@ export function explain(finding: Finding): string {
         `passed. Re-record and say what grew.`
       );
   }
+}
+
+/** The machine architecture as the budget file spells it. */
+export function archName(nodeArch: string): string {
+  return nodeArch === "arm64" ? "aarch64" : nodeArch === "x64" ? "x86_64" : nodeArch;
+}
+
+/**
+ * A payload total against the build (DECISIONS rule 18, 2026-10-18 amendment).
+ *
+ * On the recording's architecture the live total must equal the recorded one exactly -- every
+ * base line is at 0%, so the sum is too. Off it, the total may move at most the summed
+ * allowances of the lines in it. `null` when it holds; otherwise the line to print.
+ */
+export function totalFinding({
+  name,
+  recorded,
+  live,
+  sameArch,
+  allowances,
+}: {
+  name: string;
+  recorded: number;
+  live: number;
+  sameArch: boolean;
+  allowances: number[];
+}): string | null {
+  const moved = Math.abs(live - recorded);
+  if (sameArch) {
+    return moved === 0
+      ? null
+      : `${name}: the build is ${live} brotli and the recording ${recorded}, on the recording's ` +
+          `architecture, where a total equals the exact sum of its measured parts. Re-record.`;
+  }
+  const bound = allowances.reduce((n, a) => n + a, 0);
+  return moved <= bound
+    ? null
+    : `${name}: the build is ${live} brotli and the recording ${recorded}, ${moved} apart, past ` +
+        `the ${bound} bytes its lines' cross-architecture allowances sum to. STOP, NOT A RE-RECORD.`;
 }

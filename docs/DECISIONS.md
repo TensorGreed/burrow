@@ -228,6 +228,22 @@ one is decided in an issue, with the same three parts.
     visitor loads, which keep the live-leak condition above; nor any change to a policy or a hard
     limit, which still stops for the owner.
 
+    **Amended 2026-10-18: base lines have no drift tolerance.** A base line is anything a visitor
+    loads, the render lines included. Any growth in one is re-recorded, and the PR body names the
+    approval (this rule or the owner). Held bundles keep the 2% `drift_tolerance`. The recording is
+    stamped with its architecture (`measured_arch`). On that architecture the check is 0% for every
+    base and render line, and each total must equal the exact sum of its measured parts. CI builds
+    on x86_64, and CI's x86_64 build is the one that ships. There, each base and render line has a
+    byte allowance recorded next to it (`cross_arch_allowance_brotli`), set at twice the largest
+    cross-architecture difference measured from saved runs, and each total is checked against the
+    sum of its lines' allowances. Going past an allowance is a stop, not a re-record. *Decided:*
+    owner, 2026-10-18 (0% base lines, approval named in the PR body) and 2026-10-19 (architecture
+    stamp, allowances, totals, CI's x86 build ships). The allowances were measured on 2026-10-19
+    from ten Deploy runs' x86_64 artifacts against aarch64 builds of the same commits; the
+    largest allowance is 150 bytes, on `burrow_wasm_bg.wasm` (largest measured difference 75).
+    *Does not cover:* how an allowance is re-measured when a toolchain moves, beyond "from saved
+    runs, never by hand"; and the per-line budgets and the headroom policy, which are unchanged.
+
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
     output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
     one). It is enough to merge a slice. Before redaction is un-held, the same property needs an
@@ -278,6 +294,19 @@ one is decided in an issue, with the same three parts.
     under ~/burrow-security or ~/burrow-census, named with the SHA they ran on. The Friday report
     lists each round's path. Rebuilding a lost artefact is logged as a miss. *Decided:* owner,
     2026-10-17. *Does not cover:* what goes in each artefact.
+
+25. **The discovery-rate report counts discoveries, by class, and keeps a clock on what is not yet
+    reproduced.** (1) "New live" counts only findings first discovered that week; a GHSA
+    publication of an earlier finding is a closure, not a discovery. (2) Each finding is assigned
+    to a leak class (existing or new), and the report shows new classes per week alongside new
+    findings. (3) An unreproduced item has a two-week clock from its first record: by then it is
+    measured (it becomes live or closed) or dropped as unmeasurable with a one-line reason; the
+    report lists each one with its deadline. (4) The report is due every Friday; a missing report
+    is a rule 11-grade stop for the following Monday's lane work. *Decided:* owner, 2026-10-18,
+    who also had that week's report recounted on basis (1), the four weeks before it backfilled
+    with classes, and the unreproduced items then open listed with their deadlines. *Does not
+    cover:* which lane measures an unreproduced item; and what a report may name in public, which
+    the owner's standing privacy instruction governs (findings stay in the private record).
 
 ## Spec review first (the practice that uses rule 10)
 

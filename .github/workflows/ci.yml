@@ -1053,6 +1053,12 @@ jobs:
       #
       # BEFORE `pnpm test`, deliberately: the budget is enforced there, and the table is
       # most wanted on the run where it fails.
+      #
+      # It also prints every base line against main's recording, in bytes, and refuses unless it
+      # compared every one, so it needs main's copy of size-budget.json: the checkout is depth 1
+      # and has no `origin/main`. This fetches a commit of this repository, not file content.
+      - name: Fetch main's recording for the base-line delta
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
       - name: First-load size budget
         working-directory: apps/web
         run: node ../../tools/report-size-budget.mjs dist

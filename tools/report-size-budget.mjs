@@ -23,6 +23,7 @@
 // job built them; the refusal is for a local run. What it cannot see is a `dist/` built on
 // another branch from artifacts that were current THEN -- that is #202's.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -35,6 +36,7 @@ import {
   heaviestFirstLoad,
   renderFirstLoad,
 } from "./first-load.mjs";
+import { baseLineDeltaTable, baseLineDeltas } from "./size-budget-base-delta.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webApp = join(repo, "apps", "web");
@@ -116,6 +118,54 @@ const renderTable = [
     `**${verdict(renderMeasurement.total.brotli, budget.render.total.budget_brotli)}** |`,
 ].join("\n");
 
+// EVERY BASE LINE AGAINST MAIN, IN BYTES (owner, 2026-10-18). Main's figures are main's
+// recording, read from git rather than from a build of main -- `tools/size-budget-base-delta.mjs`
+// says what that leaves in the "this build" column.
+// `BURROW_SIZE_BASE_REF` names the ref; CI fetches `origin/main` for this step.
+//
+// It REFUSES, rather than printing a partial table, when main's file cannot be read or a line
+// this tree records is not in the build: "examined 5 of 6" printed under a green build reads
+// as success. A line NEW in this tree (no main recording) is compared and counted as new, so a
+// PR that adds a base line does not fail here. The refusal is about what was examined, never
+// about a size -- the size gate is `size-budget.test.ts`.
+const baseRef = process.env.BURROW_SIZE_BASE_REF || "origin/main";
+let mainBudget;
+try {
+  mainBudget = JSON.parse(
+    execFileSync("git", ["show", `${baseRef}:apps/web/size-budget.json`], {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+} catch (error) {
+  console.error(
+    `report-size-budget: cannot read ${baseRef}'s apps/web/size-budget.json, so no base line ` +
+      `can be compared with main (0 examined). Fetch it (git fetch origin main) or set ` +
+      `BURROW_SIZE_BASE_REF. ${String(error.stderr ?? error.message).trim()}`,
+  );
+  process.exit(1);
+}
+// Render lines are base lines too (rule 18's 2026-10-18 amendment: anything a visitor loads).
+// Their keys are distinct from the base payload's, so the two merge without a collision.
+const baseDelta = baseLineDeltas(
+  { ...mainBudget.artifacts, ...mainBudget.render?.artifacts },
+  { ...budget.artifacts, ...budget.render.artifacts },
+  { ...groups, ...renderGroups },
+);
+const baseCount =
+  `${baseDelta.examined.length} of ${baseDelta.expected.length} base line(s) compared with ` +
+  `\`${baseRef}\`, ${baseDelta.added.length} new` +
+  (baseDelta.added.length > 0 ? `: ${baseDelta.added.join(", ")}` : "");
+console.error(`report-size-budget: ${baseCount}. Compared: ${baseDelta.examined.join(", ")}`);
+if (baseDelta.missing.length > 0) {
+  console.error(
+    `report-size-budget: REFUSED -- ${baseCount}. Not compared: ${baseDelta.missing.join(", ")} ` +
+      `(recorded in this tree, not in this build).`,
+  );
+  process.exit(1);
+}
+
 const report = [
   "## First-load size budget",
   "",
@@ -128,6 +178,17 @@ const report = [
   table,
   "",
   `Raw (uncompressed, what the browser compiles): **${kib(measurement.total.raw)}**.`,
+  "",
+  "### Every base line against main, in bytes",
+  "",
+  "Base lines are what visitors load, the render lines included; DECISIONS rule 18 holds them",
+  'at 0% on the recording\'s architecture. "recorded vs main" is what this PR re-records.',
+  "Main's figures are main's recording, not a build of main, so \"this build\" also carries any",
+  "difference between the machine that recorded main and this one.",
+  "",
+  baseLineDeltaTable(baseDelta),
+  "",
+  `_${baseCount}._`,
   "",
   "### And again, for a page that shows page pictures",
   "",
