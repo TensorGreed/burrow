@@ -110,6 +110,8 @@ INPUT	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-ro
 PAGE	tests/redaction/generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf	0	RULE page-attribute-inherited
 INPUT	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	4f3e9fca76bc05d1119fb3d57ac1ece41cf99a32aa4df53c368c06d40bfc546e
 PAGE	tests/redaction/generated/evade-annotation-note-icon-outside-rect.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/evade-annotation-note-rect-written-backwards.pdf	e23aa215899a30c60947791ad6f14bb85defa5f4729b0fcfa5a522e9aa74a494
+PAGE	tests/redaction/generated/evade-annotation-note-rect-written-backwards.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-note-subtype-as-a-string.pdf	df73c2d41ce8b139a74b18d5a8ec0a93caa1fa451be0cc8443ca7225482e0ee8
 PAGE	tests/redaction/generated/evade-annotation-note-subtype-as-a-string.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/evade-annotation-popup-of-a-removed-parent.pdf	1c4b6eb36089b2ce3802bd49209ff98f0025c238a3a66ebf9c5c8129bfe695f4
@@ -297,6 +299,10 @@ INPUT	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	239cd36ad60
 PAGE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-note-icon-clear-of-region.pdf	48bd694c7f0ff290ad5335921716f51437fa26f3487b2f02230cbbbbd9e6af16
 PAGE	tests/redaction/generated/nearmiss-annotation-note-icon-clear-of-region.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-note-rect-written-backwards-clear.pdf	c87151b51ad2ce1d1a22b1f9506ce503e913e460b253287f9f6e823ec9e1fe33
+PAGE	tests/redaction/generated/nearmiss-annotation-note-rect-written-backwards-clear.pdf	0	FRAME 400 200
+INPUT	tests/redaction/generated/nearmiss-annotation-note-subtype-as-a-string-clear.pdf	4e58ae14c30f6f03928de7ac027c99f607d2ce06d0c886c2795280af59891ed6
+PAGE	tests/redaction/generated/nearmiss-annotation-note-subtype-as-a-string-clear.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	c55fb6d7a5a0da1da82c2f7cdb0e5aca0ef70cd4f3c75ffc818aaac581459ac8
 PAGE	tests/redaction/generated/nearmiss-annotation-popup-of-a-kept-parent.pdf	0	FRAME 400 200
 INPUT	tests/redaction/generated/nearmiss-annotation-quads-inside-rect.pdf	1c50d2aa72c090e0cf3acc05b544bb3b12c863a903cabfc821ccd7438dea2b7c

@@ -3740,6 +3740,32 @@ def evade_annotation_note_subtype_as_a_string() -> bytes:
     )
 
 
+def evade_annotation_note_rect_written_backwards() -> bytes:
+    """A note whose `/Rect` is written backwards: the rectangle it normalises to is clear of the
+    region, and its built appearance, anchored at the first corner as written, reaches it. Refused
+    [annotation-in-region]."""
+    return _note_without_appearance(
+        "NOTE-BACK", b"[28 100 6 90]", literal(secret("NOTE-BACK")),
+    )
+
+
+def nearmiss_annotation_note_rect_written_backwards_clear() -> bytes:
+    """The same backwards note further left, so its built appearance, anchored at the first corner
+    as written, is clear of the region too. MUST redact."""
+    return _note_without_appearance(
+        "NOTE-BACK-CLEAR", b"[8 100 2 90]", literal("an ordinary note, clear of the region"),
+    )
+
+
+def nearmiss_annotation_note_subtype_as_a_string_clear() -> bytes:
+    """The string-subtype note further left, so neither its `/Rect` nor its built appearance
+    reaches the region. MUST redact."""
+    return _note_without_appearance(
+        "NOTE-STRING-CLEAR", b"[5 100 5.5 100.5]", literal("an ordinary note, clear of the region"),
+        subtype=b"(Text)",
+    )
+
+
 def _ink_without_appearance(
     tag: str, width: bytes, style_stream: bytes | None, contents: bytes
 ) -> bytes:
@@ -4079,6 +4105,9 @@ CASES: list[tuple[str, str]] = [
     ("evade-annotation-note-icon-outside-rect", "annotation appearance"),
     ("nearmiss-annotation-note-icon-clear-of-region", "annotation appearance"),
     ("evade-annotation-note-subtype-as-a-string", "annotation appearance"),
+    ("nearmiss-annotation-note-subtype-as-a-string-clear", "annotation appearance"),
+    ("evade-annotation-note-rect-written-backwards", "annotation appearance"),
+    ("nearmiss-annotation-note-rect-written-backwards-clear", "annotation appearance"),
     ("evade-annotation-ink-border-reaches-region", "annotation appearance"),
     ("nearmiss-annotation-ink-border-clear-of-region", "annotation appearance"),
     ("evade-annotation-ink-style-stream-reaches-region", "annotation appearance"),
@@ -4220,6 +4249,11 @@ BUILDERS = {
     "evade-annotation-note-icon-outside-rect": evade_annotation_note_icon_outside_rect,
     "nearmiss-annotation-note-icon-clear-of-region": nearmiss_annotation_note_icon_clear_of_region,
     "evade-annotation-note-subtype-as-a-string": evade_annotation_note_subtype_as_a_string,
+    "nearmiss-annotation-note-subtype-as-a-string-clear":
+        nearmiss_annotation_note_subtype_as_a_string_clear,
+    "evade-annotation-note-rect-written-backwards": evade_annotation_note_rect_written_backwards,
+    "nearmiss-annotation-note-rect-written-backwards-clear":
+        nearmiss_annotation_note_rect_written_backwards_clear,
     "evade-annotation-ink-border-reaches-region": evade_annotation_ink_border_reaches_region,
     "nearmiss-annotation-ink-border-clear-of-region": nearmiss_annotation_ink_border_clear_of_region,
     "evade-annotation-ink-style-stream-reaches-region": evade_annotation_ink_style_stream_reaches_region,

@@ -2623,7 +2623,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 114] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 117] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2898,6 +2898,18 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 114] = [
     (
         "evade-annotation-note-subtype-as-a-string.pdf",
         Some("annotation-in-region"),
+    ),
+    (
+        "nearmiss-annotation-note-subtype-as-a-string-clear.pdf",
+        None,
+    ),
+    (
+        "evade-annotation-note-rect-written-backwards.pdf",
+        Some("annotation-in-region"),
+    ),
+    (
+        "nearmiss-annotation-note-rect-written-backwards-clear.pdf",
+        None,
     ),
     (
         "evade-annotation-ink-border-reaches-region.pdf",

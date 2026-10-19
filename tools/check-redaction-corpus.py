@@ -515,8 +515,9 @@ BYTE_WITNESSES = {
 # 184 since #125 slice 4 added fifteen fixtures, one placement each (2026-10-17); 192 since
 # #125 slice 5 added eight, one placement each (2026-10-18); 201 since its round 1 added nine
 # twins, one placement each (2026-10-18); 208 since seven fixtures of annotations whose
-# appearance PDFium builds, one placement each (2026-10-19).
-PLACEMENT_FLOOR = 208
+# appearance PDFium builds, one placement each (2026-10-19); 211 since three more of them, a
+# note written backwards and its twin and a string-subtype twin.
+PLACEMENT_FLOOR = 211
 MAX_SILENT_FIXTURES = 2
 
 

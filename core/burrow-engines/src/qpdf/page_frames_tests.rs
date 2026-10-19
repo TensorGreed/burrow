@@ -635,9 +635,10 @@ fn the_web_reads_the_native_frames_over_the_redaction_corpus() {
     // the conformance fixtures; 218 since #125 slice 5 added the `/StructParents` evasion and
     // its twins (seventeen new inputs, 2026-10-18); 225 since seven annotations whose built
     // appearance leaves or keeps clear of the region, through their `/Rect`, their subtype or their
-    // border width, joined the evasion fixtures (2026-10-19).
+    // border width, joined the evasion fixtures (2026-10-19); 228 since three more of them, a note
+    // whose `/Rect` is written backwards and its twin and a twin for the string subtype.
     let recorded_cases: usize = cases.values().map(Vec::len).sum();
-    assert_eq!(documents.len(), 225, "the golden's documents");
+    assert_eq!(documents.len(), 228, "the golden's documents");
     assert_eq!(held_to_the_golden, recorded_cases);
 
     // THE PAGE-FRAMES GOLDEN, diffed on every run and re-blessed only on request.

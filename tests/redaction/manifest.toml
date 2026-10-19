@@ -3799,6 +3799,63 @@ PDFium reads a /Subtype written as a string as the name. An annotation with no a
 """
 
 [[fixture]]
+name = "nearmiss-annotation-note-subtype-as-a-string-clear"
+file = "generated/nearmiss-annotation-note-subtype-as-a-string-clear.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same annotation, its subtype written as a string, its /Rect and its built appearance both clear of the region — near-miss twin"
+  canary = "BURROW-EVADE-NOTE-STRING-CLEAR"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A subtype written as a string is measured as the kinds it may name, and an annotation whose built appearance is clear of the region is kept, as every annotation clear of it is.
+"""
+
+[[fixture]]
+name = "evade-annotation-note-rect-written-backwards"
+file = "generated/evade-annotation-note-rect-written-backwards.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an annotation PDFium builds an appearance for, its /Rect written backwards, reaching the region from the corner written first — evasion"
+  canary = "BURROW-EVADE-NOTE-BACK"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The rectangle the /Rect normalises to is clear of the region; the appearance PDFium builds is anchored at the corner written first, not the normalised one, and reaches it. Refused [annotation-in-region] by the built extent (#136 D3).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-note-rect-written-backwards-clear"
+file = "generated/nearmiss-annotation-note-rect-written-backwards-clear.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the same annotation, its /Rect written backwards, its built appearance clear of the region from the corner written first — near-miss twin"
+  canary = "BURROW-EVADE-NOTE-BACK-CLEAR"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A /Rect written backwards is measured from the corner written first, and an annotation whose built appearance is clear of the region is kept, as every annotation clear of it is.
+"""
+
+[[fixture]]
 name = "evade-annotation-ink-border-reaches-region"
 file = "generated/evade-annotation-ink-border-reaches-region.pdf"
 kind = "hand-built"
