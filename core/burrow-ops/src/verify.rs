@@ -278,8 +278,9 @@ pub enum Expected {
     /// - **What either engine reads after Rust hands the buffer over.** PDFium reads the copy
     ///   `PdfiumReading::open` makes; on the web, qpdf reads the copy the JS glue makes in its own
     ///   heap (`__burrow_qpdf_copy_in`, then `copyInto` in `bridge-common.js`). The digest is of
-    ///   what Rust handed over; that the engine reads exactly that copy is the glue's and the
-    ///   engine's contract, not checked.
+    ///   what Rust hands over -- natively the very boxed copy each engine is given, recorded inside
+    ///   the engine's open rather than at the verifier -- and what the engine does with it after
+    ///   that is the glue's and the engine's contract, not checked.
     /// - **The web's final hop, at runtime.** The wasm-bindgen copy out of the heap, the `Blob`
     ///   built from it, `postMessage`, and the page handing that same `Blob` to
     ///   `createObjectURL` -- the last an identity hop, held by delivery's id-keyed pending map and

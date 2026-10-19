@@ -390,10 +390,10 @@ design requirement:
   write, a copy some glue mis-marshalled. A **hash binding** satisfies the property directly: the
   verifier's copy is digested, the digest is compared with the digest of the emitted bytes in
   the heap that emitted them, and a verdict counts only if the two agree. Running in the
-  emitting heap remains the simplest way to meet it. **What pins that today is an argument, not a
-  test:** `burrow_ops::verify` takes the emitted `&[u8]` and nothing else (`verify.rs`), and the
-  `redact_verify_same_bytes` test named above has not been written. (Written 2026-10-19; see
-  below.)
+  emitting heap remains the simplest way to meet it. **What pinned that, until 2026-10-19, was an
+  argument, not a test:** `burrow_ops::verify` took the emitted `&[u8]` and nothing else
+  (`verify.rs`), and the `redact_verify_same_bytes` test named above had not been written. (It was
+  written 2026-10-19; see below.)
 
   **What this admits, and what it does not.** It admits a *second* reading of the output in a
   sibling heap -- #206's PDFium geometry reading, in the render worker -- provided its input is
@@ -414,10 +414,15 @@ design requirement:
   a real-engine test recording what burrow's walk and PDFium's two reads open, and the
   operation over every redacted case in `tests/redaction/outcomes.tsv`, gated on that file's
   count. Each was shown to fail: the mutations that hand a verifier the input, a copy, or another
-  call's document survived the suite before these tests and fail it after. The web build's walk,
-  which no native build compiled, now shares one call site with the native one, so the same tests
-  hold it. They are tests, not a runtime check: up to the returned buffer, every hop is one Rust
-  buffer, moved and borrowed but never copied before it is verified.
+  call's document -- M1b, M3, M3b, M4 and M2web -- survived the suite before these tests and
+  failed it after, and two more that R10's first review planted, M5 and M6, survived recorders
+  placed at the verifiers and failed once the recorders moved to the buffer each engine opens.
+  The web build's walk, which no native build compiled, now shares one call site with the native
+  one, so the same tests hold it. They are tests, not a runtime check: up to the returned buffer,
+  every hop is one Rust buffer, moved and borrowed but never copied before it is verified -- except
+  the copies each verifier's engine reads, which the tests digest where Rust hands them over: the
+  boxed copies qpdf and PDFium open natively, and on the web the slice the walk hands the JS glue,
+  which copies it into qpdf's heap (`verify.rs` names that copy among what the tests leave out).
 
   **What keeps it unmet: the web's final hop.** After the buffer leaves the wasm heap -- the
   wasm-bindgen copy, the `Blob`, `postMessage`, and the page handing that same `Blob` to

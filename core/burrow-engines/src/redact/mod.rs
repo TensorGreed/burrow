@@ -635,7 +635,9 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         );
         #[cfg(not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")))]
         let verdict = {
-            let _ = walked;
+            // NO SECOND READING ON THIS BUILD: the walk's refusals, returned above, are the whole
+            // verdict, and what the walk reports is read by the second reading alone.
+            let _unread_without_a_second_reading = walked;
             Ok(())
         };
         verdict
