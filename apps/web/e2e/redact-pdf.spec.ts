@@ -765,6 +765,11 @@ test("a re-fed result gets its picture like any input, and nothing says the earl
   const rule = FORBIDDEN_CLAIMS.find(({ name }) => name === "the earlier redaction was verified");
   expect(rule, "the D9 rule is missing from FORBIDDEN_CLAIMS").toBeDefined();
   expect(shown, "the page implies the earlier redaction was verified").not.toMatch(rule!.pattern);
+  // And no verdict wording at all in the tool island in this state (not only the D9 rule's shapes).
+  const island = await page.locator("section.tool").innerText();
+  expect(island, "the tool island carries verdict wording in the re-fed state").not.toMatch(
+    /verif|checked|passed[^.]*check/i,
+  );
 });
 
 test("at 390 px wide the page and its picture fit, with no sideways scroll (S4)", async ({

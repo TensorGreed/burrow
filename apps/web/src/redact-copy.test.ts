@@ -189,6 +189,7 @@ describe("the rules themselves", () => {
       ["Your last result is already verified.", "the earlier redaction was verified"],
       ["Redact another area of this verified result.", "the earlier redaction was verified"],
       ["The previous run was checked.", "the earlier redaction was verified"],
+      ["This result has passed verification.", "the earlier redaction was verified"],
     ] as const) {
       expect(claimsMade(sentence), sentence).toContain(name);
     }
