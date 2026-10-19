@@ -132,6 +132,10 @@ pub(crate) mod object_type {
     /// `ot_null` — the third member, and what an absent dictionary key reads as.
     pub(crate) const NULL: c_int = 2;
 
+    /// `ot_boolean` — the fourth member. Split's graphics-state allowlist asks only the type:
+    /// either value is content-free.
+    pub(crate) const BOOLEAN: c_int = 3;
+
     /// `ot_integer` — the fifth member.
     pub(crate) const INTEGER: c_int = 4;
 

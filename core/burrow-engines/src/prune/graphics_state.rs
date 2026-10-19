@@ -139,10 +139,6 @@ const ALLOWLIST: &[(&[u8], &str, Accepted)] = &[
     (b"HT", "/HT", Accepted::NameIn(&[b"/Default"])),
 ];
 
-/// `ot_boolean` -- the fourth member of `enum qpdf_object_type_e`, which `codes::qpdf` does not
-/// otherwise need. Only the type is asked: either value is content-free.
-const BOOLEAN: i32 = 3;
-
 /// What makes one graphics state content-carrying, named at rule level for the refusal.
 enum Carrying {
     /// The entry is not a dictionary (a stream, an array, anything else).
@@ -326,7 +322,7 @@ fn accepts<G: ObjectGraph>(
     }
     Ok(match accepted {
         Accepted::Number => is_number(kind),
-        Accepted::Boolean => kind == BOOLEAN,
+        Accepted::Boolean => kind == object_type::BOOLEAN,
         Accepted::NameIn(names) => name_in(graph, value, names)?,
         Accepted::BlendMode => match kind {
             object_type::NAME => name_in(graph, value, BLEND_MODES)?,
