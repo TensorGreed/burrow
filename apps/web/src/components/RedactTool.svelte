@@ -451,7 +451,25 @@
         </p>
       {/if}
     </fieldset>
+  {/if}
 
+  <!-- MOUNTED FOR AS LONG AS A FILE IS CHOSEN, not with the page or the frames: unmounting it
+       while a render is in flight would terminate PDFium mid-render, the Firefox crash #361
+       records (measured here: a page number typed past the end crashed Firefox's tab). It ends
+       its worker through the same gate as the strip instead. -->
+  {#if file}
+    <RegionPicture
+      {file}
+      result={reFed}
+      {page}
+      frame={frame && !frame.refused ? frame : null}
+      paused={phase === "working"}
+      fields={{ left, top, width, height }}
+      onselect={select}
+    />
+  {/if}
+
+  {#if frames !== null && pageCount > 0}
     {#if pageRefusal}
       <p class="notice" role="alert" data-testid="redact-page-refused">
         <strong>{pageRefusal.title}</strong>
@@ -459,15 +477,6 @@
         {#if pageRefusal.rule}<span class="notice__rule">({pageRefusal.rule})</span>{/if}
       </p>
     {:else if frame}
-      <RegionPicture
-        {file}
-        result={reFed}
-        {page}
-        frame={frame.refused ? null : frame}
-        paused={phase === "working"}
-        fields={{ left, top, width, height }}
-        onselect={select}
-      />
       <fieldset class="choice">
         <legend>The area, in points</legend>
         <div class="area">

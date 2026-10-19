@@ -65,6 +65,8 @@
   let generation = 0;
   let running = false;
   let hidden = false;
+  /** Unmounted: nothing more is drawn, though a render in flight is let settle (#361). */
+  let destroyed = false;
   let space = $state(0);
   let viewportHeight = $state(typeof window === "undefined" ? 0 : window.innerHeight);
   const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio;
@@ -124,7 +126,7 @@
   });
 
   async function draw(): Promise<void> {
-    if (running || paused || hidden || !shownFor || !frame) return;
+    if (destroyed || running || paused || hidden || !shownFor || !frame) return;
     const mine = generation;
     const target = shownFor;
     const shape = frame;
@@ -293,10 +295,17 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     generation += 1;
-    ending.cancel();
     release();
-    host.dispose();
+    // NEVER MID-RENDER (#361): a render in flight ends its worker when it settles, or at the
+    // gate's deadline; only an idle worker is disposed of at once.
+    if (running) {
+      ending.request(true);
+    } else {
+      ending.cancel();
+      host.dispose();
+    }
   });
 </script>
 

@@ -768,3 +768,18 @@ test("leaving the page lets go of the picture and ends its worker (S4, D1, D4)",
   );
   await drawnPicture(page);
 });
+
+test("the picture stays mounted while the page number is wrong, so no render is cut off (S4, #361)", async ({
+  page,
+}) => {
+  // UNMOUNTING IT MID-RENDER TERMINATED PDFium MID-RENDER: measured, a page number typed past the
+  // end crashed Firefox's tab, the crash #361 records. The picture stays, idle, and its worker
+  // ends only through the strip's gate.
+  await open(page, TWO_LINES, generated);
+  await page.getByTestId("redact-page").fill("999");
+  await expect(page.locator("#page-problem")).toContainText("Type a page number from 1 to");
+  await expect(page.getByTestId("redact-picture")).toHaveCount(1);
+  await expect(page.getByTestId("redact-picture")).toHaveAttribute("data-state", "idle");
+  await page.getByTestId("redact-page").fill("1");
+  await drawnPicture(page);
+});
