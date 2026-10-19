@@ -2153,6 +2153,17 @@ mod second_reading {
     /// edge at 40: nothing is cut, and only PDFium puts glyphs seven to twenty inside.
     const CARRIED_PAST_THE_ENVELOPE: &str = "BT /F1 10 Tf 10 700 Td (KKKKKKKKKKKKKKKKKKKK) Tj ET\n";
 
+    /// Two glyphs at 20 pt from x = 13. Read correctly, the `W`'s origin is at 24.12 and PDFium's
+    /// box for it runs to 42.68, across the region's left edge at 40; its origin is outside the
+    /// region. Under the planted misreading burrow places the `W` at 14.11 and its box -- the
+    /// floor envelope, 1.116 em, 22.32 pt -- stops at 36.43, short of the edge: nothing is cut,
+    /// and only PDFium's box reaches the region. The fixture for R1's box half (owner, 2026-10-19).
+    const STRADDLING_THE_EDGE: &str = "BT /F1 20 Tf 13 700 Td (KW) Tj ET\n";
+
+    /// [`STRADDLING_THE_EDGE`] moved 2.68 pt left, so PDFium's box for the `W` ends at 40.0, on
+    /// the region's left edge: wholly outside it, touching it. The twin.
+    const TOUCHING_THE_EDGE: &str = "BT /F1 20 Tf 10.32 700 Td (KW) Tj ET\n";
+
     /// Both glyphs where the content stream says, one inside the region and one outside.
     const PLAIN: &str = "BT /F1 24 Tf 72 700 Td (K) Tj ET\nBT /F1 24 Tf 72 100 Td (S) Tj ET\n";
 
@@ -2236,6 +2247,45 @@ mod second_reading {
         );
         assert_eq!(asked, 1, "the second reading ran");
         assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
+    }
+
+    #[test]
+    fn r1_a_kept_glyph_whose_box_straddles_the_edge_is_refused_and_its_touching_twin_redacts() {
+        // A KEPT GLYPH ACROSS THE EDGE (owner, 2026-10-19). Under the planted misreading burrow
+        // keeps the `W`, and its own verification agrees; PDFium places the `W`'s origin outside
+        // the region and its box across the left edge. Counted by its box, so refused.
+        reset();
+        WIDTHS_MISREAD.with(|flag| flag.set(true));
+        let planted = redact(STRADDLING_THE_EDGE);
+        let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
+        let asked = readings();
+        reset();
+        assert!(
+            misread > 0,
+            "the planted defect did not apply: no font's widths were read"
+        );
+        assert_eq!(asked, 1, "the second reading ran");
+        assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
+
+        // THE TWIN: the same plant, the `W`'s box ending on the edge. Kept, and not counted.
+        WIDTHS_MISREAD.with(|flag| flag.set(true));
+        let twin = redact(TOUCHING_THE_EDGE);
+        let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
+        let asked = readings();
+        reset();
+        assert!(
+            misread > 0,
+            "the planted defect did not apply to the twin: no font's widths were read"
+        );
+        assert_eq!(asked, 1, "the second reading ran on the twin");
+        let output = twin.unwrap_or_else(|error| panic!("the touching twin must redact: {error}"));
+        // KEPT, counted directly: the twin says something about R1's edge only if the `W` is
+        // still drawn in the output, where PDFium read it.
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let shown = crate::glyphs_on_first_page(&output, &options)
+            .expect("the output walks")
+            .len();
+        assert_eq!(shown, 2, "both glyphs are kept in the twin's output");
     }
 
     #[test]

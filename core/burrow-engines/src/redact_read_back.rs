@@ -24,18 +24,21 @@
 //!
 //! - **R1, `[second-reading-glyph-in-region]`.** No character PDFium reports on the redacted page,
 //!   other than one it flags as generated, has its **origin** (`FPDFText_GetCharOrigin`) inside the
-//!   region. The region is converted into content space with the **output's** frame as burrow
-//!   reads it -- the same rectangle `redact_verify` tested burrow's own glyphs against -- and
-//!   shrunk by [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) on every side, so an
-//!   origin that merely sits on the edge is not a disagreement.
+//!   region, **or its character box (`FPDFText_GetCharBox`) crossing into it**. The region is
+//!   converted into content space with the **output's** frame as burrow reads it -- the same
+//!   rectangle `redact_verify` tested burrow's own glyphs against -- and shrunk by
+//!   [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) on every side, so an origin that
+//!   merely sits on the edge, or a box that merely touches it, is not a disagreement.
 //!
-//!   **Origins only, and that is a decision, not an omission** (owner, 2026-10-15, #206 option A).
-//!   PDFium's ink box (`FPDFText_GetCharBox`) is not read. Calibrated against main, an ink-box rule
-//!   refused 152 of 3,488 tiles that burrow redacts today, every one of them traced to burrow's
-//!   conservative glyph box ignoring `/FontDescriptor`'s `/FontBBox` (#344) rather than to a glyph
-//!   PDFium places in the region. The origin rule refused none. #344 now reads that box, and a
-//!   floor envelope besides; the ink half is #206's, after it, and is what can see a font whose
-//!   outlines exceed the box it declares.
+//!   **Intersecting, not only inside** (owner, 2026-10-19). A kept character whose box straddles
+//!   the region's edge is counted, as one wholly inside is: its origin may be outside the region
+//!   while part of what it draws is inside. A box is counted when it overlaps the shrunk region
+//!   by more than nothing on both axes; an origin, as before, when it is in the shrunk region,
+//!   edges included. Measured before it was built: against origin/main, the box rule refused no
+//!   tile burrow redacts today (ADR 0029, 2026-10-19 amendment). History: on 2026-10-15 (#206
+//!   option A) the box was not read, because an ink-box rule then refused 152 of 3,488 tiles,
+//!   every one traced to burrow's glyph box ignoring `/FontDescriptor`'s `/FontBBox`; #344 now
+//!   reads that box and a floor envelope besides, and the same rule refused none after it.
 //!
 //!   A region no more than twice [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) wide or
 //!   tall has nothing left to compare once the tolerance is taken off, and refuses as
@@ -64,18 +67,19 @@
 //! instead -- but mapping is not wholly out of it: PDFium decides WHETHER to report a character
 //! partly from its mapping, so a mapping can remove a character from this reading (see
 //! "Characters PDFium does not report" below). The PDFium text functions this crate's library
-//! source (`src/`) may name are exactly five -- the test-only oracle under `tests/support/`, which
+//! source (`src/`) may name are exactly six -- the test-only oracle under `tests/support/`, which
 //! never ships, is outside it -- and
-//! `tests::the_pdfium_text_functions_named_are_the_five_permitted` refuses any other, with a probe
+//! `tests::the_pdfium_text_functions_named_are_the_six_permitted` refuses any other, with a probe
 //! per rejected name.
 //!
 //! # What this leaves undetectable, stated because the rules could be read as covering it
 //!
-//! - **Ink that reaches the region from an origin outside it.** R1 reads where each character's
-//!   pen starts, not how far its ink extends, so a glyph whose origin is outside the region and
-//!   whose outline reaches into it is not a disagreement here. burrow's own check still tests its
-//!   conservative box against the region, so such a glyph is held by burrow's reading alone --
-//!   the same-source limit this module exists to narrow, narrowed for origins and not yet for ink.
+//! - **Ink outside PDFium's own character box.** R1 reads the box PDFium reports for each
+//!   character, which is PDFium's account of the glyph (its outline's bounds, where it has an
+//!   outline), not a measurement of the pixels it paints. Ink a glyph draws beyond that box -- a
+//!   stroke's width, a Type 3 procedure drawing past its declared box -- is not a disagreement
+//!   here, and is held by burrow's own check alone. Nor is any of this the web's: the browser
+//!   path does not run this reading.
 //! - **A misplacement PDFium shares.** Two engines agreeing is not either of them being right. A
 //!   term both get wrong the same way is invisible here, as it is to every viewer that reads it
 //!   the same way.
@@ -187,12 +191,13 @@ pub const MAX_CHARS: usize = 2 * crate::pdfsyntax::geometry::MAX_GLYPHS;
 pub const MAX_MARKED_WORK: u64 = 1_000_000;
 
 /// One character as the second reading places it. Page space, as the content stream draws it.
-///
-/// No ink box: R1 reads origins only until #206's ink half (see the module's R1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlacedChar {
     /// The pen position: `FPDFText_GetCharOrigin`.
     pub origin: (f64, f64),
+    /// The character's box: `FPDFText_GetCharBox`. R1 counts a box that crosses into the region,
+    /// not only an origin inside it.
+    pub bounds: Rect,
     /// The reading invented the character rather than reading it from the file
     /// (`FPDFText_IsGenerated`).
     pub generated: bool,
@@ -338,7 +343,8 @@ pub fn agrees<R: SecondReading>(
     }
     let read: Vec<&PlacedChar> = page.chars.iter().filter(|c| !c.generated).collect();
     // A NUMBER THAT IS NOT ONE places a character nowhere, which is no answer, and every
-    // comparison with a NaN is false -- so R1 would read it as outside the region.
+    // comparison with a NaN is false -- so R1 would read it as outside the region. The box's
+    // four numbers are held to it as the origin's two are.
     if read.iter().any(|c| !placed_finitely(c)) {
         return Err(unanswered(
             "a character placed at a coordinate that is not a number",
@@ -379,7 +385,7 @@ pub fn agrees<R: SecondReading>(
     if inside > 0 {
         return Err(rejected(format!(
             "[second-reading-glyph-in-region] the renderer places {inside} character(s) inside \
-             the region on page {}",
+             or across the edge of the region on page {}",
             expected.page
         )));
     }
@@ -400,16 +406,33 @@ fn shrunk(rect: &Rect, by: f64) -> Option<Rect> {
     (inner.left < inner.right && inner.bottom < inner.top).then_some(inner)
 }
 
-/// Whether a character's origin is inside `region`, closed on every edge so an origin exactly on
-/// the shrunk edge counts.
+/// Whether a character reaches `region`: its origin inside it, closed on every edge so an origin
+/// exactly on the shrunk edge counts; or its box crossing into it.
 fn reaches(region: &Rect, c: &PlacedChar) -> bool {
     let (x, y) = c.origin;
-    x >= region.left && x <= region.right && y >= region.bottom && y <= region.top
+    let origin_inside =
+        x >= region.left && x <= region.right && y >= region.bottom && y <= region.top;
+    origin_inside || crosses(region, &c.bounds)
 }
 
-/// Both coordinates of the character's origin are finite numbers.
+/// Whether `bounds` overlaps `region` by more than nothing on both axes. A box that only touches
+/// the shrunk region's edge does not; one that straddles it, or lies wholly inside, does. The box
+/// is normalised first, so one PDFium reports with its corners swapped is still read.
+fn crosses(region: &Rect, bounds: &Rect) -> bool {
+    let (left, right) = (bounds.left.min(bounds.right), bounds.left.max(bounds.right));
+    let (bottom, top) = (bounds.bottom.min(bounds.top), bounds.bottom.max(bounds.top));
+    left < region.right && right > region.left && bottom < region.top && top > region.bottom
+}
+
+/// Both coordinates of the character's origin, and all four of its box, are finite numbers.
 fn placed_finitely(c: &PlacedChar) -> bool {
-    c.origin.0.is_finite() && c.origin.1.is_finite()
+    let b = &c.bounds;
+    c.origin.0.is_finite()
+        && c.origin.1.is_finite()
+        && b.left.is_finite()
+        && b.bottom.is_finite()
+        && b.right.is_finite()
+        && b.top.is_finite()
 }
 
 /// The one shape of rejection this module produces.

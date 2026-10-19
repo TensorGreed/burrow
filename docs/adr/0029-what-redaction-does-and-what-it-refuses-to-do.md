@@ -5409,3 +5409,45 @@ box. The verification re-walks with the same reader and inherits the rule.
   glyphs cut by identity, and that is pinned.
 - The oracle's P3 floor was re-derived as the larger of PDFium's loose box and the envelope:
   against the loose box alone, 145 of 238 real glyphs fail a box that is what the rule asks for.
+
+## Amendment, 2026-10-19 — the second reading counts a character whose box crosses into the region
+
+**Owner, 2026-10-19 (decision 26, item 3).** R1 of the second reading (§6, #206) counted a kept
+character only when PDFium placed its **origin** inside the region. A character whose origin is
+outside the region and whose box crosses into it was not counted, though part of what it draws is
+in the region. R1 now counts it:
+
+- **The rule.** No character PDFium reports on the redacted page, other than one it flags as
+  generated, has its origin inside the region **or its character box (`FPDFText_GetCharBox`)
+  crossing into it**. The region is the same one as before: converted with the output's frame and
+  shrunk by `TOLERANCE_PT` on every side. A box counts when it overlaps that shrunk region by more
+  than nothing on both axes, so one that straddles an edge counts, one wholly inside counts, and one
+  that only touches an edge, or reaches within the tolerance of it, does not. A box PDFium reports
+  with its corners swapped is normalised; a coordinate that is not a finite number is no answer and
+  refuses `[second-reading-unavailable]`, as an origin's does.
+- **Tier: a refusal** (DECISIONS rule 17). The second reading only adds refusals, and the census
+  below moves nothing from refused to `Ok`.
+- **The PDFium text functions** the library source may name go from five to six, adding
+  `FPDFText_GetCharBox`. Nothing that returns what a character says is added.
+- **The fixture and its twin.** Under the test plant that misreads `/Widths` in both of burrow's
+  passes, a kept glyph whose origin is outside the region and whose PDFium box crosses its edge is
+  refused `[second-reading-glyph-in-region]`; the same glyph moved so its box ends on the edge
+  redacts, with both glyphs kept. The asserted mutation "count a box only when it is wholly inside"
+  fails the fixture.
+- **History.** On 2026-10-15 (#206 option A) the box was deliberately not read: an ink-box rule then
+  refused 152 of 3,488 tiles, every one traced to burrow's glyph box ignoring `/FontDescriptor`'s
+  `/FontBBox`. #344 now reads that box with a floor envelope, and its census measured the same rule
+  at 0 intruding tiles.
+- **Not covered.** Ink outside PDFium's own box for a character (a stroke's width, a Type 3
+  procedure drawing past its declared box); a character PDFium does not report; another viewer's
+  placement. And the web: the browser path has no second reading, so this is native only. #206's
+  ink half inherits this rule.
+
+**Census, against fce3438**, before the rule was built and again with it (4,825 tiles, 317 lines at
+open):
+
+- **The rule's cost, measured on main first.** The PDFium character-box instrument (#344's
+  instrument 2), applying this overlap rule to every `Ok` tile, found **0 of 3,234** `Ok` tiles with
+  a kept character whose box crosses the region, and 0 with text ink in it by raster.
+- **With the rule in place**, the tile census and the open census are **identical** to main's: no
+  tile and no input moved in either direction. `tests/redaction/outcomes.tsv` is unchanged.

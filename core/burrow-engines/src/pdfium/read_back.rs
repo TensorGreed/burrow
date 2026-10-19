@@ -7,7 +7,7 @@
 //!
 //! - **The operation's deadline, not a fresh one.** Both opens spend it (`open_spending`), and it
 //!   is checkpointed before and after every engine call, and every 4,096 characters while their
-//!   origins are read.
+//!   origins and boxes are read.
 //! - **`estimate::before_page_load` before the page is loaded.** `FPDF_LoadPage` builds the
 //!   display list and `FPDFText_LoadPage` the text layer, in two calls nothing can checkpoint;
 //!   the only lever on them is refusing to begin, which is what render does too.
@@ -191,8 +191,15 @@ fn char_placements(
                         unsafe { ffi::text_char_placement(text, at_c) }.ok_or_else(|| {
                             Error::Malformed("a character's place could not be read".to_owned())
                         })?;
+                    let (left, bottom, right, top) = placement.bounds;
                     out.push(PlacedChar {
                         origin: placement.origin,
+                        bounds: crate::pdfsyntax::geometry::Rect {
+                            left,
+                            bottom,
+                            right,
+                            top,
+                        },
                         generated: placement.generated,
                     });
                 }
