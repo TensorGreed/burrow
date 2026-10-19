@@ -49,6 +49,10 @@ mod references_tests;
 // Split's optional-content stopgap at its open, on both engines (owner, 2026-10-13).
 #[cfg(test)]
 mod split_stopgap_tests;
+// Split keeps graphics states whole and refuses an unused one that could carry content, on both
+// engines (owner, 2026-10-19).
+#[cfg(test)]
+mod split_graphics_state_tests;
 // An annotation the redaction keeps draws inside its /Rect, on both engines (#229).
 #[cfg(test)]
 mod annotation_appearance_tests;

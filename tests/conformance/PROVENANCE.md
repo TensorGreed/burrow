@@ -59,6 +59,10 @@ disagree. See [ADR 0016](../../docs/adr/0016-differential-conformance.md).
 | `contents-token-across-streams.pdf` | two pages; page 2's content divided between two streams inside a token (#315) | 2 pages; **split refused** (`[split-contents-boundary]`) | same |
 | `contents-streams-beside-a-font-name.pdf` | the same page divided between whole tokens, beside a font name | 2 pages; split into 2 parts | same |
 | `contents-streams-beside-an-xobject-name.pdf` | the same page divided between whole tokens, beside an XObject name | 2 pages; split into 2 parts | same |
+| `graphics-state-unused-soft-mask.pdf` | two pages listing one soft-mask graphics state; page 1 does not draw with it | 2 pages; **split refused** (`[split-graphics-state-unused]`) | same |
+| `graphics-state-drawn-by-both.pdf` | the same, page 1 drawing with it | 2 pages; split into 2 parts | same |
+| `graphics-state-content-free-unused.pdf` | the same with a content-free graphics state page 1 does not draw with | 2 pages; split into 2 parts | same |
+| `resource-category-not-a-dictionary.pdf` | the same, page 1 writing a resource category as something other than a dictionary | 2 pages; **split refused** (`[split-resource-category-not-a-dictionary]`) | same |
 | `truncated-mid-object.pdf` | a valid 3-page file cut in half | `Malformed` | `Malformed`, or **1 page** with recovery |
 | `trailer-removed.pdf` | the same file with its trailer removed | `Malformed` | `Malformed`, or **3 pages** with recovery |
 | `canary.pdf` | a damaged file with a canary in every place a parser might quote it | 1 page | `Malformed`, or 1 page with recovery |

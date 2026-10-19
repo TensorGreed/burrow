@@ -431,6 +431,15 @@ DOC	tests/conformance/fixtures/five-pages-or-six.pdf	ERR Unsupported("pdf redact
 INPUT	tests/conformance/fixtures/font-program-with-a-paren.pdf	7b990effc3efa904b55e07499556fe70c0f969109154cf0a4b0cd399cd927706
 PAGE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	FRAME 200 200
 PAGE	tests/conformance/fixtures/font-program-with-a-paren.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/graphics-state-content-free-unused.pdf	5e1236c93f5dbdf51a4ae5e5f18b442112b125182a63c8c59f69630a63554811
+PAGE	tests/conformance/fixtures/graphics-state-content-free-unused.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/graphics-state-content-free-unused.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	97033fab261daf35a647661339443822cc2a9ebcc492561d636b3237d8d40c6c
+PAGE	tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	048971521c38f5a330e210bdd63d91b04576f42a983780959eef5e15a98dd957
+PAGE	tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	1	FRAME 200 200
 INPUT	tests/conformance/fixtures/inherited-rotation-6page.pdf	334df43b50f88a6eb45f458f9ffd3c5947a62f2d7f9b228879e24f7e7067695f
 PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	RULE page-attribute-inherited
 PAGE	tests/conformance/fixtures/inherited-rotation-6page.pdf	1	RULE page-attribute-inherited
@@ -604,6 +613,9 @@ PAGE	tests/conformance/fixtures/pages-137.pdf	135	FRAME 612 792
 PAGE	tests/conformance/fixtures/pages-137.pdf	136	FRAME 612 792
 INPUT	tests/conformance/fixtures/render-one-quadrant.pdf	d04cb542b0a973eb658350c0f5200e03bf8c7675bae637218881213a46e2c059
 PAGE	tests/conformance/fixtures/render-one-quadrant.pdf	0	FRAME 200 400
+INPUT	tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	8ae6cbba17fb544f97d56f6ad972d00468dbc6fb59bc824327fc57b67527d768
+PAGE	tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	1	FRAME 200 200
 INPUT	tests/conformance/fixtures/trailer-removed.pdf	338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5
 DOC	tests/conformance/fixtures/trailer-removed.pdf	ERR Malformed("qpdf: the document is damaged")
 INPUT	tests/conformance/fixtures/truncated-mid-object.pdf	f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75
