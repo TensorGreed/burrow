@@ -37,7 +37,7 @@
 //!   than nothing on both axes; an origin, as before, when it is in the shrunk region, edges
 //!   included. **The box has no tolerance** (owner decision 36, 2026-10-19): a glyph whose box
 //!   crossed the edge by less than `TOLERANCE_PT` was measured painting pixels inside the region
-//!   in three readers, so a sub-tolerance crossing is not float noise to forgive. Its cost was
+//!   in four of the five readers measured, so a sub-tolerance crossing is not float noise to forgive. Its cost was
 //!   measured on the census first, as the box rule's own was: against origin/main, the box rule
 //!   with the tolerance refused no tile burrow redacts today (ADR 0029, both 2026-10-19
 //!   amendments). History: on 2026-10-15 (#206
