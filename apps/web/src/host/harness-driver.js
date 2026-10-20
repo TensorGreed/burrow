@@ -577,18 +577,37 @@ function heapScanPrologue(canary) {
   const STRIDE = 8;
   let calls = 0;
   const peak = new Map();
-  const sample = () => {
-    if (calls++ % STRIDE !== 0) return;
+  const measure = () => {
     for (const memory of memories) {
       const hits = count(new Uint8Array(memory.buffer));
       peak.set(memory, Math.max(peak.get(memory) || 0, hits));
     }
   };
+  const sample = () => {
+    if (calls++ % STRIDE !== 0) return;
+    measure();
+  };
+  // AND ON RETURN FROM THE TWO QPDF CALLS THAT DECODE CONTENT, every time: the decoded bytes sit
+  // in qpdf's heap from that return until the bridge copies them out and wipes them, inside one
+  // bridge call, so no sample on entry to a bridge call can see them. The entry samples used to
+  // see a Flate page's text anyway, in blocks qpdf had freed without wiping; since qpdf's heap
+  // wipes on free (ADR 0004's 2026-10-20 amendment) there is none to see, and a witness that
+  // depended on the leftover it exists to rule out was not one.
+  const DECODERS = ["_qpdf_oh_get_stream_data", "_qpdf_oh_get_page_content_data"];
   self.addEventListener("message", () => {
     const attach = self.__burrow_attach;
     if (typeof attach !== "function" || attach.__heapScan) return;
     const wrapped = (module) => {
       qpdf = module;
+      for (const name of DECODERS) {
+        const original = module[name];
+        if (typeof original !== "function") continue;
+        module[name] = function (...args) {
+          const result = original.apply(this, args);
+          measure();
+          return result;
+        };
+      }
       return attach(module);
     };
     wrapped.__heapScan = true;
