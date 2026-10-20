@@ -169,7 +169,10 @@ expect_refusal "a base bundle whose manifest names a PDFium URL is refused" \
 # The other direction, and the one an absence-only checker cannot see: a build that staged
 # PDFium and then forgot to name it would pass every rule above and render nothing.
 fixture
-sed -i 's|"url": "http://localhost:4321/engines/pdfium\.[0-9a-f]*\.wasm"|"url": "http://localhost:4321/engines/zzz.wasm"|' \
+# ANY PORT: `ci-local.py` runs the e2e suite in slots, and the harness build it leaves in `dist/` is
+# for that slot's origin -- `localhost:4331` from slot 1. Matched on 4321 alone, this plant applied
+# to nothing there, and the case failed for a reason that was not the checker's.
+sed -i 's|"url": "http://localhost:[0-9]*/engines/pdfium\.[0-9a-f]*\.wasm"|"url": "http://localhost:4321/engines/zzz.wasm"|' \
   "$(find "$work/engines" -name 'burrow-render-worker.*.js' | head -1)"
 expect_refusal "a render bundle whose manifest names no PDFium URL is refused" \
   "the render bundle's engine manifest names no PDFium URL" \
