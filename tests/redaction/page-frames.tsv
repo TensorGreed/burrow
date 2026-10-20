@@ -415,6 +415,15 @@ PAGE	tests/conformance/fixtures/chrome-printed-tagged.pdf	1	FRAME 595.91998 842.
 INPUT	tests/conformance/fixtures/chrome-printed.pdf	54d4fd0000f6858656452f19523ad48e0e2598b1634731fad9ac7a01c75b2bb1
 PAGE	tests/conformance/fixtures/chrome-printed.pdf	0	FRAME 595.91998 842.88
 PAGE	tests/conformance/fixtures/chrome-printed.pdf	1	FRAME 595.91998 842.88
+INPUT	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	a2293b5b7114bf2cf91f3fa26d8f056ee94d4d004505ac63c7b1a7ba59623a0c
+PAGE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/contents-streams-beside-a-font-name.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	ee78a2d16506d19f42a76aea72b2212d9188c042caaa3972f9ba73131e8ceba0
+PAGE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/contents-streams-beside-an-xobject-name.pdf	1	FRAME 200 200
+INPUT	tests/conformance/fixtures/contents-token-across-streams.pdf	3d4fe054199e059fa7e9f27620f8e7908a8ec4bf2b14ef4ea177c08e95da4959
+PAGE	tests/conformance/fixtures/contents-token-across-streams.pdf	0	FRAME 200 200
+PAGE	tests/conformance/fixtures/contents-token-across-streams.pdf	1	FRAME 200 200
 INPUT	tests/conformance/fixtures/encrypted.pdf	12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74
 DOC	tests/conformance/fixtures/encrypted.pdf	ERR PasswordRequired
 INPUT	tests/conformance/fixtures/five-pages-or-six.pdf	c0ada3521ae2d33c91239eb6f15f6c466836de31ca09d63cfe4d4deef66ca753

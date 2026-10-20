@@ -83,12 +83,24 @@ impl PageExtractor for WebQpdf {
 
         // THE OPTIONAL-CONTENT STOPGAP (owner, 2026-10-13), as natively, before a page is read.
         // Through redaction's seam over this session, borrowed, so split keeps the session.
-        let empty_key_admitted = crate::prune::refuse_optional_content_document(
-            &crate::web::redact::WebRedactionDocument::borrowing(self, &session),
-            &bytes,
-            &deadline,
-            clock.as_ref(),
-        )?;
+        // The borrowed document lives for these two checks only: its keys are engine-heap
+        // allocations, freed when it drops.
+        let empty_key_admitted = {
+            let borrowed = crate::web::redact::WebRedactionDocument::borrowing(self, &session);
+            let admitted = crate::prune::refuse_optional_content_document(
+                &borrowed,
+                &bytes,
+                &deadline,
+                clock.as_ref(),
+            )?;
+            // NO TOKEN ACROSS A `/Contents` BOUNDARY (#315), as natively. See
+            // `prune::refuse_contents_boundaries`.
+            crate::prune::refuse_contents_boundaries(&borrowed, &deadline, clock.as_ref())?;
+            admitted
+        };
+        if session.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
 
         // THE SHARING SWEEP, inside the open's own deadline rather than a fresh one. It is
         // O(source pages) bridge crossings, so on a `max_pages`-sized document it is not "one

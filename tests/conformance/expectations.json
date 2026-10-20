@@ -845,6 +845,60 @@
       }
     },
     {
+      "name": "split-refuses-a-token-across-two-contents-streams",
+      "inputs": [
+        {
+          "file": "fixtures/contents-token-across-streams.pdf",
+          "sha256": "3d4fe054199e059fa7e9f27620f8e7908a8ec4bf2b14ef4ea177c08e95da4959"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "split": {
+          "err": {
+            "kind": "Unsupported"
+          }
+        }
+      }
+    },
+    {
+      "name": "split-divides-contents-streams-between-tokens-beside-a-font-name",
+      "inputs": [
+        {
+          "file": "fixtures/contents-streams-beside-a-font-name.pdf",
+          "sha256": "a2293b5b7114bf2cf91f3fa26d8f056ee94d4d004505ac63c7b1a7ba59623a0c"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "split-divides-contents-streams-between-tokens-beside-an-xobject-name",
+      "inputs": [
+        {
+          "file": "fixtures/contents-streams-beside-an-xobject-name.pdf",
+          "sha256": "ee78a2d16506d19f42a76aea72b2212d9188c042caaa3972f9ba73131e8ceba0"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        }
+      }
+    },
+    {
       "name": "a-chrome-printed-document",
       "inputs": [
         {

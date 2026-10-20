@@ -2938,7 +2938,7 @@ fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
 pub fn check_contents_boundaries(parts: &[&[u8]], watch: &Watch<'_>) -> Result<()> {
     for part in parts.iter().filter(|part| !part.is_empty()).rev().skip(1) {
         watch.now()?;
-        let between = match ends_between_tokens(part) {
+        let between = match ends_between_tokens(part, super::lexer::InlineImages::REDACTION) {
             Some(between) => between,
             None => {
                 lexes(super::contents::Contents::concatenate(parts)?.bytes())?;
@@ -2969,15 +2969,20 @@ const fn is_pdf_whitespace(byte: u8) -> bool {
     matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
 
-/// Whether `element`, lexed alone, ends between tokens and in white space, or `None` when it does
-/// not lex alone. See [`check_contents_boundaries`].
-fn ends_between_tokens(element: &[u8]) -> Option<bool> {
+/// Whether `element`, lexed alone under `images`, ends between tokens and in white space, or `None`
+/// when it does not lex alone. See [`check_contents_boundaries`].
+///
+/// **The lexer's mode is the caller's**: redaction passes [`super::lexer::InlineImages::REDACTION`],
+/// and split [`ends_between_tokens_for_split`]'s `Prune`, so that redaction's refusals stay out of
+/// the base web module (ADR 0029's 2026-09-21 amendment). Under `Prune`, an inline image whose end
+/// cannot be found stops the lexer; that is `None` here, never a pass.
+fn ends_between_tokens(element: &[u8], images: super::lexer::InlineImages) -> Option<bool> {
     if !element.last().is_some_and(|byte| is_pdf_whitespace(*byte)) {
         return Some(false);
     }
     // LEXED ALONE: an element that leaves a string, a hex string or an inline image's data open
     // does not lex on its own, and one that leaves a `BI` dictionary open ends before its `ID`.
-    let mut lexer = super::lexer::Lexer::new(element, super::lexer::InlineImages::REDACTION);
+    let mut lexer = super::lexer::Lexer::new(element, images);
     let mut last_token_end = 0;
     let mut in_image_dictionary = false;
     loop {
@@ -2996,6 +3001,9 @@ fn ends_between_tokens(element: &[u8]) -> Option<bool> {
             Err(_) => return None,
         }
     }
+    if lexer.extent_unknown() {
+        return None;
+    }
     if in_image_dictionary {
         return Some(false);
     }
@@ -3012,6 +3020,12 @@ fn ends_between_tokens(element: &[u8]) -> Option<bool> {
         }
     }
     Some(true)
+}
+
+/// [`ends_between_tokens`] for split's open (`prune::refuse_contents_boundaries`, #315), lexed
+/// under split's own `InlineImages::Prune` rather than redaction's mode.
+pub(crate) fn ends_between_tokens_for_split(element: &[u8]) -> Option<bool> {
+    ends_between_tokens(element, super::lexer::InlineImages::Prune)
 }
 
 /// How many operations a walk goes between readings of the clock.

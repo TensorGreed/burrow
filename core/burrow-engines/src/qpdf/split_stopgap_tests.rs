@@ -1306,3 +1306,150 @@ fn the_empty_value_lookups_read_the_deadline() {
         other => panic!("a deadline that passes inside the lookups: {other:?}"),
     }
 }
+
+/// A two-page document whose SECOND page's `/Contents` is `elements`, each an object of its own:
+/// a stream, or, written as `!body`, the object `body` as it stands. Page 1 is one stream.
+fn divided(elements: &[&str]) -> Vec<u8> {
+    let first: u32 = 10;
+    let references: Vec<String> = (first..)
+        .take(elements.len())
+        .map(|number| format!("{number} 0 R"))
+        .collect();
+    let mut objects: Vec<Written> = vec![
+        (1, 0, PLAIN_CATALOG.to_owned()),
+        (
+            2,
+            0,
+            "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".to_owned(),
+        ),
+        (
+            3,
+            0,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_owned(),
+        ),
+        (
+            4,
+            0,
+            format!("<< /Length {} >>\nstream\n{SHOWN}\nendstream", SHOWN.len()),
+        ),
+        (
+            5,
+            0,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ),
+        (
+            6,
+            0,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents [{}] \
+                 /Resources << /Font << /F1 5 0 R >> /ExtGState << /GS1 7 0 R >> >> >>",
+                references.join(" ")
+            ),
+        ),
+        (7, 0, "<< /Type /ExtGState /ca 0.5 >>".to_owned()),
+    ];
+    for (at, element) in (first..).zip(elements) {
+        let body = match element.strip_prefix('!') {
+            Some(object) => object.to_owned(),
+            // NO LINE END ADDED: the stream's data is exactly `element`, so its last byte is the
+            // one the rule reads.
+            None => format!(
+                "<< /Length {} >>\nstream\n{element}\nendstream",
+                element.len()
+            ),
+        };
+        objects.push((at, 0, body));
+    }
+    classic(&objects)
+}
+
+/// A TOKEN ACROSS TWO `/Contents` STREAMS refuses at split's open, on every page and on both
+/// engines (#315): redaction's `[contents-boundary]` rule (#312), as `[split-contents-boundary]`.
+/// Each element a boundary follows must end between tokens, in white space; the boundary is on page
+/// 2, which no cut has to take. The twins divide the same content between whole tokens.
+#[test]
+fn a_page_whose_contents_streams_do_not_divide_between_tokens_refuses() {
+    const RULE: &str = "[split-contents-boundary]";
+    for (what, elements) in [
+        (
+            "a name",
+            &["q /G", "S1 gs BT /F1 24 Tf 20 200 Td (A) Tj ET Q"][..],
+        ),
+        (
+            "an operator",
+            &["q /GS1 g", "s BT /F1 24 Tf 20 200 Td (A) Tj ET Q"][..],
+        ),
+        (
+            "a number",
+            &["q /GS1 gs BT /F1 2", "4 Tf 20 200 Td (A) Tj ET Q"][..],
+        ),
+        (
+            "a string",
+            &["q /GS1 gs BT /F1 24 Tf 20 200 Td (A", ") Tj ET Q"][..],
+        ),
+        (
+            "a hex string",
+            &["q /GS1 gs BT /F1 24 Tf 20 200 Td <4", "1> Tj ET Q"][..],
+        ),
+        (
+            "a comment with no line end",
+            &["q /GS1 gs %c", " BT /F1 24 Tf (A) Tj ET Q"][..],
+        ),
+        (
+            "a whole token, no white space",
+            &["q /GS1 gs", " BT /F1 24 Tf (A) Tj ET Q"][..],
+        ),
+        ("an empty stream between", &["q /G", "", "S1 gs Q"][..]),
+        (
+            "on the third element",
+            &["q ", "/GS1 gs BT /F1 24 Tf (A) Tj E", "T Q"][..],
+        ),
+        (
+            "an element that is not a stream",
+            &["q /GS1 gs ", "!42", "Q"][..],
+        ),
+        (
+            // qpdf reports a filter it has no decoder for as not filtered, which `stream_data`
+            // reads as `None`. Read raw, its data would end between tokens.
+            "an element qpdf cannot decode",
+            &[
+                "q /GS1 gs ",
+                "!<< /Length 2 /Filter /BurrowUnknownDecode >>\nstream\nQ \nendstream",
+                "Q",
+            ][..],
+        ),
+        (
+            "an inline image whose end cannot be found",
+            &["q BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 00> EI \n", "Q"][..],
+        ),
+    ] {
+        refuses(what, &divided(elements), RULE);
+    }
+    for (what, elements) in [
+        (
+            "one stream",
+            &["q /GS1 gs BT /F1 24 Tf 20 200 Td (A) Tj ET Q"][..],
+        ),
+        (
+            "beside a font name",
+            &["q /GS1 gs BT ", "/F1 24 Tf 20 200 Td (A) Tj ET Q"][..],
+        ),
+        (
+            "beside a name, in a line end",
+            &["q\n", "/GS1 gs BT /F1 24 Tf (A) Tj ET Q"][..],
+        ),
+        (
+            "a comment that ends",
+            &["q /GS1 gs %c\n", "BT /F1 24 Tf (A) Tj ET Q"][..],
+        ),
+        ("an empty stream between", &["q ", "", "/GS1 gs Q"][..]),
+        (
+            "the last element, with no white space",
+            &["q /GS1 gs ", "Q"][..],
+        ),
+    ] {
+        opens(what, &divided(elements));
+    }
+}

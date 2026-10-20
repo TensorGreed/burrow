@@ -418,6 +418,83 @@ fn layered_document() -> Vec<u8> {
     out
 }
 
+/// Where [`contents_boundary_document`] divides page 2's content between its two streams.
+#[derive(Clone, Copy)]
+enum ContentsBoundary {
+    /// Inside a resource name: the refused fixture.
+    InsideAResourceName,
+    /// Between whole tokens, in white space, just before a font name.
+    BeforeAFont,
+    /// Between whole tokens, in white space, just before an XObject name.
+    BeforeAnXObject,
+}
+
+/// A two-page document whose second page's `/Contents` is an array of two streams, divided at
+/// `boundary` (#315).
+///
+/// Page 2 sets a graphics state from `/ExtGState` and draws text, directly or through a form
+/// XObject; page 1 is ordinary. Cut after page 1, a split's second part is page 2. Only the place
+/// the content is divided differs between the three; the drawing is the same.
+fn contents_boundary_document(boundary: ContentsBoundary) -> Vec<u8> {
+    const TEXT: &str = "BT /F1 24 Tf 20 100 Td (page two) Tj ET";
+    let (first, second) = match boundary {
+        ContentsBoundary::InsideAResourceName => ("q /G".to_owned(), format!("S1 gs {TEXT} Q")),
+        ContentsBoundary::BeforeAFont => (
+            "q /GS1 gs BT ".to_owned(),
+            "/F1 24 Tf 20 100 Td (page two) Tj ET Q".to_owned(),
+        ),
+        ContentsBoundary::BeforeAnXObject => ("q /GS1 gs ".to_owned(), "/X1 Do Q".to_owned()),
+    };
+    let stream = |body: &str, dictionary: &str| {
+        format!(
+            "<< {dictionary}/Length {} >>\nstream\n{body}\nendstream",
+            body.len()
+        )
+        .into_bytes()
+    };
+    // 1 catalog, 2 page tree, 3-4 pages, 5 page 1's content, 6-7 page 2's, 8 the font, 9 the
+    // graphics state, 10 the form.
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+/Resources << /Font << /F1 8 0 R >> >> /Contents 5 0 R >>"
+            .to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+/Resources << /Font << /F1 8 0 R >> /ExtGState << /GS1 9 0 R >> /XObject << /X1 10 0 R >> >> \
+/Contents [6 0 R 7 0 R] >>"
+            .to_vec(),
+        stream("BT /F1 24 Tf 20 100 Td (page one) Tj ET", ""),
+        stream(&first, ""),
+        stream(&second, ""),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        b"<< /Type /ExtGState /ca 0.5 /CA 0.5 >>".to_vec(),
+        stream(
+            TEXT,
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 8 0 R >> >> ",
+        ),
+    ];
+
+    let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    let count = objects.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {count}\n0000000000 65535 f \n").as_bytes());
+    for at in &offsets {
+        out.extend_from_slice(format!("{at:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
 fn main() {
     // `--check` WRITES NOTHING AND REPORTS DRIFT.
     //
@@ -881,6 +958,49 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: split_refused(),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // A TOKEN ACROSS TWO `/Contents` STREAMS (#315; owner, 2026-10-19). PDF divides a page's
+        // content streams only between tokens, and readers join them differently, so split
+        // refuses at its open, `[split-contents-boundary]`, when an element does not end between
+        // tokens in white space. Both platforms reach the same check, so this asserts each one
+        // does. The two twins divide the same page between whole tokens, one beside a font name
+        // and one beside an XObject name, and split into two parts.
+        Fixture {
+            name: "split-refuses-a-token-across-two-contents-streams",
+            filename: "contents-token-across-streams.pdf",
+            bytes: Some(contents_boundary_document(
+                ContentsBoundary::InsideAResourceName,
+            )),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: split_refused(),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-divides-contents-streams-between-tokens-beside-a-font-name",
+            filename: "contents-streams-beside-a-font-name.pdf",
+            bytes: Some(contents_boundary_document(ContentsBoundary::BeforeAFont)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: splits_into(2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-divides-contents-streams-between-tokens-beside-an-xobject-name",
+            filename: "contents-streams-beside-an-xobject-name.pdf",
+            bytes: Some(contents_boundary_document(
+                ContentsBoundary::BeforeAnXObject,
+            )),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: splits_into(2),
             platform_expectations: Vec::new(),
             known_gap: None,
         },

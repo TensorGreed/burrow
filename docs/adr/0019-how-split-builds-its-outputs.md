@@ -158,6 +158,7 @@ way. So no split output can be given an `/OCProperties`, an `/AcroForm` or an `/
 | article beads | **dropped** | `/B` is simply not on the page-key allowlist, and `/Threads` lives on the catalog the build route never copies |
 | named destinations | **pruned** | a link pointing at a page **in this output** survives and works; a named destination goes, because the name is the leak. See the amendment below — dropping both was over-broad, and measuring said so |
 | `/OCProperties` | **refused** | neither §2b answer is reachable, and the binding constraint is **reading**, not writing — see the amendment below. So a document whose kept pages reference optional content is **not split**: a third answer, stronger than both, and §4 carries the sentence the page will say it in |
+| a page's `/Contents` divided other than between whole tokens | **refused** | the pruning above reads the names a page uses from qpdf's join of its content streams, and readers join them differently, so a token spanning two streams can name a resource to a reader that the walk never saw. `[split-contents-boundary]`, at the open, on every page -- see the 2026-10-19 amendment |
 
 **The page-key rule is an allowlist, and that is the part worth carrying to M2.** Everything not on
 a named list of page keys is removed, so `/B`, `/AA`, `/Thumb`, `/PieceInfo`, `/StructParents` and
@@ -951,3 +952,28 @@ are judged like any other dictionary.
 the catalog's keys too cost 3 of 99 real documents (over the 1% bar); with the exemption, **0 of
 99** real documents, **0** on `big_book.pdf`, and **5 of 182** fixtures, all adversarial redaction
 fixtures that carry a null.
+
+## Amendment, 2026-10-19 — a token across two `/Contents` streams refuses at the open
+
+**Decided by the owner** (#315). PDF 32000-1 §7.8.2 divides a page's `/Contents` array only between
+tokens, and readers join the elements differently: qpdf, whose join the pruning walk reads, inserts
+a line feed between them, and pdf.js inserts nothing. A token spanning two elements is then two
+tokens to the walk and one to pdf.js, so the walk can prune a resource pdf.js's reading of the page
+uses, and the part draws differently from its source. Measured with pdf.js's operator list on the
+refused fixture: the source page sets a graphics state that `main`'s part of it no longer does.
+
+Split's open now applies redaction's `[contents-boundary]` rule (#312; ADR 0029 §3) to **every
+page** of the source, as `[split-contents-boundary]`: every element a boundary follows, empty
+elements skipped, ends in PDF white space with burrow's lexer between tokens -- not in a string, a
+hex string, an inline image or a comment the boundary would end. It is the same test redaction
+uses (`pdfsyntax::geometry::ends_between_tokens`), so it is token-level, and **wider than the
+leak**: a boundary after a whole token with no white space refuses too, as in redaction. Also
+refused: a `/Contents` array element that is not a stream, an element the engine cannot decode,
+and an element that does not lex on its own. A page with one content stream has no boundary and is
+not read.
+
+**Cost, measured** on split against `main`: **0 of 99** real documents, **0 of 9** producer
+documents, **0** on `big_book.pdf`, **0 of 199** committed fixtures newly refused; 916 boundaries
+examined in five documents, every one between tokens. Three conformance fixtures pin it: the
+refused one, and twins dividing the same page between whole tokens beside a font name and beside an
+XObject name, which split into two parts.
