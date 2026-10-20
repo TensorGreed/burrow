@@ -263,6 +263,170 @@ cp -R "$src/qpdf-$QPDF_VERSION/include/qpdf" "$prefix/include/"
 echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"
 
 # ---------------------------------------------------------------------------------
+say "qpdf wasm: wipe-on-free, so qpdf's heap does not keep what it freed"
+# EVERY BLOCK QPDF'S WASM MODULE FREES IS ZEROED FIRST (owner (53), ADR 0004's 2026-10-20
+# amendment). Memory qpdf frees internally is not cleared by qpdf, and Emscripten's dlmalloc never
+# returns memory to the system, so a freed block keeps its bytes until something happens to
+# allocate over it. burrow's bridge
+# already zeroes the buffers IT frees; this covers the frees inside qpdf, which burrow cannot
+# reach. No qpdf source is patched: the mechanism is the allocator qpdf links against.
+#
+# HOW: Emscripten's dlmalloc defines `free`, `realloc` and the rest as WEAK aliases of its `dl*`
+# functions, and the same functions under the strong names `emscripten_builtin_*` -- its
+# documented hook for replacing the allocator. The object below defines every entry point that
+# RELEASES memory strongly, so the linker resolves every reference to them to it: qpdf's,
+# zlib's, libjpeg's, libc++'s `operator delete` (all variants route to `free`, the aligned ones
+# through `__libcpp_aligned_free`), musl's `__libc_*`, and the module's exported `_free` that the
+# bridge calls. Each zeroes the whole block (`malloc_usable_size`, not the size asked for) with
+# `explicit_bzero`, which the compiler may not drop as a dead store, then hands it to dlmalloc.
+#
+#   free, __libc_free      zero, then `emscripten_builtin_free`.
+#   realloc, __libc_realloc   ALWAYS MOVES: allocate, copy, then the old block goes through
+#                         `free` above. dlrealloc would otherwise free a moved block, or the tail
+#                         of a shrunk one, inside dlmalloc where no hook sees it.
+#   realloc_in_place      never releases: succeeds only when the block already fits.
+#   bulk_free             each pointer through `free` above.
+#   memalign, posix_memalign, aligned_alloc, calloc, malloc   allocate only. Their blocks are
+#                         freed through `free`. dlmemalign trims the spare head and tail of a
+#                         block it has just allocated, and those bytes come from memory that was
+#                         itself zeroed when freed, or never written.
+#
+# NOT COVERED, stated rather than implied: memory dlmalloc hands out is not zeroed on ALLOCATION
+# (only the freed bytes are cleared, so nothing can be left to read from a block that was freed
+# through these), the 512-byte emergency pool libc++abi uses for an exception only when malloc
+# itself has failed, and `munmap`, which Emscripten implements with `emscripten_builtin_free`
+# directly -- qpdf maps no memory (FILESYSTEM=0), and the probe below would not see it.
+cat > "$src/wipe_on_free.c" <<'C'
+#include <malloc.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+void emscripten_builtin_free(void *);
+
+static void wipe(void *block) { explicit_bzero(block, malloc_usable_size(block)); }
+
+void free(void *block) {
+  if (block == NULL) return;
+  wipe(block);
+  emscripten_builtin_free(block);
+}
+
+void *realloc(void *block, size_t size) {
+  if (block == NULL) return malloc(size);
+  void *moved = malloc(size);
+  if (moved == NULL) return NULL;
+  size_t held = malloc_usable_size(block);
+  memcpy(moved, block, held < size ? held : size);
+  free(block);
+  return moved;
+}
+
+void *realloc_in_place(void *block, size_t size) {
+  return block != NULL && size <= malloc_usable_size(block) ? block : NULL;
+}
+
+size_t bulk_free(void **blocks, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    free(blocks[i]);
+    blocks[i] = NULL;
+  }
+  return 0;
+}
+
+void __libc_free(void *block) { free(block); }
+void *__libc_realloc(void *block, size_t size) { return realloc(block, size); }
+C
+emcc -O2 -c "$src/wipe_on_free.c" -o "$src/wipe_on_free.o" 2>>"$src/qpdf-wasm-configure.log"
+
+# THE WIPE IS MEASURED ON EVERY PATH IT CLAIMS, and each probe must also SEE a missing wipe. The
+# probe program fills a block with a marker, releases it by one path, and counts the markers
+# left in the released bytes before anything else allocates. It is linked twice: with the object
+# above, where every path must leave none, and without it -- plain dlmalloc -- where every path
+# must leave some. A path the control build leaves clean is a probe that cannot fail, and is
+# refused as one. The count of paths is checked against the list, so a probe that silently
+# stops reporting is a refusal too.
+cat > "$src/wipe_probe.cpp" <<'CPP'
+#include <malloc.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <new>
+
+static const char MARK[17] = "BURROW-WIPE-MARK";
+
+static void fill(void *p, size_t n) {
+  for (size_t i = 0; i + 16 <= n; i += 16) std::memcpy(static_cast<char *>(p) + i, MARK, 16);
+}
+static unsigned left(const void *p, size_t n) {
+  unsigned found = 0;
+  for (size_t i = 0; i + 16 <= n; i += 16)
+    if (std::memcmp(static_cast<const char *>(p) + i, MARK, 16) == 0) found += 1;
+  return found;
+}
+static void report(const char *path, unsigned found) { std::printf("%s %u\n", path, found); }
+
+struct alignas(64) Aligned { char bytes[512]; };
+
+int main() {
+  const size_t n = 4096;
+  void *hold = std::malloc(16);  // keeps the blocks below from merging into the top chunk's head
+  { void *p = std::malloc(n); fill(p, n); std::free(p); report("free", left(p, n)); }
+  { void *p = std::malloc(n); void *fence = std::malloc(16); fill(p, n);
+    void *q = std::realloc(p, 16 * n); unsigned f = q == p ? 0 : left(p, n);
+    std::free(q); std::free(fence); report("realloc-grow", f); }
+  { void *p = std::malloc(n); void *fence = std::malloc(16); fill(p, n);
+    void *q = std::realloc(p, 32); unsigned f = left(static_cast<char *>(p) + 64, n - 64);
+    std::free(q); std::free(fence); report("realloc-shrink", f); }
+  { char *p = new char[n]; fill(p, n); delete[] p; report("delete[]", left(p, n)); }
+  { struct Big { char bytes[4096]; }; Big *p = new Big; fill(p, n); delete p;
+    report("delete", left(p, n)); }
+  { Aligned *p = new Aligned[8]; fill(p, n); delete[] p; report("delete[]-aligned", left(p, n)); }
+  { Aligned *p = new Aligned; fill(p, 512); delete p; report("delete-aligned", left(p, 512)); }
+  { void *p = nullptr; if (posix_memalign(&p, 64, n) != 0) return 1; fill(p, n); std::free(p);
+    report("posix_memalign", left(p, n)); }
+  { void *p = aligned_alloc(64, n); fill(p, n); std::free(p); report("aligned_alloc", left(p, n)); }
+  { void *p = memalign(128, n); fill(p, n); std::free(p); report("memalign", left(p, n)); }
+  std::free(hold);
+  return 0;
+}
+CPP
+# -O0: the probe reads memory it has freed, which an optimiser is entitled to delete.
+wipe_paths="free realloc-grow realloc-shrink delete[] delete delete[]-aligned delete-aligned posix_memalign aligned_alloc memalign"
+for variant in wiped control; do
+  extra=""; [ "$variant" = wiped ] && extra="$src/wipe_on_free.o"
+  # shellcheck disable=SC2086
+  em++ -O0 -fexceptions -std=c++17 "$src/wipe_probe.cpp" $extra -sENVIRONMENT=node \
+    -sINITIAL_MEMORY=16MB -o "$src/wipe-probe-$variant.cjs" 2>>"$src/qpdf-wasm-configure.log"
+  node "$src/wipe-probe-$variant.cjs" >"$src/wipe-probe-$variant.txt"
+done
+python3 - "$src/wipe-probe-wiped.txt" "$src/wipe-probe-control.txt" "$wipe_paths" <<'PY'
+import sys
+def read(path):
+    rows = [line.split() for line in open(path) if line.strip()]
+    return {name: int(count) for name, count in rows}, [name for name, _ in rows]
+wiped, wiped_order = read(sys.argv[1])
+control, control_order = read(sys.argv[2])
+expected = sys.argv[3].split()
+problems = []
+for label, order in (("wiped", wiped_order), ("control", control_order)):
+    if order != expected:
+        problems.append(f"the {label} probe reported {order}, expected {expected}")
+for path in expected:
+    if wiped.get(path, -1) != 0:
+        problems.append(f"{path}: {wiped.get(path)} marker(s) survive a release with wipe-on-free linked")
+    if control.get(path, 0) <= 0:
+        problems.append(f"{path}: plain dlmalloc left no marker, so this probe cannot see a missing wipe")
+if problems:
+    print("build-wasm: the wipe-on-free probe REFUSED:", file=sys.stderr)
+    for p in problems:
+        print(f"  - {p}", file=sys.stderr)
+    sys.exit(1)
+print(f"   wipe-on-free: {len(expected)} of {len(expected)} release paths leave nothing, "
+      f"and plain dlmalloc leaves markers on each ({', '.join(f'{p} {control[p]}' for p in expected)})")
+PY
+
+# ---------------------------------------------------------------------------------
 say "qpdf $QPDF_VERSION for wasm: the shipping engine module"
 # The shipping qpdf engine module.
 #
@@ -326,8 +490,9 @@ CPP
 #   -sENVIRONMENT=web,worker   drops the Node branch's require("fs") and sync-XHR paths.
 #                         ADR 0006 requirement 3. `node` is deliberately NOT in the list.
 #   -sFILESYSTEM=0        there are no files. This is a privacy-first library.
+#   wipe_on_free.o        every release of qpdf's heap zeroes the block first; see above.
 em++ -O2 -fexceptions --no-entry -I "$prefix/include" \
-  "$src/qpdf_engine.cpp" "$prefix/lib/libqpdf.a" \
+  "$src/qpdf_engine.cpp" "$src/wipe_on_free.o" "$prefix/lib/libqpdf.a" \
   "$prefix/lib/libz.a" "$prefix/lib/libjpeg.a" \
   -sMODULARIZE=1 -sEXPORT_NAME=createQpdfModule -sENVIRONMENT=web,worker \
   -sWASM_BIGINT=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=2GB \
@@ -416,6 +581,38 @@ createQpdfModule({
 ' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
 echo "   qpdf reports: ${version:-<no answer>}"
 [ "$version" = "$QPDF_VERSION" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected $QPDF_VERSION" >&2; exit 1; }
+
+# AND THE SHIPPED MODULE WIPES: the probe above measured the object, this measures the artifact.
+# A block the exported allocator hands out is filled, freed through the exported `_free` -- the
+# path the bridge uses, and the one every reference inside the module resolves to with it -- and
+# read back. A link that dropped the object, or a `free` that resolved elsewhere, leaves bytes.
+wiped="$(node -e '
+const fs = require("fs");
+const createQpdfModule = require(process.argv[1]);
+const bytes = fs.readFileSync(process.argv[2]);
+createQpdfModule({
+  instantiateWasm(imports, done) {
+    WebAssembly.instantiate(bytes, imports).then((r) => done(r.instance, r.module));
+    return {};
+  },
+}).then((m) => {
+  const n = 4096;
+  const keep = m._malloc(16);
+  const p = m._malloc(n);
+  const fence = m._malloc(16);
+  m.HEAPU8.fill(0xa5, p, p + n);
+  m._free(p);
+  // Whole words of the fill, so dlmalloc writing its own header into the freed block cannot
+  // pass for a survivor: no heap address under MAXIMUM_MEMORY reads 0xa5a5a5a5.
+  let left = 0;
+  for (let i = p; i + 4 <= p + n; i += 4) if (m.HEAPU32[i >> 2] === 0xa5a5a5a5) left += 4;
+  m._free(fence);
+  m._free(keep);
+  console.log(left);
+});
+' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
+echo "   the shipped module's _free left ${wiped:-<no answer>} of 4096 filled bytes"
+[ "$wiped" = "0" ] || { echo "build-wasm: qpdf.wasm frees without wiping (${wiped:-no answer} bytes survive)" >&2; exit 1; }
 
 say "stamp: what this artifact was built from"
 python3 "$here/../tools/build-stamp.py" commit engines-wasm "$stamp_record"

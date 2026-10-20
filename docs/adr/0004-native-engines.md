@@ -275,3 +275,59 @@ multiple-implementations problem ADR 0002 exists to prevent — including for re
 **One engine for everything.** Simpler dependency graph. Rejected: no permissively
 licensed engine covers both content editing and structural repair well, and forcing one
 to do both would mean writing the missing half ourselves anyway.
+
+## Amendment, 2026-10-20: qpdf's wasm heap is wiped on free
+
+Owner's decision (53), 2026-10-20: every block the qpdf wasm module frees is zeroed before the
+allocator takes it back, set in burrow's own build and with **no qpdf source patch**. The engine
+pin and the acquisition route are unchanged: the same checksum-verified qpdf 12.4.1 tarball, the
+same pinned emsdk. What changes is one object file linked into the shipping module.
+
+**Why.** The redaction rule for both wasm heaps is that, at the reply, neither holds the text the
+operation removed (#199). burrow already zeroes every block it frees itself -- its own Rust
+allocations, the bridge's copies, the input -- but memory qpdf frees internally was not cleared,
+and Emscripten's dlmalloc never returns freed memory to the system, so a freed block kept its
+bytes until a later allocation happened to cover them. The heap canary passed while the
+redaction's own allocations happened to line up with what qpdf had freed; given pages whose
+rewritten content is smaller or larger than the original it did not, on `main`, in every browser
+(measured; the detail is kept with the slice, not here). Recycling the worker after every
+redaction stays: it is what keeps qpdf's still-allocated cache from being reused, and wiping on
+free is what clears what qpdf has already let go of.
+
+**How.** Emscripten's dlmalloc defines `free`, `realloc` and the other public entry points as weak
+aliases, and exports the originals under strong `emscripten_builtin_*` names, which is its
+documented hook for replacing the allocator. `engines/build-wasm.sh` compiles a small C object
+that defines every entry point that **releases** memory strongly, so every reference in the
+module resolves to it -- qpdf's, zlib's, libjpeg's, libc++'s `operator delete` in all its forms,
+musl's `__libc_*`, and the exported `_free` the bridge calls:
+
+| entry point | what it does |
+|---|---|
+| `free`, `__libc_free` | zero the whole block (`malloc_usable_size`, not the size asked for) with `explicit_bzero`, then `emscripten_builtin_free` |
+| `realloc`, `__libc_realloc` | always move: allocate, copy, free the old block through `free` above. dlmalloc's own realloc would release a moved block, or a shrunk block's tail, where no hook sees it |
+| `realloc_in_place` | never releases; succeeds only when the block already fits |
+| `bulk_free` | each pointer through `free` above |
+| `malloc`, `calloc`, `memalign`, `posix_memalign`, `aligned_alloc` | unchanged: they allocate, and their blocks are released through `free` |
+
+**How it is held.** Three checks, each of which fails on a build without the object:
+`build-wasm.sh` links a probe program twice, with the object (every release path must leave none
+of a marker in the released bytes) and without it (every path must leave some, or that probe
+cannot see a missing wipe and the build refuses), over ten paths named and counted; the shipped
+`qpdf.wasm` is then filled, freed through its exported `_free` and read back; and
+`e2e/redaction-heap-canary.spec.ts` holds qpdf's heap clean at the reply on pages whose rewrite is
+smaller than, equal to and larger than the original, uncompressed and Flate, each page reading its
+size relation back from the output. Built without the object, the canary goes red.
+
+**Not covered**, stated rather than implied: blocks are not zeroed on *allocation*, which needs no
+cover once every release clears; libc++abi's small static emergency pool, used for an exception
+only when `malloc` itself has failed; and `munmap`, which Emscripten implements on
+`emscripten_builtin_free` directly -- qpdf maps no memory in this build (`-sFILESYSTEM=0`). PDFium
+is a prebuilt module and is not rebuilt here; it does not run in the redaction worker. The native
+builds are unchanged: this is about a heap a long-lived worker reuses across documents.
+
+**Cost**, measured against `main` (b4d805d) on one machine: `qpdf.wasm` 1,499,864 -> 1,498,982
+bytes raw and 328,392 -> 328,458 brotli (+66); `qpdf.js` is the same size, its exports listed in a
+different order (+13 brotli). The time is a `memset` per free and a copy per `realloc`, and it did not show: redacting the
+canary and three corpus pages, splitting, rotating and compressing corpus documents and merging two
+(Chromium, median of seven, main and branch alternated twice) moved by -8% to +3%, inside the run's
+own spread, on operations of 100 to 900 ms.
