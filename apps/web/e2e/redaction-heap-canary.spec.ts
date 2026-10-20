@@ -30,14 +30,21 @@
 //   back to `System` leaves 2,001 copies at the reply (red), and `WipeOnFree` none. #199's review
 //   corrected this file's first version, which had concluded from the padded page alone that the
 //   allocator could not be held on the web; see `DENSE` for the two near shapes that cannot.
+// - SIZED, the dense shape again with the rewritten content stream SMALLER than, EQUAL to and
+//   LARGER than the decoded original, uncompressed and Flate (owner (53)): qpdf frees its decoded
+//   copy of the page unwiped unless its allocator wipes on free, and whether the redaction's later
+//   allocations happen to cover that block depends on how their sizes line up with it. Each page
+//   holds the relation it is named for, read back from the output, so a rewrite that changes size
+//   cannot quietly turn every page into one case. Measured on main before the fix: see `SIZED`.
 // - REFUSED: a page the walk reads and then refuses, which must ask for recycling too -- a refusal
 //   has read the decoded page into qpdf's cache as surely as a success.
 //
 // WHAT IT CAN FAIL ON, each mutation asserted applied and rebuilt through the stamped wasm-pack:
 // the recycle dropped; `Session::drop` freeing the input unwiped; `WipeOnFree` swapped for
-// `System`; a Rust copy of the text retained (`mem::forget`, the review's): each red.
+// `System`; a Rust copy of the text retained (`mem::forget`, the review's): each red. And qpdf's
+// engine built without its wipe-on-free allocator (`engines/build-wasm.sh`, ADR 0004): red.
 
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 
 import { expect, test } from "@playwright/test";
 
@@ -105,7 +112,74 @@ const SHOW = `BT /F1 24 Tf 72 700 Td (${CANARY}) Tj ET\n`;
  */
 const DENSE = `BT /F1 24 Tf 72 700 Td ${`(${CANARY}) Tj 0 0 Td `.repeat(2000)}ET\n`;
 
-const PAGES: { name: string; bytes: Uint8Array; ok: boolean }[] = [
+/**
+ * The dense shape with `pad` spaces between each string and its `Tj`. The rewrite does not keep
+ * whitespace, so the pad moves the decoded original's length and not the rewrite's, which puts
+ * the rewritten stream smaller than, equal to or larger than the original on the same rewriter.
+ * The pads are measured against the rewrite on main at b4d805d (393 bytes per removed show of
+ * the canary): 361 makes the two exactly equal. A rewriter that changes that figure moves the
+ * relation, and `rewrite` below says so by name rather than passing on a page that no longer
+ * holds its case.
+ */
+const sized = (pad: number) =>
+  `BT /F1 24 Tf 72 700 Td ${`(${CANARY})${" ".repeat(pad)}Tj 0 0 Td `.repeat(1000)}ET\n`;
+type Relation = "smaller" | "equal" | "larger";
+
+/**
+ * The three relations, and larger twice: by the pad, and by showing with `'`, whose rewrite adds
+ * a `T*` and so grows by a few percent where the pad's grows by a fifth. On main's engine before
+ * wipe-on-free (b4d805d), qpdf's heap at the reply held the removed text on SOME of these and not
+ * others, in every browser, which is the point: passing must not depend on which. The per-case
+ * result is recorded with the slice, not here.
+ */
+const SIZED: { label: string; original: string; rewrite: Relation }[] = [
+  { label: "smaller than", original: sized(720), rewrite: "smaller" },
+  { label: "equal to", original: sized(361), rewrite: "equal" },
+  { label: "larger than", original: sized(300), rewrite: "larger" },
+  {
+    label: "larger, shown with ', than",
+    original: `BT /F1 24 Tf 14 TL 72 700 Td ${`(${CANARY}) ' 0 0 Td `.repeat(2000)}ET\n`,
+    rewrite: "larger",
+  },
+];
+
+/** The decoded length of the one content stream in a redacted output: the page's. */
+function rewrittenLength(output: Buffer): number {
+  const lengths: number[] = [];
+  for (let at = output.indexOf("stream", 0, "latin1"); at !== -1;) {
+    const isEnd = output.subarray(Math.max(0, at - 3), at).toString("latin1") === "end";
+    if (isEnd) {
+      at = output.indexOf("stream", at + 6, "latin1");
+      continue;
+    }
+    let start = at + 6;
+    if (output[start] === 13) start += 1;
+    if (output[start] === 10) start += 1;
+    const end = output.indexOf("endstream", start, "latin1");
+    if (end === -1) break;
+    let body = output.subarray(start, end);
+    if (body.at(-1) === 10) body = body.subarray(0, -1);
+    if (body.at(-1) === 13) body = body.subarray(0, -1);
+    let decoded: Buffer;
+    try {
+      decoded = inflateSync(body);
+    } catch {
+      decoded = body;
+    }
+    if (/\bTJ\b/.test(decoded.toString("latin1"))) lengths.push(decoded.length);
+    at = output.indexOf("stream", end + 9, "latin1");
+  }
+  expect(lengths, "the output must hold exactly one content stream").toHaveLength(1);
+  return lengths[0];
+}
+
+const PAGES: {
+  name: string;
+  bytes: Uint8Array;
+  ok: boolean;
+  /** The decoded original and the relation its rewrite must hold to it. SIZED pages only. */
+  sized?: { original: string; rewrite: Relation };
+}[] = [
   {
     // 64 KiB of kept no-ops, then the canary last: see the header.
     name: "padded, uncompressed",
@@ -114,6 +188,14 @@ const PAGES: { name: string; bytes: Uint8Array; ok: boolean }[] = [
   },
   { name: "dense, uncompressed", bytes: document(DENSE), ok: true },
   { name: "dense, Flate", bytes: document(DENSE, true), ok: true },
+  ...SIZED.flatMap(({ label, original, rewrite }) =>
+    [false, true].map((flate) => ({
+      name: `dense, rewrite ${label} the original, ${flate ? "Flate" : "uncompressed"}`,
+      bytes: document(original, flate),
+      ok: true,
+      sized: { original, rewrite },
+    })),
+  ),
   {
     // A filled rectangle across the region: the walk reads the page, then refuses
     // `[vector-in-region]`.
@@ -159,7 +241,7 @@ test("after reading page frames, neither heap holds the document's text, and the
   ).toBe(1);
 });
 
-for (const { name, bytes, ok } of PAGES) {
+for (const { name, bytes, ok, sized: size } of PAGES) {
   test(`after a redaction, neither heap holds the removed text, and the worker is recycled: ${name}`, async ({
     page,
   }) => {
@@ -169,11 +251,29 @@ for (const { name, bytes, ok } of PAGES) {
       CANARY,
     );
     const reply = await page.evaluate(
-      ({ bytes, region }) =>
-        window.burrowHarness.redactDocument("canary.pdf", new Uint8Array(bytes), 1, [1], region),
-      { bytes: Array.from(bytes), region: REGION },
+      ({ bytes, region, keepOutput }) =>
+        window.burrowHarness.redactDocument("canary.pdf", new Uint8Array(bytes), 1, [1], region, {
+          keepOutput,
+        }),
+      { bytes: Array.from(bytes), region: REGION, keepOutput: size !== undefined },
     );
     expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(ok);
+
+    // A SIZED PAGE HOLDS ITS CASE, or it is not the probe it is named for.
+    if (size) {
+      expect(reply.outputBase64, "a sized page needs its output back").toBeDefined();
+      const rewritten = rewrittenLength(Buffer.from(reply.outputBase64!, "base64"));
+      const original = Buffer.byteLength(size.original, "latin1");
+      const holds = {
+        smaller: rewritten < original,
+        equal: rewritten === original,
+        larger: rewritten > original,
+      };
+      expect(
+        holds[size.rewrite],
+        `the rewrite is ${rewritten} bytes against the original's ${original}: not ${size.rewrite}`,
+      ).toBe(true);
+    }
 
     const scans = await page.evaluate(() => window.burrowHarness.redactHeapScans());
     // ONE REPLY, ONE SCAN: a scan per reply the worker posted, and the redaction posts one.

@@ -1379,7 +1379,7 @@ const harness = {
    * @param {number} page
    * @param {number[]} covered
    * @param {{ left: number, top: number, width: number, height: number }} region
-   * @param {{ limits?: Record<string, number> }} options
+   * @param {{ limits?: Record<string, number>, keepOutput?: boolean }} options
    */
   async redactDocument(name, bytes, page, covered, region, options = {}) {
     const worker = await bundleHost("redactWorker");
@@ -1398,13 +1398,28 @@ const harness = {
     );
     const { output, ...fields } = reply;
     let outputSha256 = null;
+    /** @type {string | undefined} */
+    let outputBase64;
     if (output instanceof Blob) {
-      const digest = await crypto.subtle.digest("SHA-256", await output.arrayBuffer());
+      const buffer = await output.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
       outputSha256 = Array.from(new Uint8Array(digest), (b) =>
         b.toString(16).padStart(2, "0"),
       ).join("");
+      // The bytes leave the page only when a spec asks: the heap canary reads the rewritten
+      // content stream's length to hold each probe page to the size relation it is named for.
+      if (options.keepOutput) {
+        const view = new Uint8Array(buffer);
+        let binary = "";
+        for (let at = 0; at < view.length; at += 0x8000) {
+          binary += String.fromCharCode(...view.subarray(at, at + 0x8000));
+        }
+        outputBase64 = btoa(binary);
+      }
     }
-    return { ...fields, outputSha256 };
+    return outputBase64 === undefined
+      ? { ...fields, outputSha256 }
+      : { ...fields, outputSha256, outputBase64 };
   },
 
   /**

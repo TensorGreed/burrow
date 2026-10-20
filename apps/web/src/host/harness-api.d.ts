@@ -52,6 +52,8 @@ export interface Reply {
   droppedCarriedText?: number;
   /** The produced document's sha256, hex, or null when there was none. `redactDocument` only. */
   outputSha256?: string | null;
+  /** The produced document, base64, when `keepOutput` was asked for. `redactDocument` only. */
+  outputBase64?: string;
   /** Every page's frame as `[width, height]` pairs, `0, 0` where refused. `redactFrames` only. */
   frames?: number[];
   /** Per page, the frame rule refusing every region on it, or "". `redactFrames` only. */
@@ -275,7 +277,8 @@ export interface BurrowHarness {
   settleRedaction(ms?: number): Promise<{ settled: boolean; nonce: number }>;
   /**
    * Redact one region on one page through REDACTION's own worker (#137), staged into harness
-   * builds only. Returns the reply and the output's sha256; the bytes stay in the page.
+   * builds only. Returns the reply and the output's sha256; the bytes stay in the page unless
+   * `keepOutput` asks for them.
    *
    * `page` and `covered` are 1-based.
    */
@@ -285,7 +288,7 @@ export interface BurrowHarness {
     page: number,
     covered: number[],
     region: { left: number; top: number; width: number; height: number },
-    options?: { limits?: Partial<HarnessLimits> },
+    options?: { limits?: Partial<HarnessLimits>; keepOutput?: boolean },
   ): Promise<Reply>;
   /**
    * Read every page's frame through REDACTION's own worker (#136): `page_frames`, read-only.
