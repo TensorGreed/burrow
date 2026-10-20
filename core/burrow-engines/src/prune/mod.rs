@@ -22,7 +22,7 @@
 //! | a widget's `/Parent` | removed, always | drop |
 //! | an annotation's `/A`, `/Dest`, `/AA` | removed, always | drop |
 //! | inherited `/Resources` | filtered to the names the copied streams actually mention | prune |
-//! | `/ExtGState` | **kept whole** (except where the same object is pruned as another category; see below); an entry the part's pages do not draw with must be content-free, or **the split is refused** (`graphics_state`) | neither |
+//! | `/ExtGState` | **kept whole** (except in a case tracked privately and fixed in the next release; see below); an entry the part's pages do not draw with must be content-free, or **the split is refused** (`graphics_state`) | neither |
 //! | a resource category that is not a dictionary | **the split is refused** | neither |
 //! | optional content | **the split is refused** | neither — see below |
 //!
@@ -73,10 +73,8 @@
 //!   one only an excluded page draws with, what it reaches travels into the part -- a graphics
 //!   state kept as used this way keeps its soft mask's form, and is not judged by the
 //!   graphics-state allowlist. Open, filed (ADR 0019 §2b's graphics-state amendment).
-//! - **One object serving two categories is pruned in place.** A category dictionary is pruned by
-//!   editing it, so where the same object is also a kept `/ExtGState` dictionary, or one of its
-//!   entries, the graphics state is not kept whole. Open until pruning is done per object across
-//!   categories (the release after this rule's).
+//! - **A graphics state stays whole, except in a case tracked privately and fixed in the next
+//!   release.** The detail is not stated here.
 //! - **Nothing here sees inside `/DCTDecode`, `/JPXDecode` or `/JBIG2Decode`.** A leak present only
 //!   in transformed form is outside this module, outside `verify`, and outside `qpdf --qdf`. For
 //!   redaction that transformed form *is* the leak, so M2 must not inherit this as sufficient.

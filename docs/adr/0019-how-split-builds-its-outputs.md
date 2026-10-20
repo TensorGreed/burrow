@@ -987,11 +987,9 @@ page's resources, on both engines, through the one pruning policy both reach.
 says the page uses, and where that reading and another reader's differ, a graphics state the other
 reader applies was pruned off. A graphics state is what can hide content, so the content it hid
 could be drawn in a part. Every page-level graphics state the copy brings now stays in the part
-whole, and split's reading no longer decides whether one survives -- **except where the same object
-also serves a kept page as a different resource category**: the other categories are still pruned
-by editing their dictionaries in place, so that object is pruned as the other category and is not
-whole. That case stays open until the next release prunes per object, across categories and
-positions (advisory I).
+whole, and split's reading no longer decides whether one survives -- **except in a case tracked
+privately and fixed in the next release**, and except for what the page copier qpdf supplies does
+to an object on the way in, a case tracked privately and closed with the same release.
 
 **2. An entry the part's pages do not draw with must be content-free, or the split refuses**,
 `[split-graphics-state-unused]`. Kept whole, a graphics state only an excluded page draws with
@@ -1040,8 +1038,8 @@ owner's accepted residual and are not closed by this amendment:
   collects a name wherever it appears, so a graphics-state entry only an excluded page draws with,
   whose name a kept page mentions without drawing with it, counts as used and travels whole --
   content-carrying or not;
-- **one object serving two resource categories** is pruned in place as the other category, so a
-  graphics state that object is, or holds, is not kept whole (rule 1 above).
+- **a graphics state that stays whole, except in a case tracked privately and fixed in the next
+  release** (rule 1 above).
 
 **Cost, measured** against `main` over the census (99 real documents, 9 producers, `big_book.pdf`
 and 202 fixtures -- the committed ones and three from #315's branch, not yet on `main` when this was
