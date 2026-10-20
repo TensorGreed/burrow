@@ -26,16 +26,21 @@
 //!   other than one it flags as generated, has its **origin** (`FPDFText_GetCharOrigin`) inside the
 //!   region, **or its character box (`FPDFText_GetCharBox`) crossing into it**. The region is
 //!   converted into content space with the **output's** frame as burrow reads it -- the same
-//!   rectangle `redact_verify` tested burrow's own glyphs against -- and shrunk by
+//!   rectangle `redact_verify` tested burrow's own glyphs against. For an origin it is shrunk by
 //!   [`TOLERANCE_PT`](crate::redact_read_back::TOLERANCE_PT) on every side, so an origin that
-//!   merely sits on the edge, or a box that merely touches it, is not a disagreement.
+//!   merely sits on the edge is not a disagreement. For a box it is not shrunk: a box that only
+//!   touches the edge is not a disagreement, and one that crosses it by any amount is.
 //!
 //!   **Intersecting, not only inside** (owner, 2026-10-19). A kept character whose box straddles
 //!   the region's edge is counted, as one wholly inside is: its origin may be outside the region
-//!   while part of what it draws is inside. A box is counted when it overlaps the shrunk region
-//!   by more than nothing on both axes; an origin, as before, when it is in the shrunk region,
-//!   edges included. Measured before it was built: against origin/main, the box rule refused no
-//!   tile burrow redacts today (ADR 0029, 2026-10-19 amendment). History: on 2026-10-15 (#206
+//!   while part of what it draws is inside. A box is counted when it overlaps the region by more
+//!   than nothing on both axes; an origin, as before, when it is in the shrunk region, edges
+//!   included. **The box has no tolerance** (owner decision 36, 2026-10-19): a glyph whose box
+//!   crossed the edge by less than `TOLERANCE_PT` was measured painting pixels inside the region
+//!   in four of the five readers measured, so a sub-tolerance crossing is not float noise to forgive. Its cost was
+//!   measured on the census first, as the box rule's own was: against origin/main, the box rule
+//!   with the tolerance refused no tile burrow redacts today (ADR 0029, both 2026-10-19
+//!   amendments). History: on 2026-10-15 (#206
 //!   option A) the box was not read, because an ink-box rule then refused 152 of 3,488 tiles,
 //!   every one traced to burrow's glyph box ignoring `/FontDescriptor`'s `/FontBBox`; #344 now
 //!   reads that box and a floor envelope besides, and the same rule refused none after it.
@@ -133,6 +138,11 @@ use crate::pdfsyntax::region::Region;
 ///
 /// **This is not a knob.** Raising it to make a run pass is the one edit this constant exists to
 /// forbid.
+///
+/// **R1 applies it to an origin only.** A character's box is counted against the region with no
+/// tolerance (owner decision 36, 2026-10-19): a box crossing the edge by less than this was
+/// measured to paint inside the region. A box that crosses by float noise alone is therefore
+/// refused, which fails closed.
 pub const TOLERANCE_PT: f64 = 0.05;
 
 /// How many characters a reading may report on one page before it is refused.
@@ -381,7 +391,7 @@ pub fn agrees<R: SecondReading>(
             expected.page
         )));
     };
-    let inside = read.iter().filter(|c| reaches(&inner, c)).count();
+    let inside = read.iter().filter(|c| reaches(&inner, &region, c)).count();
     if inside > 0 {
         return Err(rejected(format!(
             "[second-reading-glyph-in-region] the renderer places {inside} character(s) inside \
@@ -406,18 +416,20 @@ fn shrunk(rect: &Rect, by: f64) -> Option<Rect> {
     (inner.left < inner.right && inner.bottom < inner.top).then_some(inner)
 }
 
-/// Whether a character reaches `region`: its origin inside it, closed on every edge so an origin
-/// exactly on the shrunk edge counts; or its box crossing into it.
-fn reaches(region: &Rect, c: &PlacedChar) -> bool {
+/// Whether a character reaches the region: its origin inside `inner`, the region shrunk by the
+/// tolerance, closed on every edge so an origin exactly on the shrunk edge counts; or its box
+/// crossing into `region` itself, with no tolerance (owner decision 36, 2026-10-19).
+fn reaches(inner: &Rect, region: &Rect, c: &PlacedChar) -> bool {
     let (x, y) = c.origin;
-    let origin_inside =
-        x >= region.left && x <= region.right && y >= region.bottom && y <= region.top;
+    let origin_inside = x >= inner.left && x <= inner.right && y >= inner.bottom && y <= inner.top;
     origin_inside || crosses(region, &c.bounds)
 }
 
 /// Whether `bounds` overlaps `region` by more than nothing on both axes. A box that only touches
-/// the shrunk region's edge does not; one that straddles it, or lies wholly inside, does. The box
-/// is normalised first, so one PDFium reports with its corners swapped is still read.
+/// the region's edge does not; one that crosses it by any amount, or lies wholly inside, does.
+/// `region` is NOT shrunk by the tolerance: a box crossing the edge by less than it was measured
+/// to paint inside the region (owner decision 36, 2026-10-19). The box is normalised first, so one
+/// PDFium reports with its corners swapped is still read.
 fn crosses(region: &Rect, bounds: &Rect) -> bool {
     let (left, right) = (bounds.left.min(bounds.right), bounds.left.max(bounds.right));
     let (bottom, top) = (bounds.bottom.min(bounds.top), bounds.bottom.max(bounds.top));

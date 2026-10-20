@@ -5451,3 +5451,31 @@ open):
   a kept character whose box crosses the region, and 0 with text ink in it by raster.
 - **With the rule in place**, the tile census and the open census are **identical** to main's: no
   tile and no input moved in either direction. `tests/redaction/outcomes.tsv` is unchanged.
+
+## Amendment, 2026-10-19 — the box half of R1 has no tolerance
+
+**Owner, 2026-10-19 (decision 36; #404).** The amendment above counts a kept character whose
+PDFium box crosses into the region **shrunk by `TOLERANCE_PT`**, so a box crossing the edge by less
+than 0.05 pt was not counted. Measured before this change: such a glyph still paints pixels inside
+the region in four of the five readers. A sub-tolerance crossing is not float noise to forgive.
+
+- **The rule.** A character's box is counted when it overlaps the region **itself**, not the shrunk
+  one, by more than nothing on both axes. A box that only touches the edge is still not counted.
+  The origin half of R1 is unchanged: an origin is tested against the shrunk region, and the
+  region-too-small refusal stands, because it is about the origin's comparison.
+- **What this costs.** A box that crosses the edge by float noise alone is now refused. That fails
+  closed.
+- **Tier: a refusal** (DECISIONS rule 17). The census below moves nothing from refused to `Ok`.
+- **The fixture and its twin.** Under the same `/Widths` misread plant, the kept `W` moved so its
+  PDFium box crosses the region's left edge by 0.02 pt is refused
+  `[second-reading-glyph-in-region]`; its twin is the amendment above's, the box ending on the
+  edge, which redacts with both glyphs kept. In the unit tests, a box across each edge by 0.8, 0.4
+  and 0.02 of the tolerance is refused. The asserted mutation that shrinks the box's region again
+  fails the fixture; the one that counts a touching box fails the twin.
+- **The twin in five readers** (PDFium, MuPDF, Poppler, Ghostscript, pdf.js): its input and its
+  output render identical in pixels and in extracted text in all five. The file bytes differ,
+  because the output is re-serialised; the page's content stream is byte-identical.
+
+**Census, stacked on the amendment above** (4,825 tiles, 317 lines at open): identical to the
+amendment above's. **0 of 3,234** `Ok` tiles move, so the real-document cost measured is 0%; the
+open census is identical; `tests/redaction/outcomes.tsv` is unchanged.

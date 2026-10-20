@@ -2164,6 +2164,11 @@ mod second_reading {
     /// the region's left edge: wholly outside it, touching it. The twin.
     const TOUCHING_THE_EDGE: &str = "BT /F1 20 Tf 10.32 700 Td (KW) Tj ET\n";
 
+    /// [`TOUCHING_THE_EDGE`] moved 0.02 pt right, so PDFium's box for the `W` ends at 40.02:
+    /// across the region's left edge by less than `TOLERANCE_PT`. The fixture for the box rule's
+    /// zero tolerance (owner decision 36, 2026-10-19); [`TOUCHING_THE_EDGE`] is its twin.
+    const ACROSS_BY_LESS_THAN_THE_TOLERANCE: &str = "BT /F1 20 Tf 10.34 700 Td (KW) Tj ET\n";
+
     /// Both glyphs where the content stream says, one inside the region and one outside.
     const PLAIN: &str = "BT /F1 24 Tf 72 700 Td (K) Tj ET\nBT /F1 24 Tf 72 100 Td (S) Tj ET\n";
 
@@ -2286,6 +2291,25 @@ mod second_reading {
             .expect("the output walks")
             .len();
         assert_eq!(shown, 2, "both glyphs are kept in the twin's output");
+    }
+
+    #[test]
+    fn r1_a_kept_glyph_whose_box_crosses_the_edge_by_less_than_the_tolerance_is_refused() {
+        // NO TOLERANCE ON THE BOX (owner decision 36, 2026-10-19). The same plant as the
+        // straddling fixture, the `W`'s box now crossing the left edge by 0.02 pt. Its twin, the
+        // box ending on the edge, is `TOUCHING_THE_EDGE` in the test above, which redacts.
+        reset();
+        WIDTHS_MISREAD.with(|flag| flag.set(true));
+        let planted = redact(ACROSS_BY_LESS_THAN_THE_TOLERANCE);
+        let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
+        let asked = readings();
+        reset();
+        assert!(
+            misread > 0,
+            "the planted defect did not apply: no font's widths were read"
+        );
+        assert_eq!(asked, 1, "the second reading ran");
+        assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
     }
 
     #[test]
