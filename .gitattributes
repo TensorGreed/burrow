@@ -1,3 +1,12 @@
 # ADR 0030: Adobe's Core 14 AFM files are committed exactly as published (CRLF and bare-CR line
 # endings included), and their licence forbids an unmarked modification. Never convert them.
 third_party/adobe-core14-afm/** -text
+
+# Generated tables (DECISIONS rule 12): never auto-merged. A rebase or merge that touches one
+# on both sides stops with a conflict, and the table is regenerated from the merged tree with
+# its BURROW_BLESS_* switch, never hand-resolved. merge=binary affects merging only; git diff
+# still shows these as text.
+tests/redaction/outcomes.tsv merge=binary
+tests/redaction/page-frames.tsv merge=binary
+tests/redaction/rule-ids.txt merge=binary
+tests/fixtures-survive.tsv merge=binary
