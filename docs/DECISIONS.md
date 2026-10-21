@@ -202,7 +202,7 @@ one is decided in an issue, with the same three parts.
     (1a) is #344 (1b), then the core ink half of #206 (1c), and nothing else. This narrows the
     launch plan above. Rule 19's principle is unchanged; its 2b instance now applies after launch.
     The PDFium ink read-back still gates S9 via #206's ink half (since 2026-10-21, for v2 only: rule
-    19's amendment). *Decided:* owner, 2026-10-17.
+    19's amendment, the owner's independently of ADR 0031's status). *Decided:* owner, 2026-10-17.
     *Does not cover:* the final spec review, which still hunts the whole class, or whether any of
     the three comes back before a later milestone.
 
@@ -263,8 +263,10 @@ one is decided in an issue, with the same three parts.
 
     **Amended 2026-10-21: the S9 instances apply to v2 only.** Redaction v1 flattens the redacted
     page ([ADR 0031](adr/0031-redaction-v1-flattens-the-redacted-page.md), Proposed). burrow does
-    not read that page's content stream, and uses no glyph box. Three instances now apply only to
-    v2, ADR 0029's content-stream rewriter:
+    not read that page's content stream, and uses no glyph box. **This amendment is the owner's,
+    decided independently of ADR 0031's status** (decision 57, item 9): it stands while 0031 is
+    Proposed, and if 0031 is rejected. Three instances now apply only to v2, ADR 0029's
+    content-stream rewriter:
     - this rule's 2b instance: the PDFium ink read-back, after #344, gates S9;
     - rule 17's 2026-10-17 sentence: the PDFium ink read-back still gates S9 via #206's ink half;
     - #344's decision 4 (owner, 2026-10-15): #206's ink half asserts PDFium's tight character
@@ -272,12 +274,14 @@ one is decided in an issue, with the same three parts.
       while the web relies on `/FontBBox` alone. Its public traces are the ROADMAP #344 row and
       ADR 0029's 2026-10-17 `/FontBBox` amendment.
 
-    **The principle is unchanged, and it binds v1.** ADR 0031 §4 names each same-source assertion
-    in v1's verification. One is the region-to-pixel arithmetic, which paints the pixels and checks
-    them. The other is the set of objects the page shares, which one walk both decides and checks.
-    Each needs an independent reading before S9. *Decided:* owner, 2026-10-21 (decision 55).
-    *Does not cover:* R10, which still gates S9 for v1 through #206's web runtime digest; or what
-    v1's independent readings are, which ADR 0031 proposes and round 0 reviews.
+    **The principle is unchanged, and it binds v1.** v1's same-source assertions are the closed
+    list in ADR 0031 §4 (*What it leaves undetectable*), kept current by that record's revisions,
+    and each needs an independent reading before S9. On 2026-10-21 that list is the set of objects
+    the page shares, which one walk both decides and checks; and the region-to-pixel arithmetic only
+    where PDFium's transform, which paints, and burrow's, which checks, agree wrongly (decision 57,
+    item 5). *Decided:* owner, 2026-10-21 (decisions 55 and 57). *Does not cover:* R10, which still
+    gates S9 for v1 through #206's web runtime digest; or what v1's independent readings are, which
+    ADR 0031 proposes and its reviews check.
 
 20. **When a deploy gate fails, compare the live site with the build run's own artifact first.**
     If it now matches, the failure was propagation lag, and the failed jobs get one re-run. If
