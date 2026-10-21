@@ -495,6 +495,95 @@ fn contents_boundary_document(boundary: ContentsBoundary) -> Vec<u8> {
     out
 }
 
+/// How page 1 of [`graphics_state_document`] lists, and draws with, a graphics state.
+#[derive(Clone, Copy)]
+enum GraphicsState {
+    /// Page 1 lists page 2's soft-mask graphics state and does not draw with it: refused.
+    SoftMaskUnused,
+    /// Page 1 lists it and draws with it, as page 2 does: kept whole.
+    SoftMaskDrawnByBoth,
+    /// Page 1 lists a content-free graphics state only page 2 draws with: kept whole.
+    ContentFreeUnused,
+    /// Page 1 writes its `/ColorSpace` category as an array, beside a content-free graphics
+    /// state: refused.
+    CategoryNotADictionary,
+}
+
+/// A two-page document whose pages share a graphics state (owner, 2026-10-19).
+///
+/// Page 2 draws with `/GS1`; page 1 lists it and draws with it or not. Cut after page 1, the
+/// first part is page 1 alone. Only the graphics state and page 1's use of it differ.
+fn graphics_state_document(case: GraphicsState) -> Vec<u8> {
+    const DRAWN: &str = "q /GS1 gs 0 0 100 100 re f Q";
+    const TEXT_ONE: &str = "BT /F1 24 Tf 20 150 Td (page one) Tj ET";
+    let stream = |body: &str, dictionary: &str| {
+        format!(
+            "<< {dictionary}/Length {} >>\nstream\n{body}\nendstream",
+            body.len()
+        )
+        .into_bytes()
+    };
+    let state: &[u8] = match case {
+        GraphicsState::SoftMaskUnused | GraphicsState::SoftMaskDrawnByBoth => {
+            b"<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 9 0 R >> >>"
+        }
+        GraphicsState::ContentFreeUnused | GraphicsState::CategoryNotADictionary => {
+            b"<< /Type /ExtGState /ca 0.5 /BM /Multiply /HT /Default /TR /Identity >>"
+        }
+    };
+    let page_one = match case {
+        GraphicsState::SoftMaskDrawnByBoth => format!("{DRAWN} {TEXT_ONE}"),
+        _ => TEXT_ONE.to_owned(),
+    };
+    let colour = match case {
+        GraphicsState::CategoryNotADictionary => "/ColorSpace [ /CS0 /DeviceGray ] ",
+        _ => "",
+    };
+    // 1 catalog, 2 page tree, 3-4 pages, 5-6 their content, 7 the font, 8 the graphics state,
+    // 9 the soft mask's group form.
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_vec(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+/Resources << /Font << /F1 7 0 R >> /ExtGState << /GS1 8 0 R >> {colour}>> /Contents 5 0 R >>"
+        )
+        .into_bytes(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+/Resources << /Font << /F1 7 0 R >> /ExtGState << /GS1 8 0 R >> >> /Contents 6 0 R >>"
+            .to_vec(),
+        stream(&page_one, ""),
+        stream(
+            &format!("{DRAWN} BT /F1 24 Tf 20 150 Td (page two) Tj ET"),
+            "",
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        state.to_vec(),
+        stream(
+            "1 g 0 0 200 200 re f",
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceGray >> ",
+        ),
+    ];
+
+    let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    let count = objects.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {count}\n0000000000 65535 f \n").as_bytes());
+    for at in &offsets {
+        out.extend_from_slice(format!("{at:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
 fn main() {
     // `--check` WRITES NOTHING AND REPORTS DRIFT.
     //
@@ -1001,6 +1090,57 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: splits_into(2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // GRAPHICS STATES ARE KEPT WHOLE (owner, 2026-10-19). A page's graphics states travel into
+        // the part whole; one the part's pages do not draw with must be content-free, or split
+        // refuses, `[split-graphics-state-unused]`; and a resource category that is not a
+        // dictionary refuses, `[split-resource-category-not-a-dictionary]`. Both platforms reach
+        // the one policy, so this asserts each one does.
+        Fixture {
+            name: "split-refuses-an-unused-graphics-state-that-could-carry-content",
+            filename: "graphics-state-unused-soft-mask.pdf",
+            bytes: Some(graphics_state_document(GraphicsState::SoftMaskUnused)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: split_refused(),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-keeps-a-graphics-state-every-part-draws-with",
+            filename: "graphics-state-drawn-by-both.pdf",
+            bytes: Some(graphics_state_document(GraphicsState::SoftMaskDrawnByBoth)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: splits_into(2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-keeps-an-unused-content-free-graphics-state",
+            filename: "graphics-state-content-free-unused.pdf",
+            bytes: Some(graphics_state_document(GraphicsState::ContentFreeUnused)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: splits_into(2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-refuses-a-resource-category-that-is-not-a-dictionary",
+            filename: "resource-category-not-a-dictionary.pdf",
+            bytes: Some(graphics_state_document(
+                GraphicsState::CategoryNotADictionary,
+            )),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: split_refused(),
             platform_expectations: Vec::new(),
             known_gap: None,
         },

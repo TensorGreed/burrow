@@ -977,3 +977,78 @@ documents, **0** on `big_book.pdf`, **0 of 199** committed fixtures newly refuse
 examined in five documents, every one between tokens. Three conformance fixtures pin it: the
 refused one, and twins dividing the same page between whole tokens beside a font name and beside an
 XObject name, which split into two parts.
+
+## Amendment, 2026-10-19 — graphics states are kept whole, and an unused one that could carry content refuses
+
+**Decided by the owner** (2026-10-19, decisions 19 and 20). Two rules change what split does with a
+page's resources, on both engines, through the one pruning policy both reach.
+
+**1. `/ExtGState` is no longer pruned.** Pruning keeps what split's own reading of a page's content
+says the page uses, and where that reading and another reader's differ, a graphics state the other
+reader applies was pruned off. A graphics state is what can hide content, so the content it hid
+could be drawn in a part. Every page-level graphics state the copy brings now stays in the part
+whole, and split's reading no longer decides whether one survives -- **except in a case tracked
+privately and fixed in the next release**, and except for what the page copier qpdf supplies does
+to an object on the way in, a case tracked privately and closed with the same release.
+
+**2. An entry the part's pages do not draw with must be content-free, or the split refuses**,
+`[split-graphics-state-unused]`. Kept whole, a graphics state only an excluded page draws with
+would carry what it reaches -- a soft mask's form, a function, a halftone, a font -- into the part,
+which is §2a row 1 reopened. So for each `/ExtGState` dictionary in a part, the names the part's
+pages were read to use are unioned across every page that shares that dictionary, and any entry
+outside the union is judged against an allowlist: each key named, each with a direct value of one
+listed shape, the spec's `/Default` and `/Identity` names accepted where they mean "no function".
+Anything else -- an unlisted key, an indirect value, a value of another shape, an entry that is not
+a dictionary -- refuses. **No reachability is computed**: an unused entry that could carry content
+refuses whoever else reaches it, so there is no identity to get wrong. **Split's reading errs in
+both directions, and only one of them refuses.** An entry the part draws with but the reading
+misses is judged against the allowlist, and may refuse. An entry whose name appears anywhere in a
+kept page's content counts as used, whether or not the page draws with it, so it is not judged,
+and travels whole with what it reaches (see the open cases below). The deadline is read at every
+graphics-state entry, every key and every array item the allowlist reads. The allowlist is in
+`core/burrow-engines/src/prune/graphics_state.rs`.
+
+**That is a third outcome beside §2b's two**, for this one category. §2b says there are exactly two
+acceptable outcomes, prune or drop; for `/ExtGState` the answer is now "keep whole, and refuse when
+what is kept could carry excluded content". A refusal is not a carry-through, so §2b's intent
+holds. §2b's first row -- keep the names any copied stream references -- holds for every other
+category.
+
+**3. A resource category written as anything but a dictionary refuses**, for every category,
+`[split-resource-category-not-a-dictionary]`. Pruning could not filter one, so it passed through
+whole, and readers resolve resources from it.
+
+**4. A page in a part that inherits `/Resources` refuses**, `[split-resources-inherited]`. The copy
+moves every inherited attribute onto the page (ADR 0021), so this finds nothing today; it is checked
+rather than assumed, by a bounded climb up `/Parent` that refuses at its ceiling,
+`[split-page-tree-too-deep]`.
+
+**The residual, accepted by the owner.** What still reaches a part from content it excludes:
+
+- the key names, numbers, booleans and names of an unused content-free graphics state, which
+  travels whole;
+- a subset font's character set, when the font is shared with a page the part excludes and the part
+  draws with it;
+- the colourant names of a colour space the part draws with, when a page the part excludes shares it.
+
+**Still open, not accepted: filed, and closed in a later release.** Two cases are outside the
+owner's accepted residual and are not closed by this amendment:
+
+- **an entry named anywhere in a kept page's content keeps what it reaches.** Split's reading
+  collects a name wherever it appears, so a graphics-state entry only an excluded page draws with,
+  whose name a kept page mentions without drawing with it, counts as used and travels whole --
+  content-carrying or not;
+- **a graphics state that stays whole, except in a case tracked privately and fixed in the next
+  release** (rule 1 above).
+
+**Cost, measured** against `main` over the census (99 real documents, 9 producers, `big_book.pdf`
+and 202 fixtures -- the committed ones and three from #315's branch, not yet on `main` when this was
+measured -- 311 splits) and over every multi-page document split after every page (65): **no input
+moved from refused to `Ok`**; **0 of 99** real documents, **0 of 50** at every-page cuts, **0 of 9**
+producers and **0** on `big_book.pdf` newly refused; one adversarial fixture newly refused, by rule
+3. Keeping graphics states whole changed the bytes of one part, by 87 bytes, and that part is one of
+#315's three fixtures; no real document's part changed.
+
+**What this does not cover**, filed rather than built: resource dictionaries nested in forms, which
+are not pruned at all (unchanged); and what a soft mask's group form reaches, which the
+optional-content walk does not enter.

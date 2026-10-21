@@ -117,6 +117,33 @@ tests/conformance/fixtures/font-program-with-a-paren.pdf	compress	ok smaller: ou
 tests/conformance/fixtures/font-program-with-a-paren.pdf	merge	ok two copies: output 4 page(s)
 tests/conformance/fixtures/font-program-with-a-paren.pdf	redact	refused unsupported: pdf resources [width-source]: a font whose glyph widths a renderer takes from a different source than burrow would
 tests/conformance/fixtures/font-program-with-a-paren.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 1, carried text dropped 0, ink left on the page none; output 2 page(s)
+tests/conformance/fixtures/graphics-state-content-free-unused.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	redact	refused unsupported: pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared
+tests/conformance/fixtures/graphics-state-drawn-by-both.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	split	refused unsupported: split [split-graphics-state-unused]: a page lists a graphics state whose /SMask could carry content that the pages of this part do not draw with, so it may belong to a page outside the part (ADR 0019 §2b)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 1, carried text dropped 0, ink left on the page none; output 2 page(s)
+tests/conformance/fixtures/graphics-state-unused-soft-mask.pdf	render	ok [1] into 200x200: page 1 at 200x200
 tests/conformance/fixtures/inherited-rotation-6page.pdf	open	ok 6 page(s)
 tests/conformance/fixtures/inherited-rotation-6page.pdf	check	ok strict ok 6 page(s); recover ok 6 page(s)
 tests/conformance/fixtures/inherited-rotation-6page.pdf	rotate	ok every page by 90: output rotations [180, 180, 180, 180, 180, 180] sizes ["101x792", "102x792", "103x792", "104x792", "105x792", "106x792"]
@@ -207,6 +234,15 @@ tests/conformance/fixtures/render-one-quadrant.pdf	compress	ok not smaller
 tests/conformance/fixtures/render-one-quadrant.pdf	merge	ok two copies: output 2 page(s)
 tests/conformance/fixtures/render-one-quadrant.pdf	redact	refused unsupported: pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared
 tests/conformance/fixtures/render-one-quadrant.pdf	render	ok [1] into 200x200: page 1 at 100x200
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	split	refused unsupported: split [split-resource-category-not-a-dictionary]: a page's resources write a category as something other than a dictionary, which split cannot filter to what the part uses (ADR 0019 §2b)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 1, carried text dropped 0, ink left on the page none; output 2 page(s)
+tests/conformance/fixtures/resource-category-not-a-dictionary.pdf	render	ok [1] into 200x200: page 1 at 200x200
 tests/conformance/fixtures/trailer-removed.pdf	open	refused malformed input: pdfium could not open the document
 tests/conformance/fixtures/trailer-removed.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 3 page(s)
 tests/conformance/fixtures/trailer-removed.pdf	rotate	refused malformed input: qpdf: the document is damaged

@@ -22,6 +22,8 @@
 //! | a widget's `/Parent` | removed, always | drop |
 //! | an annotation's `/A`, `/Dest`, `/AA` | removed, always | drop |
 //! | inherited `/Resources` | filtered to the names the copied streams actually mention | prune |
+//! | `/ExtGState` | **kept whole** (except in a case tracked privately and fixed in the next release; see below); an entry the part's pages do not draw with must be content-free, or **the split is refused** (`graphics_state`) | neither |
+//! | a resource category that is not a dictionary | **the split is refused** | neither |
 //! | optional content | **the split is refused** | neither — see below |
 //!
 //! **The page-key row is the load-bearing one**, and it is why this module reads a dictionary's
@@ -65,8 +67,14 @@
 //!   whole. It is reachable only through an XObject the page uses, so it belongs to this page —
 //!   unless the XObject itself is shared with an excluded page, which is the sub-object blind spot
 //!   ADR 0019 §3 records and the named canaries rather than the structural harness cover.
-//! - **The name filter over-approximates.** See `crate::pdfsyntax::names`: a name is collected
-//!   because it appears, so a resource named in drawn text survives. Larger output, not a leak.
+//! - **The name filter over-approximates, and that is not always only larger output.** See
+//!   `crate::pdfsyntax::names`: a name is collected because it appears, so a resource named
+//!   anywhere in a kept page's content survives, whoever else draws with it. Where the resource is
+//!   one only an excluded page draws with, what it reaches travels into the part -- a graphics
+//!   state kept as used this way keeps its soft mask's form, and is not judged by the
+//!   graphics-state allowlist. Open, filed (ADR 0019 §2b's graphics-state amendment).
+//! - **A graphics state stays whole, except in a case tracked privately and fixed in the next
+//!   release.** The detail is not stated here.
 //! - **Nothing here sees inside `/DCTDecode`, `/JPXDecode` or `/JBIG2Decode`.** A leak present only
 //!   in transformed form is outside this module, outside `verify`, and outside `qpdf --qdf`. For
 //!   redaction that transformed form *is* the leak, so M2 must not inherit this as sufficient.
@@ -96,6 +104,7 @@
 //! trade; redaction inherits one prune rather than choosing again with more at stake.
 
 pub mod graph;
+mod graphics_state;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -343,6 +352,8 @@ pub(crate) fn annots_sharing<G: ObjectGraph>(
 ///
 /// - [`Error::Unsupported`] — a page references optional content, or a bound in this module or in
 ///   `crate::pdfsyntax` was reached. Every one of those is a refusal rather than a partial prune.
+///   Among them: `[split-graphics-state-unused]`, `[split-resource-category-not-a-dictionary]`,
+///   `[split-resources-inherited]` and `[split-page-tree-too-deep]`.
 /// - [`Error::Malformed`] — a dictionary qpdf produced could not be read back.
 /// - Whatever qpdf latched.
 pub(crate) fn prune_output<G: ObjectGraph>(
@@ -383,6 +394,10 @@ pub(crate) fn prune_output<G: ObjectGraph>(
     // not known until every page that shares it has been read.
     let mut resource_groups: Vec<(G::Handle, BTreeSet<Vec<u8>>)> = Vec::new();
     let mut group_of: BTreeMap<(i32, i32), usize> = BTreeMap::new();
+    // GRAPHICS STATES ARE KEPT WHOLE, and pooled by the `/ExtGState` dictionary rather than by the
+    // `/Resources` holding it, because two pages with their own `/Resources` can share one. See
+    // `graphics_state`.
+    let mut graphics_states = graphics_state::Pools::new();
     for (at, page) in pages.iter().enumerate() {
         walk.deadline.checkpoint(walk.clock)?;
         // NOT `unwrap_or(false)`. It is unreachable -- the loop is over `ambiguous.len()` --
@@ -399,7 +414,8 @@ pub(crate) fn prune_output<G: ObjectGraph>(
         if graph.type_code(&resources)? != object_type::DICTIONARY {
             // Nothing to filter. A page with no resources inherits none either: the flattening
             // above is what turns §2a's inherited-`/Resources` channel into a key on this
-            // dictionary in the first place.
+            // dictionary in the first place -- and that is checked rather than assumed.
+            refuse_inherited_resources(graph, page, walk.deadline, walk.clock)?;
             continue;
         }
         let (used, partial) = used_names(graph, page, &resources, &mut walk)?;
@@ -411,6 +427,7 @@ pub(crate) fn prune_output<G: ObjectGraph>(
                     .to_owned(),
             ));
         }
+        graphics_states.add(graph, &resources, &used, walk.deadline, walk.clock)?;
         let identity = graph.identity(&resources)?;
         if identity == (0, 0) {
             // A DIRECT dictionary belongs to this page alone and cannot be shared, so it is
@@ -437,6 +454,10 @@ pub(crate) fn prune_output<G: ObjectGraph>(
     for (resources, used) in &resource_groups {
         prune_resource_dictionary(graph, resources, used)?;
     }
+
+    // The graphics states every page kept whole: an entry no kept page sharing its dictionary
+    // draws with must be content-free, or the split refuses (ADR 0019 §2b's amendment).
+    graphics_states.refuse_unused(graph, walk.deadline, walk.clock)?;
 
     // Pass three: the pages' own keys. LAST, because the passes above read `/Annots` and
     // `/Resources`, and a future key that is read and then removed would break silently if this
@@ -1067,6 +1088,15 @@ fn is_optional_content_group<G: ObjectGraph>(graph: &G, entry: &G::Handle) -> Re
 ///
 /// `/ProcSet` is kept whole because it is a list of names rather than a map to objects — it
 /// reaches nothing and can carry nothing.
+///
+/// # `/ExtGState` is kept whole, and a category that is not a dictionary refuses
+///
+/// A graphics state the walk reads as unused is not pruned (see `graphics_state`, and
+/// `prune_output` for the refusal that goes with it). And a category written as anything other
+/// than a dictionary -- a stream, an array -- used to be skipped here, which carried every entry in
+/// it into the part: readers resolve resources from such a category, so whatever an excluded page
+/// drew with through it travelled. It refuses now, for every category,
+/// `[split-resource-category-not-a-dictionary]`.
 fn prune_resource_dictionary<G: ObjectGraph>(
     graph: &G,
     resources: &G::Handle,
@@ -1088,7 +1118,13 @@ fn prune_resource_dictionary<G: ObjectGraph>(
             continue;
         }
         let sub = graph.key(resources, &category)?;
-        if graph.type_code(&sub)? != object_type::DICTIONARY {
+        match graph.type_code(&sub)? {
+            object_type::DICTIONARY => {}
+            // Absent. qpdf reads a missing key, and a `null` value, as null.
+            object_type::NULL => continue,
+            _ => return Err(graphics_state::category_not_a_dictionary()),
+        }
+        if category.as_slice() == graphics_state::EXTGSTATE_KEY {
             continue;
         }
         for name in top_level_keys(&graph.unparse(&sub)?)? {
@@ -1100,6 +1136,54 @@ fn prune_resource_dictionary<G: ObjectGraph>(
         }
     }
     Ok(())
+}
+
+/// How many `/Parent` steps [`refuse_inherited_resources`] climbs before it refuses.
+///
+/// The same ceiling the rotation walk uses, for the same reason: a page tree is a tree, and one
+/// deeper than this is not one a producer wrote.
+const MAX_PAGE_TREE_DEPTH: usize = 64;
+
+/// Refuse a page in the part that has no `/Resources` of its own but whose ancestors carry one.
+///
+/// The copy pushes every inherited attribute down onto the page (ADR 0021), so in a part a page
+/// without `/Resources` has none to inherit, and this finds nothing. It is checked rather than
+/// assumed because an inherited `/Resources` that survived the copy would be pruned by nobody --
+/// every rule above reads the page's own -- and readers would draw with all of it. The climb is
+/// bounded, and reaching the bound refuses: a chain longer than the ceiling is one this cannot
+/// say anything about.
+///
+/// # Errors
+///
+/// `[split-resources-inherited]`, `[split-page-tree-too-deep]`, the deadline, and whatever the
+/// engine reports.
+pub(crate) fn refuse_inherited_resources<G: ObjectGraph>(
+    graph: &G,
+    page: &G::Handle,
+    deadline: &Deadline,
+    clock: &dyn burrow_types::Clock,
+) -> Result<()> {
+    let mut node = graph.key(page, b"/Parent")?;
+    for _ in 0..MAX_PAGE_TREE_DEPTH {
+        deadline.checkpoint(clock)?;
+        if graph.type_code(&node)? != object_type::DICTIONARY {
+            return Ok(());
+        }
+        if graph.type_code(&graph.key(&node, RESOURCES_KEY)?)? != object_type::NULL {
+            return Err(Error::Unsupported(
+                "split [split-resources-inherited]: a page in this part inherits resources the \
+                 copy did not move onto it, which split cannot filter to what the part uses \
+                 (ADR 0019 §2b)"
+                    .to_owned(),
+            ));
+        }
+        node = graph.key(&node, b"/Parent")?;
+    }
+    Err(Error::Unsupported(
+        "split [split-page-tree-too-deep]: a page in this part sits deeper in its page tree than \
+         split climbs, so what it inherits cannot be known (ADR 0019 §2b)"
+            .to_owned(),
+    ))
 }
 
 /// A resource category whose entries can be streams worth reading for further names.
