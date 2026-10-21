@@ -265,8 +265,11 @@ export interface BurrowHarness {
   redactHeapScans(): HeapScan[];
   /** How many times the host asked to terminate a redaction worker since the last arming. */
   redactTerminations(): number;
-  /** Every message between the page and redaction's worker since the last arming, in order. */
-  redactMessages(): RedactionMessage[];
+  /**
+   * Every message between the page and redaction's worker since the last arming, in order, with the
+   * recorder's SHA-256 of a reply's output as `fields["output.sha256"]` (R10).
+   */
+  redactMessages(): Promise<RedactionMessage[]>;
   /**
    * Wait until redaction's worker has gone quiet: resolves `ms` after the worker saw the
    * handshake, so anything it deferred by up to `ms` has been recorded. `settled` is false when

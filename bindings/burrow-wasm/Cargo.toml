@@ -40,7 +40,9 @@ render = []
 # qpdf again, for redaction and nothing else (#137, ADR 0029's 2026-09-21 amendment). Its own
 # artifact so the rewriter, the geometry walk and the font surgery never land on the module
 # every tool page fetches. Built with `--no-default-features --features redact`.
-redact = []
+# `sha2` with it, and with nothing else: R10's runtime digest of the redacted output (#206's web
+# half, owner decision 56). The base and render modules never link it.
+redact = ["dep:sha2"]
 
 [dependencies]
 burrow-core.workspace = true
@@ -61,6 +63,11 @@ wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
 # owns (#199), for the reason burrow-types gives: the crate forbids `unsafe`, so a volatile
 # write is not available.
 zeroize.workspace = true
+# R10 (ADR 0006; #206's web half): the SHA-256 of the redacted output, taken in Rust over the buffer
+# the operation returned, which the page re-takes over the Blob it delivers. OPTIONAL, behind
+# `redact`, so only the redaction module links it. Approved by the owner on 2026-10-15; already in
+# the graph as `burrow-engines`' build- and dev-dependency, at the version `Cargo.lock` pins.
+sha2 = { version = "0.10", default-features = false, optional = true }
 
 [lints]
 workspace = true

@@ -170,7 +170,9 @@ const EARLY_COUNT: Record<string, number> = { starting: 2, init: 1, ack: 1 };
  * `output`: that is ADR 0023's "exactly one part", held by the shape rather than by a count.
  * `rotations` is empty in every one, because redaction never fills it. `frames` and
  * `frameRefusals` are empty in every one but `page_frames`' success (#136), which carries them and
- * no output: numbers and rule names, never bytes.
+ * no output: numbers and rule names, never bytes. `outputDigest` is in every drained reply (R10,
+ * #206's web half): the output's SHA-256 as hex beside a document, "" without one -- measured on the
+ * real worker, and held to the output's own bytes by `outputDigestConsistency`.
  */
 const REPLIES: Set<string> = (() => {
   const shapes = new Set<string>();
@@ -198,6 +200,7 @@ const REPLIES: Set<string> = (() => {
       ok,
       originalBytes: "string",
       output,
+      outputDigest: "string",
       pages: "number",
       producedBytes: "string",
       recycle,
@@ -406,6 +409,11 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   // A lambda: `EXITS` is declared below, so it is read when a value is checked, not here.
   "__burrowSideChannelArmed[].length": (v) => integer(0, Object.keys(EXITS).length)(v),
   "output.type": oneOf(["application/pdf"]),
+  // R10: 64 lowercase hex digits beside a document, "" without one. The value is further held to
+  // the output's own SHA-256 (`outputDigestConsistency`), so it can carry nothing but that.
+  outputDigest: (v) => v === "" || isSha256Hex(v),
+  // The recorder's own digest of the output Blob, which that check compares against.
+  "output.sha256": (v) => isSha256Hex(v),
   "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxMemoryBytes": integer(0, Number.MAX_SAFE_INTEGER),
@@ -465,8 +473,35 @@ export const REFINED: [string, string | number, string][] = [
   ["frameRefusals[]", "user-unit-not-one-x", "a rule name with a suffix"],
   ["frameRefusals[]", ",user-unit-not-one,Jane", "a name no rule has, among real ones"],
   ["rotations[]", "0", "a rotation redaction never fills"],
+  ["outputDigest", "A".repeat(64), "an upper-case digest"],
+  ["outputDigest", "a".repeat(63), "a digest one digit short"],
+  ["outputDigest", "a".repeat(65), "a digest one digit long"],
+  ["output.sha256", "", "a recorder digest that is empty"],
   ["__burrowSideChannelArmed[]", "Worker,toString", "a prototype property"],
 ];
+
+/** 64 lowercase hex digits: a SHA-256 as `Reply::output_digest` and the recorder write it. */
+function isSha256Hex(v: unknown): boolean {
+  return typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+}
+
+/**
+ * R10: a terminal reply's `outputDigest` is the SHA-256 of the output it came with -- the
+ * recorder's own digest of that Blob -- and "" when it came with none. Without this the field would
+ * be 32 bytes a reply of any copy of the worker could fill as it liked, beside a document. Returns
+ * every way `m` breaks it, or nothing.
+ */
+export function outputDigestConsistency(m: RedactionMessage): string[] {
+  const digest = m.fields.outputDigest;
+  if (digest === undefined) return [];
+  if (!m.shape.includes("output:bytes")) {
+    return digest === "" ? [] : ["a reply with no output carries an outputDigest"];
+  }
+  const taken = m.fields["output.sha256"];
+  // THE WITNESS: a recorder that took no digest would make every comparison below vacuous.
+  if (taken === undefined) return ["the recorder took no digest of the reply's output"];
+  return digest === taken ? [] : ["the reply's outputDigest is not the SHA-256 of its output"];
+}
 
 /** A value each rule refuses, for the hand-written case that shows the rule is there. */
 export const REFUSED_BY: Record<string, string | number> = Object.fromEntries(
@@ -611,6 +646,7 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
         found.push(`the terminal reply has a shape nobody listed: ${m.shape.slice(0, 200)}`);
       }
       found.push(...framesConsistency(m, all, id));
+      found.push(...outputDigestConsistency(m));
       return;
     }
     if (harnessOwn(m, at, nonce, armedList)) return;
@@ -809,6 +845,9 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
         report:
           "Report { fonts: [FontOutcome { font: 655360, cut: true, also_used_by: 0 }, FontOutcome { font: 720896, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
         "output.type": "application/pdf",
+        // The recorder's digest and the reply's, equal, as on the real worker (R10).
+        "output.sha256": "a".repeat(64),
+        outputDigest: "a".repeat(64),
       },
     },
     {
@@ -834,7 +873,12 @@ export function cleanFramesLog(id: number, nonce: number): RedactionMessage[] {
     (s) => s.includes("frames:[number]") && s.includes("fatal:false") && s.includes("recycle:true"),
   );
   if (success === undefined) throw new Error("no frames reply shape is listed");
-  const { "output.type": _type, report: _report, ...fields } = reply.fields;
+  const {
+    "output.type": _type,
+    "output.sha256": _sha256,
+    report: _report,
+    ...fields
+  } = reply.fields;
   return [
     {
       ...reply,
@@ -858,6 +902,7 @@ export function cleanFramesLog(id: number, nonce: number): RedactionMessage[] {
         "frames[].length": 4,
         "frameRefusals[]": ",user-unit-not-one",
         "frameRefusals[].length": 2,
+        outputDigest: "",
       },
     },
     settle,

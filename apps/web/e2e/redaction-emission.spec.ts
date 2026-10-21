@@ -50,6 +50,17 @@ test("a successful redaction posts its document once, in the terminal reply", as
     log.filter((m) => m.sent === null && m.bytes > 0).length,
     "the recorder never saw the document",
   ).toBe(1);
+  // R10'S DIGEST RODE WITH IT, and is the recorder's own SHA-256 of the output it rode with: the
+  // positive control for `outputDigestConsistency`, which a reply carrying no digest would skip.
+  const terminal = log.filter((m) => m.sent === null && m.ok === true);
+  expect(terminal, "the recorder never saw the reply").toHaveLength(1);
+  expect(terminal[0].fields["output.sha256"], "the recorder took no digest").toMatch(
+    /^[0-9a-f]{64}$/,
+  );
+  expect(terminal[0].fields.outputDigest).toBe(terminal[0].fields["output.sha256"]);
+  expect(reply.outputSha256, "the harness's own digest of the same Blob").toBe(
+    terminal[0].fields.outputDigest,
+  );
   expect(r8Violations(log, onlyRequest(log), nonce)).toEqual([]);
 });
 
@@ -187,6 +198,12 @@ const FRAME_HAND: {
     name: "no frame and no rule",
     change: (f) => ({ ...f, "frameRefusals[]": "," }),
     finding: /page 1 has no frame and no rule/,
+  },
+  {
+    // R10: a digest with no document beside it binds nothing, and is 32 bytes of channel.
+    name: "an outputDigest beside no output",
+    change: (f) => ({ ...f, outputDigest: "a".repeat(64) }),
+    finding: /a reply with no output carries an outputDigest/,
   },
 ];
 
@@ -446,6 +463,24 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp; page?: n
     ...field("pages: Number(reply.pages),", "pages: 2 ** 40 + 12345,"),
     finding: /a value no rule admits in pages/,
   },
+  // R10's digest: well-formed, so only the comparison with the output's own bytes sees it.
+  {
+    name: "a well-formed outputDigest that is not the output's",
+    ...field(
+      "...(reply.outputDigest === undefined ? {} : { outputDigest: reply.outputDigest }),",
+      'outputDigest: "0".repeat(64),',
+    ),
+    finding: /the reply's outputDigest is not the SHA-256 of its output/,
+  },
+  {
+    name: "an outputDigest on a refusal",
+    ...field(
+      "...(reply.outputDigest === undefined ? {} : { outputDigest: reply.outputDigest }),",
+      'outputDigest: reply.ok ? reply.outputDigest : "0".repeat(64),',
+    ),
+    finding: /a reply with no output carries an outputDigest/,
+    page: 2,
+  },
 ];
 
 for (const leak of LEAKS) {
@@ -534,6 +569,24 @@ const HAND: {
       },
     ],
     finding: UNLISTED,
+  },
+  {
+    name: "an outputDigest that is not its output's SHA-256",
+    change: (log) => [
+      log[0],
+      { ...log[1], fields: { ...log[1].fields, outputDigest: "b".repeat(64) } },
+      log[2],
+    ],
+    finding: /the reply's outputDigest is not the SHA-256 of its output/,
+  },
+  {
+    // The witness: with no recorder digest the comparison would pass anything.
+    name: "an output the recorder took no digest of",
+    change: (log) => {
+      const { "output.sha256": _taken, ...fields } = log[1].fields;
+      return [log[0], { ...log[1], fields }, log[2]];
+    },
+    finding: /the recorder took no digest of the reply's output/,
   },
   {
     // No listed shape has a field without a rule, so no copy of this worker can reach this one.

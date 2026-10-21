@@ -242,6 +242,11 @@ interface Reply {
   readonly frames?: Float64Array;
   /** Per page, the frame rule refusing every region on it, or "". Redaction module only. */
   readonly frameRefusals?: string[];
+  /**
+   * The SHA-256 Rust took of the output, as 64 lowercase hex digits, or "" with none (R10, #206's
+   * web half). ABSENT outside the redaction module, which is the only one that has the getter.
+   */
+  readonly outputDigest?: string;
   /** Bytes in the produced document, without taking it. Zero if there is none. */
   readonly outputLength: number;
   /**

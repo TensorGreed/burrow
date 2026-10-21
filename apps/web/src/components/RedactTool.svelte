@@ -34,6 +34,7 @@
     originMismatchNotice,
   } from "./tool-host.js";
   import { createDelivery, type Handout } from "./tool-delivery.js";
+  import { checkDelivered } from "./delivered-digest.js";
 
   type Frame = { width: number; height: number; refused: string };
 
@@ -244,6 +245,17 @@
       if (!reply.output) {
         notice = messageFor({ kind: "Internal" });
         phase = "idle";
+        return;
+      }
+      // R10'S FINAL HOP: the Blob handed over must be the bytes Rust hashed when the operation
+      // returned them. A mismatch, or a document with no digest, hands nothing over
+      // (`delivered-digest.ts` says what this binds and what it does not).
+      const delivered = await checkDelivered(reply.output, reply.outputDigest);
+      if (!run.live()) return;
+      if (!delivered.ok) {
+        notice = messageFor({ kind: delivered.kind });
+        phase = "idle";
+        announce(notice.title);
         return;
       }
       const handout = run.hand(reply.output);

@@ -273,6 +273,15 @@ let redactTerminations = 0;
  * @type {import("./harness-api").HeapScan[]}
  */
 let redactHeapScans = [];
+/**
+ * R10 (#206's web half): the SHA-256 of every Blob a redaction worker's message carried, taken by
+ * the recorder itself, PENDING until `redactMessages` awaits them. Recorded into that message's
+ * `fields` as `output.sha256`, so R8's spec can hold the reply's `outputDigest` to the bytes it
+ * actually came with -- a digest that could be anything would be 32 bytes of channel beside them.
+ *
+ * @type {Promise<void>[]}
+ */
+let redactDigests = [];
 
 /**
  * How many byte-carrying values a message holds -- each `ArrayBuffer`, typed array or `Blob`,
@@ -466,7 +475,22 @@ function recordRedaction(worker) {
   };
   worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const data = event.data;
-    redactLog.push({ sent: null, ...describe(data, event.ports.length) });
+    const entry = { sent: null, ...describe(data, event.ports.length) };
+    redactLog.push(entry);
+    // THE RECORDER'S OWN DIGEST of a plain Blob in `output`, the only place R8 lets bytes ride.
+    const output = data !== null && typeof data === "object" ? data.output : undefined;
+    if (output instanceof Blob && Object.getPrototypeOf(output) === Blob.prototype) {
+      redactDigests.push(
+        output
+          .arrayBuffer()
+          .then((bytes) => crypto.subtle.digest("SHA-256", bytes))
+          .then((digest) => {
+            entry.fields["output.sha256"] = Array.from(new Uint8Array(digest), (b) =>
+              b.toString(16).padStart(2, "0"),
+            ).join("");
+          }),
+      );
+    }
     if (data?.__burrowHeapScan) {
       redactHeapScans.push(data.__burrowHeapScan);
       return;
@@ -1297,6 +1321,7 @@ const harness = {
     delete lazyHosts.redactWorker;
     if (existing) (await existing).dispose();
     redactLog = [];
+    redactDigests = [];
     redactRaw = null;
     redactTerminations = 0;
     return { applied };
@@ -1362,8 +1387,12 @@ const harness = {
     return redactHeapScans.map((scan) => scan.map((entry) => ({ ...entry })));
   },
 
-  /** Every message between the page and redaction's worker since the last arming, in order. */
-  redactMessages() {
+  /**
+   * Every message between the page and redaction's worker since the last arming, in order, once the
+   * recorder's digests of their outputs are in.
+   */
+  async redactMessages() {
+    await Promise.all(redactDigests);
     return redactLog.map((entry) => ({ ...entry }));
   },
 

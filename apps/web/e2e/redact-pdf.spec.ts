@@ -9,6 +9,7 @@
 // file through a link the person activates; and a refusal is said by its category, with its rule
 // id, never with the engine's message.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
@@ -16,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { CATEGORIES } from "../src/components/redact-messages";
+import { CATEGORIES, messageFor } from "../src/components/redact-messages";
 import { PICTURE_COPY } from "../src/components/region-picture";
 import { FORBIDDEN_CLAIMS } from "../src/redact-copy";
 import { isBrowserPolicyReport } from "./console-noise";
@@ -80,6 +81,76 @@ test("a whole page redacts, and the new file is handed over only when asked for"
   // A changed request hides the old result's link rather than leaving it labelled for it.
   await page.getByTestId("redact-width").fill("10");
   await expect(link).toBeHidden();
+});
+
+/**
+ * R10's final hop, watched from the page (#206's web half): every worker the page builds is one
+ * whose replies are seen BEFORE the host's handler -- a listener added in the constructor runs
+ * before the `onmessage` the host assigns later. Each reply carrying a document and an
+ * `outputDigest` has that digest recorded; with `tamper`, its `output` is replaced by a Blob one
+ * byte longer, which is what a final hop that changed the bytes would deliver. Counted, so a test
+ * can assert the plant applied.
+ */
+async function watchReplies(page: Page, tamper: boolean) {
+  await page.addInitScript((tamper: boolean) => {
+    const seen: string[] = [];
+    const counts = { tampered: 0 };
+    Object.assign(window, { __burrowDigests: seen, __burrowTamper: counts });
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        this.addEventListener("message", (event: MessageEvent) => {
+          const data = event.data;
+          if (!data || typeof data.outputDigest !== "string" || !(data.output instanceof Blob)) {
+            return;
+          }
+          seen.push(data.outputDigest);
+          if (tamper) {
+            data.output = new Blob([data.output, " "], { type: data.output.type });
+            counts.tampered += 1;
+          }
+        });
+      }
+    };
+  }, tamper);
+}
+
+test("the file handed over is the one Rust hashed: its SHA-256 is the reply's digest (R10)", async ({
+  page,
+}) => {
+  await watchReplies(page, false);
+  const frame = await open(page, REDACTS);
+  await area(page, "0", "0", String(frame.width), String(frame.height));
+  await page.getByTestId("redact-run").click();
+  await expect(page.getByTestId("redact-download")).toBeVisible({ timeout: 45_000 });
+  const digests = await page.evaluate(
+    () => (window as unknown as { __burrowDigests: string[] }).__burrowDigests,
+  );
+  // THE WITNESS: one reply carried a document and a digest, so the check had something to bind.
+  expect(digests).toHaveLength(1);
+  expect(digests[0]).toMatch(/^[0-9a-f]{64}$/);
+  const out = await downloaded(page, "redact-download");
+  expect(createHash("sha256").update(out).digest("hex")).toBe(digests[0]);
+});
+
+test("a file whose bytes are not the ones Rust hashed is not handed over (R10)", async ({
+  page,
+}) => {
+  await watchReplies(page, true);
+  const frame = await open(page, REDACTS);
+  await area(page, "0", "0", String(frame.width), String(frame.height));
+  await page.getByTestId("redact-run").click();
+  const notice = page.getByTestId("redact-notice");
+  await expect(notice).toBeVisible({ timeout: 45_000 });
+  // THE PLANT APPLIED, or this measures an untouched reply and proves nothing.
+  const tampered = await page.evaluate(
+    () => (window as unknown as { __burrowTamper: { tampered: number } }).__burrowTamper.tampered,
+  );
+  expect(tampered, "the delivered bytes were never changed").toBe(1);
+  await expect(notice).toContainText(messageFor({ kind: "OutputRejected" }).title);
+  await expect(page.getByTestId("redact-download")).toHaveCount(0);
+  await expect(page.getByTestId("redact-run")).toBeEnabled();
 });
 
 test("a refusal is said by its category, with its rule id", async ({ page }) => {

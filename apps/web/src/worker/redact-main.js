@@ -21,6 +21,13 @@
 // the Rust call has returned success and verified it; nothing leaves the heap before that --
 // no chunk, no `blob:` URL, no file handle. The reply is built by `drainReply`, which makes a
 // Blob only of what `takeOutput()` hands back on a successful reply.
+//
+// R10'S DIGEST RIDES BESIDE IT (#206's web half; owner decision 56). A redaction's reply carries
+// `outputDigest`: the SHA-256 Rust took of the returned buffer before moving it into the reply
+// (`Reply::output_digest`), as 64 lowercase hex digits, or "" with no output. `drainReply` forwards
+// it only when the getter exists, which is in this module alone, so the base and render bundles'
+// replies keep their shape. The page re-takes it over the Blob it delivers and hands nothing over
+// on a mismatch (`src/components/delivered-digest.ts`).
 
 async function init() {
   // The same start-up as the base bundle: qpdf is MODULARIZE'd, so readiness is an `await`

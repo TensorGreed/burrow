@@ -400,6 +400,22 @@ pub struct Reply {
     /// only, as `frames` is.
     #[cfg(feature = "redact")]
     frame_refusals: Vec<String>,
+    /// The SHA-256 of [`Reply::output`], as 64 lowercase hex digits, or empty when there is no
+    /// output (R10, ADR 0006; #206's web half, cut to the runtime digest by the owner's decision
+    /// 56, 2026-10-21).
+    ///
+    /// **Taken in Rust, over the buffer the operation returned**, before that buffer is moved into
+    /// this reply -- the buffer R10's native tests (`redact_verify_same_bytes`) prove is the one
+    /// verification examined. The page re-takes it over the bytes of the Blob it delivers and hands
+    /// nothing over if the two differ (`src/components/delivered-digest.ts` in `apps/web`), which
+    /// binds the web's final hop -- out of this heap, through the worker's reply, into the Blob --
+    /// to what was verified. What it does not bind is stated there.
+    ///
+    /// Hex, not bytes: the redaction worker's reply carries bytes in `output` and nowhere else (R8),
+    /// and R8's spec holds this field to the SHA-256 of that output, so it can carry nothing else.
+    /// Redaction module only, as `frames` is: no other module's reply is held to R10 on the web yet.
+    #[cfg(feature = "redact")]
+    output_digest: String,
 }
 
 #[wasm_bindgen]
@@ -604,6 +620,21 @@ fn is_fatal(error: &Error) -> bool {
     )
 }
 
+/// The SHA-256 of `bytes`, as 64 lowercase hex digits (R10). `sha2`, the crate the owner approved
+/// for this on 2026-10-15, linked into the redaction module only (`redact = ["dep:sha2"]`).
+#[cfg(feature = "redact")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        // Writing to a `String` cannot fail; the result is discarded rather than unwrapped.
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
 /// What an [`Error::InputFailed`] is *about*.
 ///
 /// One definition, used by everything that looks through the wrapper. `is_fatal` recursed,
@@ -674,6 +705,8 @@ impl Reply {
             frames: Vec::new(),
             #[cfg(feature = "redact")]
             frame_refusals: Vec::new(),
+            #[cfg(feature = "redact")]
+            output_digest: String::new(),
         }
     }
 
@@ -713,6 +746,9 @@ impl Reply {
     #[cfg(feature = "redact")]
     fn redacted(output: Vec<u8>, report: &burrow_core::engines::redact::Report) -> Self {
         let mut reply = Self::success(0);
+        // R10: THE DIGEST OF THIS BUFFER, taken before it moves into the reply, so it is a digest of
+        // the bytes the operation returned and nothing later.
+        reply.output_digest = sha256_hex(&output);
         reply.output = output;
         reply.report = format!("{report:?}");
         reply.retained_fonts = u32::try_from(report.retained().count()).unwrap_or(u32::MAX);
@@ -848,6 +884,8 @@ impl Reply {
             frames: Vec::new(),
             #[cfg(feature = "redact")]
             frame_refusals: Vec::new(),
+            #[cfg(feature = "redact")]
+            output_digest: String::new(),
         }
     }
 }
@@ -910,6 +948,16 @@ impl Reply {
     #[must_use]
     pub fn frame_refusals(&self) -> Vec<String> {
         self.frame_refusals.clone()
+    }
+
+    /// The SHA-256 of the output as 64 lowercase hex digits, or `""` when there is none (R10). Read
+    /// before [`Reply::take_output`] or after it: taking the output leaves the digest in place.
+    /// Redaction module only.
+    #[cfg(feature = "redact")]
+    #[wasm_bindgen(getter, js_name = outputDigest)]
+    #[must_use]
+    pub fn output_digest(&self) -> String {
+        self.output_digest.clone()
     }
 
     /// Every page's effective rotation, in page order.
@@ -1313,7 +1361,36 @@ mod tests {
         assert_eq!(reply.retained_fonts(), 2);
         assert_eq!(reply.dropped_carried_text(), 5);
         assert_eq!(reply.report(), format!("{report:?}"));
+        // R10: THE DIGEST IS OF THE BYTES THE REPLY CARRIES, and taking them leaves it in place.
+        // `printf '\x07\x08\x09' | sha256sum`, computed outside this crate.
+        let pinned = "66a6757151f8ee55db127716c7e3dce0be8074b64e20eda542e5c1e46ca9c41e";
+        assert_eq!(reply.output_digest(), pinned);
         assert_eq!(reply.take_output(), vec![7, 8, 9]);
+        assert_eq!(reply.output_digest(), pinned);
+    }
+
+    /// R10's digest is SHA-256 itself, pinned against two published vectors (FIPS 180-2's "abc"
+    /// and the empty string), so a digest that is merely stable -- a different hash, a truncation,
+    /// upper-case hex -- does not pass.
+    #[cfg(feature = "redact")]
+    #[test]
+    fn output_digest_is_sha256_in_lowercase_hex() {
+        assert_eq!(
+            super::sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            super::sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// A refusal carries no digest: there is nothing delivered for it to bind.
+    #[cfg(feature = "redact")]
+    #[test]
+    fn a_refusal_carries_no_output_digest() {
+        let reply = Reply::failure(&Error::Internal("x".to_owned()));
+        assert_eq!(reply.output_digest(), "");
     }
 
     // Only the tests name a `Stage` directly: `Reply::failure` reads one off an error rather

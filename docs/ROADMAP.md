@@ -799,7 +799,7 @@ of claim that reads as coverage. See the ADR's 2026-09-12 amendment for why each
 |---|---|---|
 | **R8** | Redaction output is a single value returned from one Rust call, posted only after that call returns success. Progress may report *position*; it may not emit *content*. | `redaction-emission.spec.ts` — record every `postMessage`; assert no message before the final reply carries bytes, and exactly one carries output |
 | **R9** | Nothing is written outside the wasm heap before verification passes — no OPFS, no File System Access, no `blob:` URL handed to the page. | `redaction-no-side-channel.spec.ts` — stub `getDirectory`, `showSaveFilePicker`, `createObjectURL`; assert none is called before the verified reply |
-| **R10** | The bytes verification examines are proven identical to the bytes emitted (amended 2026-09-27: its property, not its mechanism). Running in the emitting heap satisfies it; so does a hash binding, which is what admits #206's second reading. "Emitted" is the Rust buffer the operation returns (owner, 2026-10-19). | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path. **The native tests exist (2026-10-19); R10 is still unmet.** The web's final hop is guarded by the browser comparison until #206's web half lands its runtime digest, binding the hash to the delivered output. That is the **second** S9 dependency on #206's web half, beside the PDFium ink read-back (DECISIONS rule 19). |
+| **R10** | The bytes verification examines are proven identical to the bytes emitted (amended 2026-09-27: its property, not its mechanism). Running in the emitting heap satisfies it; so does a hash binding, which is what admits #206's second reading. "Emitted" is the Rust buffer the operation returns (owner, 2026-10-19). | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path. **The native tests exist (2026-10-19).** **The web's final hop is bound at run time** by #206's web half, cut to the digest alone (owner decision 56, 2026-10-21): the redaction module takes the SHA-256 of the buffer the operation returns, the reply carries it, and the page re-takes it over the `Blob` it delivers and hands nothing over on a mismatch (`delivered-digest.ts`; `redact-pdf.spec.ts` plants a changed `Blob`, in all three browsers). That was the **second** S9 dependency on #206's web half; whether it closes R10 for S9 is the owner's to record, since decision 12 named it as the condition. The second reading it also carried is v2. |
 
 Under an unwind, violating R8 or R9 is recoverable: Rust returns `Err`, the buffer drops, a
 `Drop` impl deletes the file. Under a trap — which is what the web has — they are not. R10 is
@@ -825,12 +825,15 @@ run in all three browsers.
 - **Neither** sees a `MessagePort` that the page never receives, and #206 will add one.
 
 Five versions reviewed before push fell short. ADR 0006's R8/R9 note has what each lacked and what
-is still out of reach. **R10's native tests exist since 2026-10-19, and R10 is still unmet**: "emitted" is
+is still out of reach. **R10's native tests exist since 2026-10-19**, and whether R10 is now met is the owner's to record: "emitted" is
 recorded as the Rust buffer the operation returns, and every verifier is held to it by digest, on fakes
 whose every call differs and on the corpus's redacted cases. The web's final hop -- out of the wasm heap
-into the `Blob` the page delivers -- is guarded only by the browser comparison, at test time, until
-#206's web half lands its runtime digest. That is S9's second dependency on #206's web half. ADR
-0006's R10 note has the detail.
+into the `Blob` the page delivers -- is bound at run time by #206's web half, cut to the digest
+alone: the reply carries the SHA-256 Rust took of the returned buffer, the page re-takes it over the
+`Blob` before handing it over, and a mismatch delivers nothing. R8's spec holds that digest to the
+output's own bytes, so it carries nothing else. It does not authenticate the worker: one that sent a
+different document with that document's digest would pass, and the bundle's integrity pin is what
+holds that. ADR 0006's R10 note has the history.
 
 ### Decided: ADR 0029, and the blocker it carries
 
