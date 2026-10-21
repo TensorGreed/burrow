@@ -21,8 +21,8 @@ until launch is redaction only.
 
 **Redaction v1 is "flatten the redacted page"** (owner, 2026-10-21): PDFium renders the page, the
 region is painted in PDFium's heap (widened to whole pixels), and qpdf replaces the page with one
-Flate image and a one-line content stream; other pages are untouched. The flatten ADR (in review)
-records the decision. The rows below are the v1 set; the content-stream rows moved to
+Flate image and a one-line content stream; other pages are untouched. [ADR 0031](adr/0031-redaction-v1-flattens-the-redacted-page.md)
+(Proposed; revised after its round-0 reviews) records the decision. The rows below are the v1 set; the content-stream rows moved to
 [*v2*](#v2-the-content-stream-rewriter-parked-owner-2026-10-21) below.
 
 | | what | why it blocks |
