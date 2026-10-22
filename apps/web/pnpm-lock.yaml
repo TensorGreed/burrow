@@ -111,32 +111,32 @@ importers:
     dependencies:
       '@astrojs/svelte':
         specifier: ^7.0.0
-        version: 7.2.5(@types/node@22.20.2)(astro@5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0))(svelte@5.57.0)(typescript@5.9.3)(yaml@2.9.0)
+        version: 7.2.5(@types/node@22.20.2)(astro@5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0))(svelte@5.57.2)(typescript@5.9.3)(yaml@2.9.0)
       astro:
         specifier: ^5.0.0
         version: 5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0)
       svelte:
-        specifier: ^5.0.0
-        version: 5.57.0
+        specifier: ^5.57.2
+        version: 5.57.2
     devDependencies:
       '@astrojs/check':
         specifier: ^0.9.0
-        version: 0.9.10(prettier-plugin-astro@0.14.1)(prettier@3.9.6)(typescript@5.9.3)
+        version: 0.9.10(prettier-plugin-astro@0.14.1)(prettier@3.9.10)(typescript@5.9.3)
       '@playwright/test':
-        specifier: ^1.63.0
-        version: 1.63.0
+        specifier: ^1.64.1
+        version: 1.64.1
       '@types/node':
         specifier: ^22.20.2
         version: 22.20.2
       prettier:
-        specifier: ^3.3.0
-        version: 3.9.6
+        specifier: ^3.9.10
+        version: 3.9.10
       prettier-plugin-astro:
         specifier: ^0.14.0
         version: 0.14.1
       prettier-plugin-svelte:
         specifier: ^3.2.0
-        version: 3.5.2(prettier@3.9.6)(svelte@5.57.0)
+        version: 3.5.2(prettier@3.9.10)(svelte@5.57.2)
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -884,8 +884,8 @@ packages:
   '@oslojs/encoding@1.1.0':
     resolution: {integrity: sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ==}
 
-  '@playwright/test@1.63.0':
-    resolution: {integrity: sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ==}
+  '@playwright/test@1.64.1':
+    resolution: {integrity: sha512-IaYGml/nSOiZWROfPtuIL7neuu9qDOZ3TNvNljUIrhDMxiGTgPjzj/g9p9RxpS2tSepPDRY+UwAaEeiKtUvIAg==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1883,13 +1883,13 @@ packages:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
 
-  playwright-core@1.63.0:
-    resolution: {integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==}
+  playwright-core@1.64.1:
+    resolution: {integrity: sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==}
     engines: {node: '>=20'}
     hasBin: true
 
-  playwright@1.63.0:
-    resolution: {integrity: sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg==}
+  playwright@1.64.1:
+    resolution: {integrity: sha512-HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1907,8 +1907,8 @@ packages:
       prettier: ^3.0.0
       svelte: ^3.2.0 || ^4.0.0-next.0 || ^5.0.0-next.0
 
-  prettier@3.9.6:
-    resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+  prettier@3.9.10:
+    resolution: {integrity: sha512-skGHTH1Yb9QvaTC4hWnRTzEYtCpApF0UMBPz+t/0ZPzP8ihefo/btKd+QA7pUE0fEwA1SbS/NmhyEcstdXOIdA==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -2081,8 +2081,8 @@ packages:
       svelte: ^3.55 || ^4.0.0-next.0 || ^4.0 || ^5.0.0-next.0
       typescript: ^4.9.4 || ^5.0.0 || ^6.0.0
 
-  svelte@5.57.0:
-    resolution: {integrity: sha512-NdbDn7fl4be1ViUG0oq/lvG6OZy3oENolV2ONjiqqsfVoeAfzaQAKUcEX3MrQod/Bebv1PgwET9rfXhgn9s4Kg==}
+  svelte@5.57.2:
+    resolution: {integrity: sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ==}
     engines: {node: '>=18'}
 
   svgo@4.1.0:
@@ -2590,9 +2590,9 @@ packages:
 
 snapshots:
 
-  '@astrojs/check@0.9.10(prettier-plugin-astro@0.14.1)(prettier@3.9.6)(typescript@5.9.3)':
+  '@astrojs/check@0.9.10(prettier-plugin-astro@0.14.1)(prettier@3.9.10)(typescript@5.9.3)':
     dependencies:
-      '@astrojs/language-server': 2.16.16(prettier-plugin-astro@0.14.1)(prettier@3.9.6)(typescript@5.9.3)
+      '@astrojs/language-server': 2.16.16(prettier-plugin-astro@0.14.1)(prettier@3.9.10)(typescript@5.9.3)
       chokidar: 4.0.3
       kleur: 4.1.5
       typescript: 5.9.3
@@ -2605,7 +2605,7 @@ snapshots:
 
   '@astrojs/internal-helpers@0.7.6': {}
 
-  '@astrojs/language-server@2.16.16(prettier-plugin-astro@0.14.1)(prettier@3.9.6)(typescript@5.9.3)':
+  '@astrojs/language-server@2.16.16(prettier-plugin-astro@0.14.1)(prettier@3.9.10)(typescript@5.9.3)':
     dependencies:
       '@astrojs/compiler': 2.13.1
       '@astrojs/yaml2ts': 0.2.4
@@ -2619,14 +2619,14 @@ snapshots:
       volar-service-css: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))
       volar-service-emmet: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))
       volar-service-html: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))
-      volar-service-prettier: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(prettier@3.9.6)
+      volar-service-prettier: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(prettier@3.9.10)
       volar-service-typescript: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       volar-service-typescript-twoslash-queries: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       volar-service-yaml: 0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))
       vscode-html-languageservice: 5.6.2
       vscode-uri: 3.2.0
     optionalDependencies:
-      prettier: 3.9.6
+      prettier: 3.9.10
       prettier-plugin-astro: 0.14.1
     transitivePeerDependencies:
       - typescript
@@ -2661,12 +2661,12 @@ snapshots:
     dependencies:
       prismjs: 1.30.0
 
-  '@astrojs/svelte@7.2.5(@types/node@22.20.2)(astro@5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0))(svelte@5.57.0)(typescript@5.9.3)(yaml@2.9.0)':
+  '@astrojs/svelte@7.2.5(@types/node@22.20.2)(astro@5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0))(svelte@5.57.2)(typescript@5.9.3)(yaml@2.9.0)':
     dependencies:
-      '@sveltejs/vite-plugin-svelte': 5.1.1(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
+      '@sveltejs/vite-plugin-svelte': 5.1.1(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
       astro: 5.18.2(@types/node@22.20.2)(rollup@4.63.1)(typescript@5.9.3)(yaml@2.9.0)
-      svelte: 5.57.0
-      svelte2tsx: 0.7.61(svelte@5.57.0)(typescript@5.9.3)
+      svelte: 5.57.2
+      svelte2tsx: 0.7.61(svelte@5.57.2)(typescript@5.9.3)
       typescript: 5.9.3
       vite: 6.4.3(@types/node@22.20.2)(yaml@2.9.0)
     transitivePeerDependencies:
@@ -3099,9 +3099,9 @@ snapshots:
 
   '@oslojs/encoding@1.1.0': {}
 
-  '@playwright/test@1.63.0':
+  '@playwright/test@1.64.1':
     dependencies:
-      playwright: 1.63.0
+      playwright: 1.64.1
 
   '@rollup/pluginutils@5.4.0(rollup@4.63.1)':
     dependencies:
@@ -3223,23 +3223,23 @@ snapshots:
     dependencies:
       acorn: 8.18.0
 
-  '@sveltejs/vite-plugin-svelte-inspector@4.0.1(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0)))(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))':
+  '@sveltejs/vite-plugin-svelte-inspector@4.0.1(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0)))(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))':
     dependencies:
-      '@sveltejs/vite-plugin-svelte': 5.1.1(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
+      '@sveltejs/vite-plugin-svelte': 5.1.1(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
       debug: 4.4.3
-      svelte: 5.57.0
+      svelte: 5.57.2
       vite: 6.4.3(@types/node@22.20.2)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
-  '@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))':
+  '@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))':
     dependencies:
-      '@sveltejs/vite-plugin-svelte-inspector': 4.0.1(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0)))(svelte@5.57.0)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
+      '@sveltejs/vite-plugin-svelte-inspector': 4.0.1(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0)))(svelte@5.57.2)(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
       debug: 4.4.3
       deepmerge: 4.3.1
       kleur: 4.1.5
       magic-string: 0.30.21
-      svelte: 5.57.0
+      svelte: 5.57.2
       vite: 6.4.3(@types/node@22.20.2)(yaml@2.9.0)
       vitefu: 1.1.3(vite@6.4.3(@types/node@22.20.2)(yaml@2.9.0))
     transitivePeerDependencies:
@@ -4391,11 +4391,11 @@ snapshots:
 
   picomatch@4.0.7: {}
 
-  playwright-core@1.63.0: {}
+  playwright-core@1.64.1: {}
 
-  playwright@1.63.0:
+  playwright@1.64.1:
     dependencies:
-      playwright-core: 1.63.0
+      playwright-core: 1.64.1
 
   postcss@8.5.28:
     dependencies:
@@ -4406,15 +4406,15 @@ snapshots:
   prettier-plugin-astro@0.14.1:
     dependencies:
       '@astrojs/compiler': 2.13.1
-      prettier: 3.9.6
+      prettier: 3.9.10
       sass-formatter: 0.7.9
 
-  prettier-plugin-svelte@3.5.2(prettier@3.9.6)(svelte@5.57.0):
+  prettier-plugin-svelte@3.5.2(prettier@3.9.10)(svelte@5.57.2):
     dependencies:
-      prettier: 3.9.6
-      svelte: 5.57.0
+      prettier: 3.9.10
+      svelte: 5.57.2
 
-  prettier@3.9.6: {}
+  prettier@3.9.10: {}
 
   prismjs@1.30.0: {}
 
@@ -4677,14 +4677,14 @@ snapshots:
     dependencies:
       s.color: 0.0.15
 
-  svelte2tsx@0.7.61(svelte@5.57.0)(typescript@5.9.3):
+  svelte2tsx@0.7.61(svelte@5.57.2)(typescript@5.9.3):
     dependencies:
       dedent-js: 1.0.1
       scule: 1.3.0
-      svelte: 5.57.0
+      svelte: 5.57.2
       typescript: 5.9.3
 
-  svelte@5.57.0:
+  svelte@5.57.2:
     dependencies:
       '@jridgewell/remapping': 2.3.5
       '@jridgewell/sourcemap-codec': 1.6.0
@@ -4966,12 +4966,12 @@ snapshots:
     optionalDependencies:
       '@volar/language-service': 2.4.28(typescript@5.9.3)
 
-  volar-service-prettier@0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(prettier@3.9.6):
+  volar-service-prettier@0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(prettier@3.9.10):
     dependencies:
       vscode-uri: 3.2.0
     optionalDependencies:
       '@volar/language-service': 2.4.28(typescript@5.9.3)
-      prettier: 3.9.6
+      prettier: 3.9.10
 
   volar-service-typescript-twoslash-queries@0.0.71(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
@@ -5078,7 +5078,7 @@ snapshots:
       ajv: 8.20.0
       ajv-draft-04: 1.0.0(ajv@8.20.0)
       ajv-i18n: 4.2.0(ajv@8.20.0)
-      prettier: 3.9.6
+      prettier: 3.9.10
       request-light: 0.5.8
       vscode-json-languageservice: 4.1.8
       vscode-languageserver: 9.0.1
