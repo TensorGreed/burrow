@@ -40,7 +40,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # definition of the schema.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 [lints]
 workspace = true
