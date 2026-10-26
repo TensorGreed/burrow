@@ -212,6 +212,24 @@ one is decided in an issue, with the same three parts.
     reader column never reads "checked" from a reading of the code. *Decided:* owner, 2026-10-19
     (decision 27). *Does not cover:* a slice with no twin, which has nothing to render; nor the reviewer tiers above, which are unchanged.
 
+    **Amended 2026-10-26: review spend.**
+    1. Mechanical diffs -- docs only, budget re-records, regenerated tables, ROADMAP/DECISIONS
+       wording -- get no agent review: CI plus owner approval on the PR. (The tooling class named
+       under *Mechanical* above is not in this list and keeps its one `code-reviewer` pass.)
+    2. Refusal-tier changes: one `code-reviewer` run, on Sonnet. The `security-reviewer` (Opus)
+       only for acceptance changes, verification-path changes and the flatten build.
+    3. No re-review after a rebase unless the diff changed beyond regenerated tables and budget
+       lines.
+    4. At most two reviewer runs per PR; a third is a stop for the owner. (Counts reviewer runs;
+       rule 15 counts rounds.)
+    5. The Friday report includes reviewer runs per merged PR and the share of agent runs with no
+       commit.
+
+    For rule 23, a PR under point 1 names "CI + owner approval under rule 17's 2026-10-26
+    amendment" as its review. *Decided:* owner, 2026-10-26 (decision 65). *Does not cover:* any
+    change that makes redaction or split accept more, which keeps the full process above; nor the
+    two-round cap of rule 15, which is unchanged.
+
 18. **A release that closes a live leak may re-record and raise its size budgets to their policy
     minimums without asking, provided the base module's real growth in that PR is under 10%.** The
     before and after numbers are reported in the batch summary. Anything over 10%, or any change to
@@ -293,7 +311,8 @@ one is decided in an issue, with the same three parts.
     and the per-line budgets themselves, which still apply.
 
 23. **Every merge names the review(s) it satisfied under rule 17; a merge with no named review is a
-    stop.** *Decided:* owner, 2026-10-16. *Does not cover:* what a review must find, which rule 17
+    stop.** *Decided:* owner, 2026-10-16 (a mechanical PR under rule 17's 2026-10-26 amendment names
+    "CI + owner approval"). *Does not cover:* what a review must find, which rule 17
     and rule 15 set; this rule only makes the review visible at the merge.
 
 24. **A round is not finished until it is saved.** A round (round 0, a review round, a
