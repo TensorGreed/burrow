@@ -6,9 +6,11 @@ name: fuzz (nightly)
 #
 # Longer runs come later on the self-hosted linux-arm64 machine, with a persistent corpus.
 # This workflow deliberately starts from an empty corpus each night — it is a regression
-# guard, not a campaign. A finding here is NOT reproducible from anything this job publishes:
-# the crashing input stays on the runner (see "Describe the crash without publishing it"), and
-# reproducing means re-running the target locally against a seeded corpus. That is deliberate --
+# guard, not a campaign. A finding here is NOT reproducible from anything this job publishes in
+# the clear: the crashing input stays on the runner (see "Describe the crash without publishing
+# it"), kept only as an age-encrypted artifact for the owner (see "THE FINDING IS KEPT,
+# ENCRYPTED" at the end), and reproducing means decrypting that or re-running the target locally
+# against a seeded corpus. That is deliberate --
 # this repository is public and #62's defects are unpatched upstream.
 
 on:
@@ -240,3 +242,52 @@ jobs:
           || steps.fuzz.outcome == 'failure')
         # THE SCRIPT IS THE STEP, shared with fuzz-reproduce.yml -- see its header.
         run: tools/fuzz-describe.sh "${{ matrix.target }}" "$RUNNER_TEMP/fuzz.log"
+
+      # THE FINDING IS KEPT, ENCRYPTED (owner decision (62)(1), 2026-10-24). Nightly 40076578189
+      # found a new `reorder` crash and nobody could say what it was: the public log is redacted, so
+      # the internal-error message was lost, and the input was never kept (see "THE SIGNAL, NEVER
+      # THE PAYLOAD" above). The three steps below keep both without publishing either:
+      #
+      #   install -> seal -> upload
+      #
+      # `tools/fuzz-seal-finding.sh` bundles the crash inputs and the UNREDACTED log and encrypts
+      # them with `age` to the public key in `.github/fuzz-findings.recipient`. The private key is
+      # held by the owner and is not in this repository or in CI. The upload step publishes ONE
+      # path, `<target>.age`; there is no plaintext in that directory (the script checks), and
+      # `tools/check-no-published-reproducers.py` still refuses any upload naming the inputs or the
+      # raw log. Nothing here changes what the public log shows: redaction is untouched.
+      #
+      # WHILE THE RECIPIENT FILE IS THE PLACEHOLDER the seal step warns and uploads nothing (exit 4
+      # of the script): the owner's key swap is the only change needed. Any other failure of the
+      # seal step fails it, and the upload step then does not run -- fail closed.
+      - name: Install the pinned age
+        id: age
+        if: >-
+          always() && (steps.fuzz.outputs.status != '0' && steps.fuzz.outputs.status != ''
+          || steps.fuzz.outcome == 'failure')
+        run: |
+          age_path="$(tools/install-age.sh "$RUNNER_TEMP/age-bin")"
+          echo "AGE=$age_path" >> "$GITHUB_ENV"
+
+      - name: Encrypt the finding to the owner's key
+        id: seal
+        if: always() && steps.age.outcome == 'success'
+        run: |
+          rc=0
+          tools/fuzz-seal-finding.sh "${{ matrix.target }}" "$RUNNER_TEMP/fuzz.log" \
+            .github/fuzz-findings.recipient "$RUNNER_TEMP/sealed" \
+            "fuzz/artifacts/${{ matrix.target }}" || rc=$?
+          if [ "$rc" -eq 4 ]; then
+            echo "::warning title=finding NOT kept::.github/fuzz-findings.recipient is still the placeholder; the owner must install a key (see the file). Nothing was encrypted or uploaded."
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Upload the encrypted finding (ciphertext only)
+        if: always() && steps.seal.outputs.sealed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sealed-finding-${{ matrix.target }}
+          path: ${{ runner.temp }}/sealed/${{ matrix.target }}.age
+          retention-days: 7
+          if-no-files-found: error

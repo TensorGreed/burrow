@@ -285,7 +285,7 @@ fuzz_target!(|data: &[u8]| {
         // means an invariant inside burrow did not hold, which is a finding rather than a
         // refusal.
         Err(Error::Internal(message)) => {
-            panic!("reorder reported an internal error: {message}");
+            burrow_fuzz::internal_error("reorder", &message);
         }
         Err(_) => {}
     }

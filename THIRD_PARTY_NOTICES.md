@@ -443,3 +443,9 @@ file is added beside the fixture.
 **Re-check if the fixture is regenerated against a different tesseract.** The verification
 above is pinned to 5.3.4; a newer release could change the font bytes, and the hash
 comparison is what would catch it.
+
+## CI tooling (never distributed)
+
+| Tool | License | Version | Used by | Notes |
+|---|---|---|---|---|
+| `age` | BSD-3-Clause | v1.3.2 | `tools/fuzz-seal-finding.sh`, `.github/workflows/fuzz-nightly.yml` | Encrypts fuzz findings to a public key the owner holds (owner decision (62)(1)). Downloaded in CI and pinned by version and sha256 in `tools/install-age.sh`. Not linked into, bundled with or shipped in any burrow artefact; listed for completeness |

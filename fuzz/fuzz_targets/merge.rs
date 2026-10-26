@@ -96,10 +96,10 @@ fuzz_target!(|data: &[u8]| {
                 "merge returned bytes that are not a PDF"
             );
         }
-        Err(Error::Internal(_)) => {
+        Err(Error::Internal(message)) => {
             // `Internal` means a bug in burrow, not a bad file. Every other variant is a
             // legitimate answer to arbitrary bytes.
-            panic!("arbitrary input produced Error::Internal, which is ours and not the file's");
+            burrow_fuzz::internal_error("merge", &message);
         }
         Err(_) => {}
     }
