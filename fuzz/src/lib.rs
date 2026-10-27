@@ -14,8 +14,13 @@
 /// the owner holds (`tools/fuzz-seal-finding.sh`); neither line is allowed by the redactor
 /// (`tools/test-fuzz-seal-finding.sh` plants one and checks).
 ///
+/// `#[track_caller]` is load-bearing: the panic line must name the CALLING target file
+/// (`fuzz_targets/<target>.rs`), because `tools/check-known-crashes.py` keys `panic_at` entries on
+/// it; without it the line names this file and every ledger entry stops matching.
+///
 /// The message is a burrow-authored string, not the input, but it may quote input-derived values;
 /// treat it as sensitive exactly as the input is.
+#[track_caller]
 pub fn internal_error(target: &str, message: &str) -> ! {
     eprintln!("BURROW-FUZZ-FINDING target={target} internal-error: {message}");
     panic!("{target} reported an internal error: {message}");

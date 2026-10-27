@@ -19,7 +19,7 @@ work="$(mktemp -d)"
 mutant="$here/fuzz-seal-finding.MUTANT.sh"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=20
+EXPECTED_CASES=21
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -277,6 +277,32 @@ PY
 if [ "$wired" -eq 1 ] && python3 "$repo/tools/check-no-published-reproducers.py" > /dev/null 2>&1; then
   ok "fuzz-nightly.yml: install -> seal -> upload of one .age path, short retention; reproducer gate accepts it"
 else bad "workflow wiring (wired=$wired) or the reproducer gate"; fi
+
+# 20. #[track_caller] on the helper: a target that panics through burrow_fuzz::internal_error gets
+#     a panic line naming ITS file, not fuzz/src/lib.rs -- tools/check-known-crashes.py keys
+#     panic_at on that file. The REAL lib.rs is compiled into a probe "target"; the mutant is a
+#     copy of it with the attribute removed (asserted applied) and must name lib.rs instead.
+probe_dir="$work/track"; mkdir -p "$probe_dir/fuzz_targets"
+cat > "$probe_dir/fuzz_targets/probe.rs" <<'RS'
+fn main() { burrow_fuzz::internal_error("probe", "PLANTED-MSG"); }
+RS
+panic_line() { # <lib.rs> -> prints the panic location and the line after it
+  # Run from probe_dir with a relative source path, as cargo does, so the location is the bare
+  # `fuzz_targets/probe.rs` the classifier sees in a nightly log.
+  (cd "$probe_dir" && rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$2" \
+    -o probe fuzz_targets/probe.rs > /dev/null 2>&1 || exit 9
+  ./probe 2>&1 | grep -A1 'panicked at' | tr '\n' '|'; true)
+}
+rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libreal.rlib" "$repo/fuzz/src/lib.rs" > /dev/null 2>&1 \
+  && real="$(panic_line x "$probe_dir/libreal.rlib")" || real="BUILD-FAILED"
+sed '/^#\[track_caller\]$/d' "$repo/fuzz/src/lib.rs" > "$probe_dir/lib_mutant.rs"
+cmp -s "$repo/fuzz/src/lib.rs" "$probe_dir/lib_mutant.rs" && bad "track_caller mutation did not apply"
+rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libmutant.rlib" "$probe_dir/lib_mutant.rs" > /dev/null 2>&1 \
+  && mut="$(panic_line x "$probe_dir/libmutant.rlib")" || mut="BUILD-FAILED"
+if grep -q 'panicked at fuzz_targets/probe.rs:[0-9]*:[0-9]*:|probe reported an internal error: PLANTED-MSG|' <<< "$real" \
+  && grep -q 'panicked at .*lib_mutant.rs' <<< "$mut" && ! grep -q 'fuzz_targets/probe.rs' <<< "$mut"; then
+  ok "internal_error's panic line names the calling target file, directly above the message; without #[track_caller] it names the helper's file"
+else bad "track_caller: real=[$real] mutant=[$mut]"; fi
 
 echo "fuzz-seal-finding: $pass passed, $fail failed (expected $EXPECTED_CASES cases)"
 [ "$fail" -eq 0 ] && [ "$pass" -eq "$EXPECTED_CASES" ]
