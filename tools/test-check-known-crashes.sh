@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=22
+EXPECTED_CASES=23
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -368,6 +368,34 @@ if [ "$status" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out"; then
 else
   bad "burrow's own handle misuse is not absorbed by the real #285 entries (exit $status)"
   sed 's/^/         /' <<<"$out" >&2
+fi
+
+# 18. THE REAL LEDGER'S `reorder` #285 ENTRY (2026-10-27) has its own positive and near-misses,
+#    against the real file on purpose, like case 17: the exact message under reorder.rs is KNOWN
+#    #285; the same message under another target's file, and reorder's own handle-misuse message,
+#    match nothing.
+reorder_msg="reorder reported an internal error: qpdf reported an internal error: an uninitialized object made indirect"
+reorder_log() { # <file> <target file> <message>
+  printf '%s\n' \
+    "thread '<unnamed>' (1) panicked at $2:288:13:" "$3" \
+    "==1== ERROR: libFuzzer: deadly signal" "    #0 0x1 in rust_panic" > "$1"
+}
+reorder_log "$work/reorder-hit.log" fuzz_targets/reorder.rs "$reorder_msg"
+reorder_log "$work/reorder-other.log" fuzz_targets/merge.rs "$reorder_msg"
+reorder_log "$work/reorder-handle.log" fuzz_targets/reorder.rs \
+  "reorder reported an internal error: qpdf was handed an object handle it does not hold (a burrow defect)"
+set +e
+out="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-hit.log" 2>&1)"; s1=$?
+out2="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-other.log" 2>&1)"; s2=$?
+out3="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-handle.log" 2>&1)"; s3=$?
+set -e
+if [ "$s1" -eq 0 ] && grep -qF "#285" <<<"$out" \
+  && [ "$s2" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out2" \
+  && [ "$s3" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out3"; then
+  ok "the real ledger's reorder #285 entry matches its own panic and rejects both near-misses"
+else
+  bad "the real ledger's reorder #285 entry (exits $s1/$s2/$s3)"
+  sed 's/^/         /' <<<"$out $out2 $out3" >&2
 fi
 
 echo

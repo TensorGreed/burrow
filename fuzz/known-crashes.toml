@@ -115,3 +115,14 @@ panic_at = "fuzz_targets/rotate.rs"
 panic = "rotate reported an internal error: qpdf reported an internal error: an uninitialized object made indirect"
 reached_from = ["rotate"]
 note = """upstream, reported privately"""
+
+# Added 2026-10-27: the 2026-10-26 overnight seeded `reorder` run hit #285 on this same message,
+# and nightly 40076578189 probably did too (its message was lost). `reorder` drives the same qpdf
+# check as compress and rotate, so it is the same defect, not a new one.
+[[known]]
+issue = 285
+verdict = "deadly-signal"
+panic_at = "fuzz_targets/reorder.rs"
+panic = "reorder reported an internal error: qpdf reported an internal error: an uninitialized object made indirect"
+reached_from = ["reorder"]
+note = """upstream, reported privately"""
