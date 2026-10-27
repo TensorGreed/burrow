@@ -8,8 +8,9 @@ Date: 2026-10-21
 same day after round 0, under the owner's decision 57 (*Round 0*, below), and again on 2026-10-27
 after round 1, under the owner's decisions 61, 64 and 66 (*Round 1*, below), and a second time that
 day under decision 68, item 2 (*Round 1*, last paragraph). **Round 2 is the final
-round** (DECISIONS.md rule 15; decision 64, item 1). This record becomes *Accepted* only after round 2
-and the owner's reading of the record. No flatten code is written before this line changes.
+round** (DECISIONS.md rule 15; decision 64, item 1); it ran on `ac8f993`, and this record was revised
+after it under the owner's decisions 69 and 70 (*Round 2*, below). This record becomes *Accepted* only
+after the owner's reading of the record. No flatten code is written before this line changes.
 
 Scoped to **decisions**, as [0029](0029-what-redaction-does-and-what-it-refuses-to-do.md) is: what
 v1 does, what it refuses, what it discloses, what verification may assert, and what the page may
@@ -63,8 +64,8 @@ which survivors refuse, and the every-object scan; decision 66: the page's orien
 own content stream). This revision fixes every High and the Blocking finding in the text. Each
 Medium, Low, Should-fix and Nit is either fixed in the text or, where only a measurement or slice
 code can close it, listed under *Open for the build PRs* with the fixture or test it becomes
-(decision 64, item 1). **After round 2, only a Critical or High finding blocks the core build.** As in
-round 0, shapes the security review recorded privately are worded here by class.
+(decision 64, item 1). **After round 2, only a Critical or High finding (security-reviewer) or a
+Blocking finding (code-reviewer) blocks the core build.** As in round 0, shapes the security review recorded privately are worded here by class.
 
 **Decision 68, item 2** (owner, 2026-10-27) then confirmed the three points the revision had applied
 as its own reading: tiling patterns refuse (§2 rule 5); objects reached only through page *N*'s
@@ -72,6 +73,29 @@ annotation appearances are in the refusing set (§2 rule 5); and the rewritten p
 at zero, **with every destination into page *N* translated by the origin shift** (§3, *Destinations
 into page N*; V7). The second revision of 2026-10-27 states the three as decided and adds the
 translation, its fixtures and V7.
+
+### Round 2
+
+Both reviewers ran round 2, the final round, on `ac8f993` on 2026-10-27, reading the fix diff
+`3b99350..ac8f993` against round 1's findings:
+
+| reviewer | model | on | findings |
+|---|---|---|---|
+| security-reviewer | Opus | `ac8f993` | no Critical; 1 High, 2 Medium, 5 Low; every round-1 High closed |
+| code-reviewer | Opus | `ac8f993` | 2 Blocking, 5 Should-fix, 6 Nits |
+
+The High was that rule 5's split between survivors that refuse and survivors that are disclosed
+rested on a survivor's *kind*, which the record did not define, and which a build would naturally
+read from what the object declares. **Decision 69** (owner, 2026-10-27) decides it: a stream's kind is
+the role the walk reached it through, never its declaration, and only three roles are disclosed (§2
+rule 5). **Decision 70** (owner, 2026-10-27) confirms that, decides when a destination array counts
+as a disclosed survivor (§2 rule 5), and decides both Blocking findings: an article bead's `/R` into
+page *N* stays translated and is named in V6's exception and in V7, and V7 holds every destination
+not into page *N* byte-equal to its input (§4). Disclosure 5's overclaim (a Medium) and the wording
+findings are fixed in the text. The other Medium, and every finding that only slice code or a
+measurement can close, are listed under *Open for the build PRs* with the fixture or test each
+becomes. Per rule 15, this revision is checked by the code-reviewer
+alone; there is no further round of both reviewers.
 
 ## Context
 
@@ -167,7 +191,7 @@ run**, across both workers: the render worker is given what is left of it, not a
 | 4. paint | PDFium | the same | The region arrives in display points with a top-left origin (ADR 0029's frame amendment). The render module converts it to user space with burrow's region conversion (`pdfsyntax/region.rs`), and **PDFium's own page-to-device transform** maps the corners to pixels (`FPDF_PageToDevice`, decision 57 item 5), with the same start, size and `rotate = 0` as the render. `FPDF_PageToDevice` returns rounded integers (*Facts*), so the corners are widened **by one pixel on each side to cover that rounding, and by one more for §2 rule 8**. Every pixel in that rectangle is filled with opaque black by `FPDFBitmap_FillRect`, **in PDFium's heap**. The painted bitmap is copied into the Rust module's memory by the same view-to-view route and converted to RGB there. Until the hand-off, no pixel of this render leaves the render worker's linear memories |
 | 5. hand-off | | render worker → redaction worker | The painted RGB bitmap and its digest cross, with the fields §8 lists and nothing else, **transferred port to port** on a channel between the two workers (§8). It does not pass through the page's code. The redaction worker digests what it received and refuses on a mismatch. The render worker is then zeroed and terminated (§7) |
 | 6. cross-check | burrow | redaction worker / caller's thread | Before allocating, the redaction worker **re-derives *W* = ⌈*d*w·150/72⌉ and *H* = ⌈*d*h·150/72⌉ from qpdf's display frame**, by checked arithmetic, and refuses unless the render worker's width and height equal them; it re-checks `max_pixels`, and that the buffer's length is exactly *W*·*H*·3. Then **burrow's own arithmetic** maps the region from display points to pixels at the displayed scale, *W*/*d*w across and *H*/*d*h down, from the top-left, **without converting to user space**. It widens outward to whole pixels and by rule 8's one pixel, and every pixel of **that** rectangle, burrow's own, must be the paint. Otherwise it refuses, `[paint-disagrees]`, and the census counts every such refusal. Two sources at run time: the paint goes through burrow's display-to-user conversion and PDFium's transform; the check goes through neither |
-| 7. replace | qpdf | the same | **In place**: the page dictionary keeps its object identity, so every reference to the page (outline, destinations, other pages' links) still resolves to it. Every key outside §3's allowlist is removed. `/Rotate` becomes 0, and `/MediaBox` and `/CropBox` the display frame (§3). `/Resources` becomes a new dictionary naming one image XObject. `/Contents` becomes one new stream holding one line that draws it. The catalogue loses `/StructTreeRoot` and `/MarkInfo` (§2 rule 1). **Every destination into page *N* is translated by the origin shift** (§3, *Destinations into page N*; decision 68, item 2): the coordinates of those destination arrays, wherever they are held, and nothing else. burrow edits no other page's dictionary. **`[engine-repaired-input]` is checked again after the constructors**, then qpdf writes the document |
+| 7. replace | qpdf | the same | **In place**: the page dictionary keeps its object identity, so every reference to the page (outline, destinations, other pages' links) still resolves to it. Every key outside §3's allowlist is removed. `/Rotate` becomes 0, and `/MediaBox` and `/CropBox` the display frame (§3). `/Resources` becomes a new dictionary naming one image XObject. `/Contents` becomes one new stream holding one line that draws it. The catalogue loses `/StructTreeRoot` and `/MarkInfo` (§2 rule 1). **Every destination into page *N* is translated by the origin shift** (§3, *Destinations into page N*; decision 68, item 2): the coordinates of those destination arrays, wherever they are held, and the `/R` of every article bead whose `/P` is page *N* (decision 70, item 2), and nothing else. burrow edits no other page's dictionary, except destination coordinates held inside it (a direct destination in another page's `/AA`, for example). **`[engine-repaired-input]` is checked again after the constructors**, then qpdf writes the document |
 | 8. verify | qpdf, fresh | the same | §4, on the emitted bytes |
 | 9. emit | | redaction worker | One reply, after verification: R8, R9 and R10 (§8) |
 
@@ -196,19 +220,20 @@ finds the table resolved and parses nothing, which is the argument its entry in
 
 **The constructors step 7 needs**, each listed in §8: `qpdf_oh_new_stream`, `qpdf_oh_new_dictionary`,
 `qpdf_oh_new_name`, and, because §3 writes `/MediaBox` and `/CropBox` with computed, usually
-non-integer values, `qpdf_oh_new_array`, `qpdf_oh_new_real_from_string` or `_from_double`, and
+non-integer values, `qpdf_oh_new_array`, `qpdf_oh_new_real_from_string` (not `_from_double`, which writes a fixed
+number of decimal places; *Open for the build PRs*), and
 `qpdf_oh_append_item`. All but `append_item` are untrapped. `new_dictionary`, `new_name`, `new_array`
 and the real constructors touch only the object cache, and are argued against the list's
 non-parsing bar as `qpdf_oh_new_integer` is. **burrow's own code says `new_array` does not meet that
-bar** (`qpdf/ffi.rs:641-645`). The slice either argues it does, and corrects that comment in the same
+bar** (`qpdf/ffi.rs:639-645`). The slice either argues it does, and corrects that comment in the same
 change, or writes the boxes by a route that needs no new array. The repair refusal is read again after
 the constructors, so that the argument is checked, not assumed.
 
 **The destination translation** (§3) needs no new entry point beyond those. It replaces coordinates
 in the existing arrays in place with `qpdf_oh_set_array_item`, which runs inside `do_with_oh_void`'s
 trap (`qpdf-c.cc:1592-1598`, 12.4.1), is already declared (`qpdf/ffi.rs:633-651`, for `/Widths`) and
-already exported (`engines/build-wasm.sh:299`); the new values come from the real constructors above,
-and a null from `qpdf_oh_new_null`, already accepted (`engines/qpdf-untrapped-accepted.toml:294-295`).
+already exported (`engines/build-wasm.sh:299`); the new values come from the real constructor above,
+and a null from `qpdf_oh_new_null`, already accepted (`engines/qpdf-untrapped-accepted.toml:294-323`).
 So whatever route the slice takes for the boxes, it needs a real constructor for the destinations.
 
 ### 2. The v1 rules
@@ -291,8 +316,9 @@ adopted the widening (decision 57, item 1):
   annotation-owned objects reachable from them: their annotation dictionaries, their appearance
   dictionaries and appearance streams (every state, every `/AP` entry), their popups, their replies
   and their rich-text streams, by the walk that stops at pages. **The resources those appearance
-  streams name are not in *A*.** They are in rule 5's set *S*, and rule 5 classifies them: an image or
-  form XObject among them refuses there, and a font is disclosed (decision 61, item 2). Without that
+  streams name are not in *A*.** They are in rule 5's set *S*, and rule 5 classifies them by the role
+  the walk reached them through: an image or form XObject among them refuses there, and a font's
+  dictionary and its embedded program are disclosed (decisions 61, item 2, and 69). Without that
   narrowing, an annotation whose appearance uses a font a kept page also uses would refuse here,
   through rule 3, against the owner's decision that fonts are disclosed. If any member of *A* is
   reachable from the output's trailer, by any path, the redaction refuses. That covers another
@@ -328,7 +354,8 @@ the owner's decision for v1, not a wall (§*Conditions for revisiting*).
 - A signature anywhere in the document no longer validates after the write. That is disclosed (§9,
   item 6).
 
-**Rule 5. Objects the redacted page used are refused or disclosed, by kind.** Precisely:
+**Rule 5. Objects the redacted page used are refused or disclosed, by the role they were reached
+through.** Precisely:
 
 - **The set *S* starts from everything the page has, including everything it inherits** (decision
   61, item 1). Its roots are the page dictionary's own values, **and the value of every inheritable
@@ -342,31 +369,90 @@ the owner's decision for v1, not a wall (§*Conditions for revisiting*).
   trailer: through another page, a page-tree node's inherited `/Resources`, the `/AcroForm` default
   resources, the names tree's appearances or templates, or anything else kept. Rules 1 and 3 already
   refuse the survivors that are tree elements or annotation-owned objects.
-- **Refused, `[drawing-survives]`: a survivor that is a drawing.** That is:
-  - **page *N*'s own content stream**, or any stream of its `/Contents` (decision 66, item 2);
-  - **any image XObject or form XObject in *S*** (decision 61, item 2), **including those reached
-    only through page *N*'s annotations' appearance resources** (decision 68, item 2). Decision 61
-    names those reachable from page *N*'s original resources; decision 68 confirmed the wider set,
-    which fails closed;
+- **A stream's kind is the role the walk reached it through, never what it declares** (decision 69).
+  This is H-2's identity principle (*A walk that stops at pages*; decision 61, item 1) applied to
+  kinds. Page-tree membership is decided by object identity, never by `/Type`; a stream's kind is
+  decided by the key path that led the walk to it, never by its `/Type`, `/Subtype`, `/PatternType`,
+  `/ShadingType` or `/FunctionType`. A declaration is a value the file chooses, and readers read it
+  differently: PDFium accepts a byte string where a name is expected (#125), so a name-typed reading
+  of `/Subtype` would class a drawn image as something else. A key path is what the walk itself
+  followed. **The walk records, for each stream, every role it reached that stream through**, on every
+  arrival, including an arrival at an object the visited set has already entered, so that the visited
+  set cannot hide a second role.
+- **Disclosed: a stream reached solely in one of three roles** (decision 69). Each role is named by the
+  last steps of its key path. Here a *resource dictionary* is any dictionary the walk reached as the
+  value of a `/Resources` key, and a *font* is a value in a resource dictionary's `/Font` dictionary.
+  1. **An embedded font program**: the value of `/FontFile`, `/FontFile2` or `/FontFile3` in a font
+     descriptor, where the font descriptor is the `/FontDescriptor` of a font, or of an element of a
+     font's `/DescendantFonts` (ISO 32000-2, 9.8 and 9.9).
+  2. **A CMap stream**: a font's `/ToUnicode` (9.10.3); a font's `/Encoding`, where that value is a
+     stream (an embedded CMap, 9.7.5.3); and the `/UseCMap` of a stream already in this role.
+  3. **An ICC profile**: element 1 of a two-element array whose element 0 is the name `/ICCBased`
+     (8.6.5.5), where the array is in a *colour-space slot*. The slots are: a value in a resource
+     dictionary's `/ColorSpace`; the `/ColorSpace` of a value in a resource dictionary's `/XObject` or
+     `/Shading`, or of the `/Shading` of a value in its `/Pattern`; the `/CS` of page *N*'s `/Group`, or
+     of the `/Group` of a value in a resource dictionary's `/XObject`; and, for a colour space that is
+     itself in a slot, the base of `/Indexed` (element 1), the alternate of `/Separation` or `/DeviceN`
+     (element 2), the underlying space of `/Pattern` (element 1), and an ICC profile's `/Alternate`.
+     Also **the `/DestOutputProfile` of an output intent in page *N*'s own `/OutputIntents`** (a page
+     key since PDF 2.0; 14.11.5). The catalogue's `/OutputIntents` is not reached: the walk stops at
+     the catalogue. A family name element 0 does not hold as a name, such as `(ICCBased)`, is not
+     this role, so that stream refuses: the reading fails closed.
+
+  Streams reached by several paths that all end in roles of one of these three kinds are in that
+  role: one font program that two font descriptors name, or one ICC profile two colour spaces use.
+- **Refused, `[drawing-survives]`: every other stream the walk reached from page *N* that survives.**
+  Every stream reached in a role outside the three above, whatever it declares, and **every stream
+  reached more than one way**: in roles of two of the three kinds, or in one of them and in any other
+  role. That includes:
+  - **page *N*'s own content stream**, or any stream of its `/Contents` (decision 66, item 2), and
+    page *N*'s `/Thumb`;
+  - **every value of a resource dictionary's `/XObject`, image or form** (decision 61, item 2),
+    **including those reached only through page *N*'s annotations' appearance resources** (decision
+    68, item 2), and an image's `/SMask` and `/Mask`. Decision 61 names those reachable from page
+    *N*'s original resources; decision 68 confirmed the wider set, which fails closed;
+  - **every stream value of a resource dictionary's `/Pattern`**, which is a tiling pattern's content
+    (decision 68, item 2), and every shading stream and function stream;
+  - **a graphics state's soft mask** (`/SMask` and its `/G`), and **an appearance stream** (rule 3
+    refuses it first);
+  - **a Type 3 font's glyph procedures**, the values of its `/CharProcs`;
+  - streams beside a font program that are not one: a font descriptor's `/CIDSet`, a CIDFont's
+    `/CIDToGIDMap` where it is a stream, and the `/Metadata` of any stream above;
+  - **roles that could be read either way, made refusals rather than guessed** (decision 69, applied
+    by this revision): a font program under the per-class font descriptors of a font descriptor's
+    `/FD`; a `/ToUnicode` or a stream `/Encoding` on an element of `/DescendantFonts` rather than on
+    the font the resource dictionary names; and an ICC profile reached through a `/DeviceN` space's
+    `/Attributes` (its `/Colorants` and `/Process` spaces), or through any colour space not in a slot
+    listed above;
   - **whether or not a kept page draws it.** v1 reads no page's content, so "drawn by a kept page" is
-    not something it can compute. Reachability is the predicate, and it is computable;
-  - **a tiling pattern's content stream in *S*** (decision 68, item 2). Decision 61 names images
-    and forms, and decision 57 item 4 put every content stream in the drawings class; decision 68
-    confirmed that a tiling pattern refuses with them, fail closed.
-- **Disclosed: every other survivor**, with **fonts** named (decision 61, item 2, an accepted
-  residual). A subset font with a `/ToUnicode` map reveals which characters the page used. A Type 3
-  font is a font, glyph procedures included, but an image or form its glyphs use is a drawing in *S*
-  and refuses. The rest are resources such as colour spaces, graphics states, shadings and
-  marked-content property lists, which can carry text of their own.
-- **Census** (decision 61, item 2): the census reports what `[drawing-survives]` costs, by producer.
-  **If it refuses more than 1% of real documents, the work stops** and the owner is brought the
-  figure and the producers. The rule is not adjusted to fit. Decision 57, item 4's census condition,
-  which disclosed drawings above 1%, is superseded.
-- The operation **reports the survivors that are disclosed**: a count by kind (fonts, other).
-- Verification asserts that the survivors in the output are exactly the set reported, and that
-  none is a drawing (§4, V5).
-- **The disclosure is conditional on that report being non-empty.** A page whose objects nothing else
-  keeps does not carry a caveat about them.
+    not something it can compute. Reachability and role are the predicates, and both are computable.
+- **Disclosed: every survivor that is not a stream**, with **fonts** named (decision 61, item 2, an
+  accepted residual): font dictionaries and descriptors, colour-space arrays, graphics states, shading
+  dictionaries and marked-content property lists, which can carry text of their own. A subset font with
+  a `/ToUnicode` map reveals which characters the page used.
+- **A destination array counts toward disclosure 5 only when one of its items is something other
+  than a page reference, a name, a number or null** (decision 70, item 1). A *destination array* is an
+  array the walk reached as a destination: a link annotation's `/Dest`, or the `/D` of a `/GoTo`
+  action. A *page reference* is an indirect reference to a member of the page tree, by identity (§2).
+  So one destination array that page *N*'s link and the outline share is a survivor, reported and
+  checked by V5, and it does not make disclosure 5 appear; a twin holding a string or a dictionary
+  item does. **Whether any other non-stream survivor counts is unchanged**: every one counts.
+- **Census** (decisions 61, item 2, and 69): the census reports what `[drawing-survives]` costs, by
+  producer and by role, **including what the wider refusal of decision 69 costs**: the documents that
+  refuse only because of a role the earlier text disclosed (Type 3 glyph procedures, shading and
+  function streams, soft masks, `/CIDSet` and `/CIDToGIDMap` streams, the ambiguous roles above, and
+  streams reached more than one way). **If `[drawing-survives]` refuses more than 1% of real
+  documents, the work stops** and the owner is brought the figure, the producers and the roles. The
+  rule is not adjusted to fit. Decision 57, item 4's census condition, which disclosed drawings above
+  1%, is superseded.
+- The operation **reports the survivors**: a count by role (font programs, CMaps, ICC profiles,
+  survivors that are not streams, and destination arrays that do not count).
+- Verification asserts that the survivors in the output are exactly the set reported, that each
+  disclosed stream is in one of the three roles and no other, and that every count is the reported
+  one (§4, V5).
+- **The disclosure is conditional on that report counting a survivor that counts.** A page whose
+  objects nothing else keeps, or whose only survivors are destination arrays that do not count, does
+  not carry a caveat about them.
 
 **Rule 6. 150 dpi, lossless Flate, and refuse above the pixel ceiling,** `[page-too-large-to-flatten]`.
 The bitmap is *W* × *H* = ⌈*d*w·150/72⌉ × ⌈*d*h·150/72⌉ pixels over the page's **display frame**,
@@ -581,7 +667,8 @@ in both dictionaries, it is a translated one wherever it is into page *N*.
 
 **Keep-unchanged, not refusal, and why a wrong destination is not a leak.** A destination names a
 page and a position, and a zoom. After v1, every position on page *N* shows the painted picture and
-nothing else: the page's content is not in the file (rule 5, V5), so a destination at the wrong place
+nothing else: the page itself holds only the picture and its one line (§3's keys, held by V2), and
+nothing it drew survives elsewhere (rule 5, V5), so a destination at the wrong place
 cannot make any reader show it. Its numbers were the input's, and they are carried as the rest of the
 outline and the names are (rule 4, disclosure 4). A wrong one misplaces the view on a page whose
 every pixel is already the output; it reveals nothing. Refusing would cost whole documents for a
@@ -602,13 +689,13 @@ re-derived from the emitted bytes through a fresh qpdf:
 
 | | asserts |
 |---|---|
-| V1 | `verify::output`'s half: the input's page count, and the expected **effective** rotation vector, which is the input's with page *N*'s entry 0 (`verify::Expected` takes the vector the operation computes, `core/burrow-ops/src/verify.rs:85-102`). Also, every page's display frame read from the output (`page_frames`) equals the input's: page *N*'s output frame, `/MediaBox` under `/Rotate 0`, against the input's box with width and height swapped for 90 and 270 |
+| V1 | `verify::output`'s half: the input's page count, and the expected **effective** rotation vector as written: the input's, with page *N*'s entry 0, because §3 writes `/Rotate 0` (`verify::Expected` takes the vector the operation computes, `core/burrow-ops/src/verify.rs:85-102`). Also, every page's display frame read from the output (`page_frames`) equals the input's: page *N*'s output frame, `/MediaBox` under `/Rotate 0`, against the input's box with width and height swapped for 90 and 270 |
 | V2 | The flattened page's dictionary has exactly §3's seven keys, with `/CropBox` equal to `/MediaBox`. `/Resources` has exactly one entry, `/XObject`, naming exactly one image. `/Contents` is one stream whose decoded bytes equal the line burrow wrote, **byte for byte** |
 | V3 | The image dictionary has exactly the keys §1 lists, and its `/Width` and `/Height` are the *W* and *H* the redaction worker derived. qpdf learns a decoded length only by decoding, so **the read is capped at *W*·*H*·3 + 1 bytes, and refused unless it is exactly *W*·*H*·3**. **Its decoded bytes have the digest bound to the painted bitmap** (§1 step 5), and **every pixel in the painted rectangle is the paint**, compared exactly. The painted rectangle is **the one the redaction worker computed** (§1 step 6), never one the render worker reported |
 | V4 | The catalogue has no `/StructTreeRoot` and no `/MarkInfo`, and **no member of rule 1's element set** is in the output, by V5's parallel walk |
-| V5 | The survivors (§2 rule 5) present in the output are **exactly** the set the operation reported, and none is a drawing. Nothing reachable only from the input page is present. qpdf renumbers, so this is a parallel walk that maps each input object to its output object from the trailer down, not a comparison of object numbers. It is bounded as every walk is (§2) |
-| V6 | Every other page's reachable graph equals the input's as qpdf reads it, under the same mapping: unparsed dictionaries equal, and stream data equal, **raw where qpdf preserved the filters and decoded where it did not**. **The one exception is the coordinates of destinations into page *N***, which V7 holds instead |
-| V7 | **Every destination into page *N*** (§3, *Destinations into page N*), enumerated from the output by §3's sites and identity rule and paired with the input's by V5's mapping, **equals the input's destination under §3's map**: the same form and page element, each coordinate equal to the mapped value as qpdf reads it back, exactly, null where §3 says null, and **unchanged where §3 keeps it unchanged**. Which input destinations are translated and which are kept is decided from the input, so a writer that skips one fails. The output has neither more nor fewer such destinations than the input has at the same sites, and their count, by site, form and outcome, is the one the operation reported. Bounded as every walk is (§2) |
+| V5 | The survivors (§2 rule 5) present in the output are **exactly** the set the operation reported, with the role the walk recorded for each. **No surviving stream is outside the three disclosed roles, or in more than one kind of role**, by the roles the parallel walk records itself, never by what a stream declares; each destination array counted as not counting has only page references, names, numbers and nulls as items. Nothing reachable only from the input page is present. qpdf renumbers, so this is a parallel walk that maps each input object to its output object from the trailer down, not a comparison of object numbers. It is bounded as every walk is (§2) |
+| V6 | Every other page's reachable graph equals the input's as qpdf reads it, under the same mapping: unparsed dictionaries equal, and stream data equal, **raw where qpdf preserved the filters and decoded where it did not**. **The one exception is the coordinates of destinations into page *N*, and the `/R` of each article bead whose `/P` is page *N*** (decision 70, item 2), which V7 holds instead. The exception is those numbers only: every other key and item of those arrays and beads is held by V6 |
+| V7 | **Every destination into page *N*** (§3, *Destinations into page N*), enumerated from the output by §3's sites and identity rule and paired with the input's by V5's mapping, **equals the input's destination under §3's map**: the same form and page element, each coordinate equal to the mapped value as qpdf reads it back, exactly, null where §3 says null, and **unchanged where §3 keeps it unchanged**. Which input destinations are translated and which are kept is decided from the input, so a writer that skips one fails. The output has neither more nor fewer such destinations than the input has at the same sites, and their count, by site, form and outcome, is the one the operation reported. **Every article bead whose `/P` is page *N*** has its `/R` equal to the input's mapped as `/FitR`'s corners are (decision 70, item 2). **Every destination at §3's sites that is not into page *N* is byte-equal to its input**, as qpdf unparses it, under V5's mapping (decision 70, item 3): V6 covers only the page graphs, so without this a translated destination into another page at a catalogue site (the outline, `/Dests`, the `/Names` tree, `/OpenAction`, the catalogue's `/AA`) would pass. Bounded as every walk is (§2) |
 
 **V6 is not "byte-identical to the input", and the claim must not be worded so.** qpdf renumbers every
 object, and re-encodes streams whose filters it generalizes. Whether to set qpdf's decode level to
@@ -622,7 +709,9 @@ still one uninterruptible call), and compares raw bytes wherever the filters wer
 - **Page identity across the two engines.** V1 to V7 are qpdf's view. That qpdf's page *N* is the
   page PDFium rendered as *N* is held by §5's checks, not by verification. The residue is two pages
   with identical frames that the two engines order differently: ADR 0022's #111 class, with
-  `five-pages-or-six.pdf` as its example.
+  `five-pages-or-six.pdf` as its example. It is same-source, because §5's structural refusals read
+  qpdf's tree. Its independent reading is the census render of each output's page *N* against the
+  painted bitmap (§5). It gates S9 under rule 19.
 - **The region-to-pixel arithmetic, where the two sources agree wrongly.** The paint goes through
   burrow's display-to-user conversion and PDFium's transform; the check maps display points to pixels
   by the displayed scale alone (§1 steps 4 and 6). They share no step but their input: the display
@@ -633,9 +722,6 @@ still one uninterruptible call), and compares raw bytes wherever the filters wer
 - **The survivor set is same-source.** The walk that decides it also checks it. V5 checks that the
   output agrees with the report, not that the report was right. The independent reading is a
   test-time decoded scan (spike 0006's I2) over every census output. It gates S9 under rule 19.
-- **Page identity across the two engines** (above) is same-source for the same reason: §5's
-  structural refusals read qpdf's tree. Its independent reading is the census render of each
-  output's page *N* against the painted bitmap (§5). It gates S9 under rule 19.
 - **The engines read page *N*'s content differently** (decision 61, item 3). The set *S*, rules 1, 3
   and 5 and V5 all read qpdf's object graph. The page PDFium drew is PDFium's reading. If PDFium
   resolves page *N*'s `/Contents` or `/Resources` to an object other than the one qpdf resolves, the
@@ -663,11 +749,16 @@ The DoD's fake-engine test applies. Fakes return an image with one region pixel 
 one row short, a decoded length one byte over, an extra page key, a `/CropBox` unequal to the
 `/MediaBox`, a `/Rotate` other than 0, a `/MediaBox` with width and height unswapped on a quarter-turn
 page, a second `/Resources` entry, a content stream one byte off, a dropped tree still present by an
-untyped element, a survivor the report left out, a drawing among the survivors, and, for V7, an
+untyped element, a survivor the report left out, a stream outside the disclosed roles among the
+survivors, and, for V7, an
 `/XYZ` into page *N* left untranslated, a shared destination array translated twice, a `/FitR` with
 its corners unordered, a quarter-turned page's `/XYZ` with its axes unswapped, a null written as 0, a
-malformed destination "corrected", and a destination into another page translated. **The mutation
-that deletes each check makes its test fail.**
+malformed destination "corrected", an article bead's `/R` into page *N* left untranslated, and a
+destination into another page translated, placed once in the outline and once in the `/Names` `/Dests`
+tree (decision 70, item 3). For V5: a stream disclosed whose recorded role is outside the three, and
+one reached in two kinds of role. **The mutation that deletes each check makes its test fail**, and
+for the misplaced translation, so does the mutation that widens the writer's identity rule to any
+object declaring `/Type /Page`: V7 must refuse what that writer emits.
 
 ### 5. Page identity
 
@@ -912,13 +1003,19 @@ list:
    and application data that can hold previews of pages. Check File → Properties, the bookmarks panel
    and the attachments panel. If one of them holds what you removed, it is still in this file.
    (Bookmarks and links into this page still go to it, moved to the same place on the picture. A
-   few that are written in a form no reader agrees on are left as they were, and may land elsewhere
-   on the page.)
-5. *(Only when §2 rule 5's report is non-empty.)* **Some of what this page used is still in the
-   file, because the file keeps it for other reasons.** That means fonts, which can show which
-   characters this page used, and other resources, such as colour settings and marked-content
-   properties, with whatever they contain. (Pictures and drawings this page used are never left
-   behind: if the file would keep one, the redaction refuses.)
+   few that are written in a form no reader agrees on, or kept in a part of the named-destination
+   list that cannot be read, are left as they were, and may land elsewhere on the page. On a page
+   that was turned sideways, a link that fits the page's width or height keeps the fit but not its
+   scroll position.)
+5. *(Only when §2 rule 5's report counts a survivor that counts.)* **Some of what this page used is
+   still in the file, because the file keeps it for other reasons.** Exactly these: the fonts this
+   page used, with their embedded font programs and character maps, which can show which characters
+   this page used; colour (ICC) profiles; and the definitions around them that are not stored as
+   streams of data, which are font, colour-space, graphics-state and shading definitions,
+   marked-content properties, and links that hold more than a page and a position, with whatever
+   they contain. Anything else this page used that the file would keep makes the redaction refuse:
+   images and drawings, patterns, shadings and functions stored as streams, masks, drawn letter shapes
+   (a Type 3 font's glyphs), the page's thumbnail and its own content.
 6. **Form fields on other pages, and their values, are not changed. A digital signature in the
    document will no longer validate.**
 7. **The file usually grows**, because the page is now an image.
@@ -928,11 +1025,11 @@ list:
 | 0029 | for v1 |
 |---|---|
 | *Context* | Kept as history. Its central measurement, that text survives in many places besides the glyphs, is why flatten drops the page's content wholesale |
-| *The constraint that shapes every decision below* (the catalogue wall) | **Superseded as fact**: #239 made the trailer, and through it the catalogue, reachable. v1 writes to the catalogue only to remove `/StructTreeRoot` and `/MarkInfo`, and to translate the coordinates of destinations into page *N* it holds (§3) |
+| *The constraint that shapes every decision below* (the catalogue wall) | **Superseded as fact**: #239 made the trailer, and through it the catalogue, reachable. v1 writes to the catalogue only to remove `/StructTreeRoot` and `/MarkInfo`, to translate the coordinates of destinations into page *N* it holds, and to translate the `/R` of each article bead on page *N* in its `/Threads` (§3; decision 70, item 2), and nothing else |
 | §1 rewrite content streams and fonts | **v2** |
 | §2 page-key allowlist | **Kept, narrowed** to §3's seven keys |
 | §3 per-channel table | **Superseded for v1** by §2 here. Content-stream channels (rows 1–9, 18–22 of spike 0006) are handled by not carrying the content. The page's `/Thumb` and page metadata go by §3. Annotations are flattened or refused (rules 2, 3 and 9). Optional content hidden on the page is not drawn and not carried; layer names are disclosed (rule 4). Images and vector paths in the region are painted. **Every content refusal in the table is v2's**, because burrow does not read the content |
-| §3 rows kept for v1 | The rows that keep qpdf's object graph and page tree the ones PDFium reads, **over every object in the file** (§5): `[engine-repaired-input]` (#224), `[reference-to-nothing]` and `[reference-unreadable]` (#227), and the 2026-10-14 object-syntax rows `[name-read-differently]`, `[syntax-read-differently]` (vertical tab) and `[null-value]` (a value qpdf drops on write). The frame rows, each still raised by `page_frames` or the region conversion (`redact/frames.rs:107-118`, `pdfsyntax/region.rs:177-183`): `[page-frame-unreadable]`, `[user-unit-not-one]`, `[no-display-box]`, `[display-box]`, `[user-unit]`, `[rotate]`, `[rotate-not-whole]`, `[page-tree-depth]`, `[page-out-of-range]` and `[region-extent]`. The annotation-reading rows rules 2, 3 and 9 still raise: `[annots-too-long]` (`redact/steps.rs:1335`) and `[annotation-popup-unreadable]`. `[document-poisoned]` (`redact/mod.rs:473-482`), kept as the name of the refusal a poisoned document gives; no production step raises it yet, and v1 keeps that shape. `[annotation-dependent-kept]` is reused and widened by rule 3, and covers #240's shared `/Annots` array. The resource-graph rows `[resource-graph-cycle]`, `[resource-graph-depth]` and `[resource-graph-work]` are **not** kept as they are: v1's walks are bounded by §2's visited set and `[object-walk-too-large]`, and a cycle is no longer an error to a walk that enters each object once |
+| §3 rows kept for v1 | The rows that keep qpdf's object graph and page tree the ones PDFium reads, **over every object in the file** (§5): `[engine-repaired-input]` (#224), `[reference-to-nothing]` and `[reference-unreadable]` (#227), and the 2026-10-14 object-syntax rows `[name-read-differently]`, `[syntax-read-differently]` (vertical tab) and `[null-value]` (a value qpdf drops on write). The frame rows, each still raised by `page_frames` or the region conversion (`redact/frames.rs:107-118`, `pdfsyntax/region.rs:177-183`; `[page-out-of-range]` by `redact/steps.rs:140` and `:180`): `[page-frame-unreadable]`, `[user-unit-not-one]`, `[no-display-box]`, `[display-box]`, `[user-unit]`, `[rotate]`, `[rotate-not-whole]`, `[page-tree-depth]`, `[page-out-of-range]` and `[region-extent]`. The annotation-reading rows rules 2, 3 and 9 still raise: `[annots-too-long]` (`redact/steps.rs:1335`) and `[annotation-popup-unreadable]`. `[document-poisoned]` (`redact/mod.rs:473-482`), kept as the name of the refusal a poisoned document gives; no production step raises it yet, and v1 keeps that shape. `[annotation-dependent-kept]` is reused and widened by rule 3, and covers #240's shared `/Annots` array. The resource-graph rows `[resource-graph-cycle]`, `[resource-graph-depth]` and `[resource-graph-work]` are **not** kept as they are: v1's walks are bounded by §2's visited set and `[object-walk-too-large]`, and a cycle is no longer an error to a walk that enters each object once |
 | §3 rows changed for v1 | `[acroform-field]` narrowed (rule 2). `[structure-tree]` replaced by the drop (rule 1). `[media-box-unverified]`'s web half lifted by §5. `[page-attribute-inherited]` is not needed: `/CropBox` and `/Rotate` are written explicitly (§3), and inherited resources are in rule 5's set *S*, which starts from every inheritable key on every ancestor; an inherited image or form that survives refuses there. **Lifting its `/Resources` and `/Rotate` halves are acceptances**, each with a census row (*Census*). `[annotation-in-region]` (#136 D3) cannot arise as D3 framed it, since nothing in the region is silently kept; whether it is retired for v1 is the owner's (*Open questions*) |
 | §4 `/Contents` per stream | **v2** |
 | §5 refusal keyed on what the operation can see | **Kept as the rule.** It binds every rule here: each signal needs an evasion fixture it fires on |
@@ -962,7 +1059,7 @@ These changes are the owner's (decision 55), and **stand independently of this r
   PDFium ink read-back still gates S9 via #206's ink half") **now apply to v2 only**. For v1, the
   same-source assertions are **the closed list in §4's *What it leaves undetectable***: this
   record's revisions while it is Proposed, and its dated amendments once it is Accepted. On 2026-10-27
-  that list is four items, each with the independent reading that gates S9:
+  that list is five items, each with the independent reading that gates S9:
   1. **the survivor set**, which one walk decides and checks: the census's decoded I2 scan;
   2. **page identity across the two engines**, held by §5's refusals on qpdf's reading of the tree:
      the census render of each output's page *N* against the painted bitmap;
@@ -970,7 +1067,10 @@ These changes are the owner's (decision 55), and **stand independently of this r
      decoded I2 scan;
   4. **the region-to-pixel arithmetic**, only where the display frame both sides share is wrong in
      the same way (the two sides share no other step, §1 steps 4 and 6): the rotation by box-origin by
-     crop-offset matrix, and the census render.
+     crop-offset matrix, and the census render;
+  5. **a destination at a site §3 does not list**, which keeps its input position because V7 reads by
+     the same list (decision 68, item 2; navigation, not content): the census's scan of every output
+     for any array whose first element is page *N*'s reference.
 
   If this record is rejected, there is no v1 flatten list, and rule 19's instances are v2's alone.
 - **#344 decision 4** (owner, 2026-10-15): #206's ink half asserting PDFium's tight character boxes
@@ -1001,7 +1101,9 @@ The slice builds from this list.
 | rule 2a `[xfa-form]` | `/XFA` as an array, as a stream, as an integer; `/NeedsRendering` on the catalogue | neither key | key on the parsed value |
 | rule 3 `[annotation-dependent-kept]` | an annotation listed on two pages; an appearance shared with a kept annotation; an action that names a page annotation; a shared `/Annots` array | the same shapes on two unrelated pages; **an annotation whose appearance uses a font a kept page uses** (rule 3 does not fire; rule 5 discloses the font) | narrow to `/IRT`, `/Parent`, `/Popup`; widen *A* to the appearance resources: the font twin refuses and goes red |
 | rule 4 `[metadata-thumbnail]` | catalogue XMP carrying a page thumbnail; the same under a rebound prefix; in each encoding XMP permits; an undecodable metadata stream; an unreadable packet | XMP without one; a property of the same local name in another namespace | delete the check; key on the prefix |
-| rule 5 `[drawing-survives]` | an image only this page draws, in an inherited `/Resources`; an inherited form; an image and a form a **kept page also draws**; page *N*'s `/Contents` stream shared with a kept page, and kept by an off-tree object; a tiling pattern in *S*; an image in an annotation appearance's resources, kept elsewhere | a font shared with a kept page (`Ok`, disclosed); `/AcroForm` default resources holding the page's font (`Ok`, disclosed) | start *S* from the page's own keys only: the inherited fixtures go `Ok` and red; exempt drawings a kept page draws |
+| rule 5 `[drawing-survives]` | an image only this page draws, in an inherited `/Resources`; an inherited form; an image and a form a **kept page also draws**; page *N*'s `/Contents` stream shared with a kept page, and kept by an off-tree object; a tiling pattern in *S*; an image in an annotation appearance's resources, kept elsewhere; page *N*'s `/Thumb`, with no `/Subtype`, kept by an off-tree referrer | a font and its embedded program shared with a kept page (`Ok`, disclosed); `/AcroForm` default resources holding the page's font (`Ok`, disclosed) | start *S* from the page's own keys only: the inherited fixtures go `Ok` and red; exempt drawings a kept page draws |
+| rule 5 roles (decision 69) | each kept by a kept page or an off-tree referrer: **a drawn image whose `/Subtype` is not a name, and a drawn form likewise** (each an `/XObject` resource value); **a tiling pattern whose `/PatternType` is not an integer**; **a Type 3 glyph procedure** (a `/CharProcs` value); **a mesh shading** (a shading stream); a stream reached both as a font program and as an `/XObject` value; a `/CIDSet` stream; each ambiguous role rule 5 lists | **a twin of the same stream bytes reached only as an embedded font program** (`/FontFile2` under a font's `/FontDescriptor`): `Ok`, disclosed; a `/ToUnicode` map and an ICC profile in a `/ColorSpace` resource, each kept elsewhere: `Ok`, disclosed | **classify by declared type** (`/Subtype`, `/PatternType`, `/ShadingType`) instead of role: the malformed-type fixtures go `Ok` and red; keep the first role the visited set records instead of every role: the two-way fixture goes `Ok` and red |
+| rule 5 destination arrays (decision 70) | one indirect destination array, shared by page *N*'s link and an outline item, holding a string or a dictionary item: disclosure 5 counts it | the same array with only a page reference, a name, numbers and null: `Ok`, a survivor V5 checks, and **no disclosure 5** | count every destination array; count none |
 | rule 5 walk | a destination or `/P` back to another page | none | remove the stop at pages: the report fills with every page's objects |
 | rule 6 ceilings | 983 × 983 pt (2048 × 2048 = 4,194,304 px) and 983 × 983.5 pt (one row more); 2992.5 × 6888.25 pt (6235 × 14351 = 89,478,485 px) and one row more. Every side is exact in 32 and 64 bits, and **the fixture asserts that both readings give the same *W* and *H*** | the ceiling minus a row | check after allocation |
 | rule 7 binding | the same pixels from another file; another page with the same pixels; a different size | the recorded file, page and size | drop each field of the record |
@@ -1012,9 +1114,11 @@ The slice builds from this list.
 | §3 destinations, `/XYZ` | a link on another page with `/XYZ` into page *N*, on a page whose crop starts away from the media box's origin; the same with a null *left*, and with a null *top* | a `/XYZ` into another page (unchanged) | skip the translation; shift by the `/MediaBox`'s corner instead of the display box's: the crop fixture goes red; write a null as 0 |
 | §3 destinations, `/FitR` | a `/FitR` into page *N* at `/Rotate` 0 and 180 (corners swap order at 180); `/FitH`, `/FitV` and their B forms at 0 and 180; an article bead's `/R` | the same into another page | drop the ordering: the 180 fixture goes red; map `/FitH` by *x*0 |
 | §3 destinations, named | a name in the catalogue's `/Dests` and a string in the `/Names` `/Dests` tree, each into page *N*, as an array and as a `/D` dictionary, referred to by an outline item and by a `/GoTo`; a name defined twice in the tree; one name in both dictionaries; a leaf reachable only past a wrong `/Limits` | a named destination into another page; a name that resolves to nothing (unchanged) | search the tree by `/Limits` instead of walking it: the wrong-`/Limits` fixture goes red; translate at the referrer |
-| §3 destinations, sites | an outline item's `/Dest`, and its `/A` with a `/Next` chain to a second `/GoTo`; a `/Next` cycle; `/OpenAction` as an array and as an action; a page's `/AA` and a field's `/AA` on another page; one indirect destination array shared by a link and an outline item | the same sites into another page | skip each site in turn; drop the visited set: the shared array is shifted twice and goes red |
+| §3 destinations, sites | an outline item's `/Dest`, and its `/A` with a `/Next` chain to a second `/GoTo`; a `/Next` cycle; `/OpenAction` as an array and as an action; a page's `/AA` and a field's `/AA` on another page, the page's a direct dictionary holding a direct destination; one indirect destination array shared by a link and an outline item, into a page *N* that is cropped away from its media box's origin and turned a quarter | the same sites into another page | skip each site in turn; drop the visited set: the shared array is shifted twice and goes red |
 | §3 destinations, rotated | `/Rotate 90` and `/Rotate 270` pages with `/XYZ` (one with a null *left*), `/FitR` and `/FitH` into them, each rendered back to the same displayed place | a `/Rotate 0` page | leave the axes unswapped; move a null with its old slot rather than its axis; translate `/FitH`'s coordinate instead of writing null |
 | §3 destinations, untranslatable | a two-operand `/XYZ`, an unknown form name, a string operand, into page *N* (each unchanged, counted); an integer page element (unchanged) | well-formed twins (translated) | "correct" the malformed one; read the integer as a page index |
+| §3 and V6, article beads (decision 70, item 2) | a thread of two beads, one on page *N* and one on a kept page, whose honest output **passes V6**, the kept page's bead unchanged and page *N*'s `/R` translated; V7's fake bead with `/R` untranslated | a thread on kept pages only (unchanged) | drop beads from V6's exception: the honest two-page thread refuses and goes red; skip the bead translation |
+| V7 outside page *N* (decision 70, item 3) | the fake that translates a destination into another page, placed in the outline and in the `/Names` `/Dests` tree | honest output, every other destination byte-equal | delete the byte-equal check; **widen the writer's identity rule to `/Type /Page`**: V7 must refuse, and the test goes red if it does not |
 | V7 round trip | mapped values that are not exact in decimal, on native and on the web | values exact in decimal | compare within a tolerance instead of exactly |
 | §5 `[page-identity-mismatch]` | engines disagreeing on count; on one page's display size; on page *N*'s rotation; a quarter-turn page whose sizes agree only unswapped | agreeing | compare the rendered page only; compare without the swap |
 | §5 `[page-tree-ambiguous]` | a page reachable by two paths; a count the tree does not bear out; a node of the wrong kind; a node of two kinds | a well-formed deep tree | delete each clause |
@@ -1056,9 +1160,14 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   1), forms elsewhere (rule 2), the web's inherited media box (§5), the written `/CropBox` (§3),
   `[page-attribute-inherited]`'s `/Resources` half and its `/Rotate` half (§10), and the content
   refusals as a whole;
-- **`[drawing-survives]`'s cost by producer**, split into page *N*'s own content, images, forms and
-  tiling patterns (decision 61, item 2; *the census decides*, below);
-- the disclosed survivor distribution by kind, with the walk that stops at pages;
+- **`[drawing-survives]`'s cost by producer and by role**: page *N*'s own content, images, forms,
+  tiling patterns, and, as its own figure, **the cost of decision 69's wider refusal**: the documents
+  that refuse only through a role the earlier text disclosed (Type 3 glyph procedures, shading and
+  function streams, soft masks, `/CIDSet` and `/CIDToGIDMap` streams, the ambiguous roles of rule 5,
+  and streams reached more than one way). **Over 1% of real documents, the work stops and the figure
+  comes back to the owner** (decision 69; *the census decides*, below);
+- the disclosed survivor distribution by role, with the walk that stops at pages, and the destination
+  arrays that do not count toward disclosure 5 (decision 70, item 1);
 - the object counts the walks meet, from which `[object-walk-too-large]`'s ceiling is set;
 - whether PDFium's no-load page size reflects `/Rotate`, and what the per-page identity pass costs
   (§5);
@@ -1080,7 +1189,7 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 |---|---|---|
 | decision 3, `[metadata-thumbnail]` | it refuses **1% or fewer** of real documents | it refuses |
 | | it refuses **more than 1%** | the XMP thumbnail is **stripped on output** instead, and the refusal goes |
-| decision 61, item 2, `[drawing-survives]` | it refuses **1% or fewer** of real documents | it refuses |
+| decisions 61, item 2, and 69, `[drawing-survives]`, with the wider refusal | it refuses **1% or fewer** of real documents | it refuses |
 | | it refuses **more than 1%** | **the work stops**, and the owner is brought the figure and the producers. It still refuses; it is never moved to disclosure (decision 57, item 4's disclosure branch is superseded) |
 | decision 7, the web ceiling | any number of pages refused at 4,194,304 px | the ceiling **stays**; the count is reported |
 | decision 8, `/CropBox` = `/MediaBox` | any number of pages whose crop was inherited | it is **always written**, and each such page counts as an acceptance, with at least one real one shown |
@@ -1109,7 +1218,8 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 - **Every untouched page still goes through qpdf's rewrite.** That is `split`'s exposure: qpdf
   renumbers, re-encodes generalized filters, and drops what it cannot read. Every document-level
   object is carried. "Other pages untouched" means burrow does not edit them, not that their bytes
-  are unchanged; the one edit outside page *N* is the coordinates of destinations into it (§3, V7).
+  are unchanged; the only edits outside page *N* are the coordinates of destinations into it and the
+  `/R` of article beads on it (§3, V7; decision 70, item 2).
 - **Links and bookmarks into the redacted page keep their place on it** (decision 68, item 2), by a
   translation that walks every destination site in the document. On a quarter-turned page a `/FitH`
   or `/FitV` loses its scroll position, and a malformed destination is left as it was (§3).
@@ -1118,8 +1228,10 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   argument rests on the resolution at open, and is re-checked after the constructors.
 - **SHA-256 ships in the render bundle every tool loads**, and natively (§8).
 - **Documents whose images or forms sit in a shared or inherited `/Resources` refuse** (rule 5), a
-  common producer layout. The census measures what that costs; over 1%, the owner decides (decision
-  61, item 2).
+  common producer layout. So does a document whose page *N* used any other stream that something
+  else keeps, outside the three disclosed roles (font programs, CMaps, ICC profiles): a shared Type 3
+  font's glyph procedures, a shading or function stream, a soft mask (decision 69). The census
+  measures what that costs; over 1%, the owner decides (decisions 61, item 2, and 69).
 - **The web refuses Tabloid and A3** at 150 dpi, and native refuses above 89,478,485 pixels (§6).
 - **Native heaps are not wiped** (§7).
 - **Rule 17 tier: acceptance.** v1 accepts much of what ADR 0029 refuses: every content refusal, the
@@ -1186,7 +1298,7 @@ Under decision 64, item 1, a Medium or Low finding that only a measurement or sl
 becomes a fixture or test in the build PRs. The text above states each rule; what is open is the
 measurement or the code that holds it. Each is listed with what it becomes:
 
-| from round 1 | what stays open | becomes |
+| from | what stays open | becomes |
 |---|---|---|
 | security M-1 | whether PDFium's no-load page size reflects `/Rotate`; the per-page identity pass's cost | a measurement test on the pinned build (a `/Rotate 90` non-square page read without a load, against a loaded read), and a census row (§5) |
 | security L-1 | the XMP thumbnail signal's namespace matching across every packet encoding | the rule 4 fixtures: rebound prefix, each encoding, unreadable packet, other-namespace twin |
@@ -1195,7 +1307,11 @@ measurement or the code that holds it. Each is listed with what it becomes:
 | code S5 | `sha2` as a runtime dependency of the render bundle | the license-auditor pass, a `THIRD_PARTY_NOTICES.md` entry, and rule 22's render line |
 | code S7 | the value of `[object-walk-too-large]`'s ceiling | the census's object counts, and the §2 walk-bound fixture, twin and mutations |
 | code N3 | that both frame readings give the same *W* and *H* at each ceiling | the rule 6 fixtures' assertion |
-| decision 68, item 2 | V7 compares exactly. qpdf reads a real back as `atof` of the string it stores (`QPDFObjectHandle.cc:820-825`, 12.4.1), so the writer writes a decimal that reads back to the 64-bit value it computed; that this holds under each target's C library is not yet measured | the V7 round-trip fixtures, natively and on the web |
+| decision 68, item 2; round 2 security L-c and code S-1 | V7 compares exactly, so the write and the read-back must agree to the bit. **Write** each mapped value with `qpdf_oh_new_real_from_string`, from Rust's shortest round-trip decimal of the 64-bit value, written without an exponent; **`new_real_from_double` is not declared for this, or is excluded from it**, because it writes a fixed number of decimal places (`QUtil.cc:354-375`, 12.4.1) and so does not round-trip. **Read back** by the route burrow already reads numbers through, the handle's text parsed by Rust (`redact/frame.rs:383-386`), never qpdf's `atof` (`QPDFObjectHandle.cc:820-825`), whose result depends on the host's `LC_NUMERIC` and C library | the V7 round-trip fixtures, natively and on the web, with values that are not exact in decimal; a test that the written text has no exponent; and the mutation "write with `new_real_from_double`": the round-trip fixture goes red |
+| round 2 security M-A | §2's walk bounds count objects, not entries, so one name-tree leaf or one direct `/Dests` dictionary with a very large number of entries is a single uninterruptible step | the walks, V5 to V7 and §3's enumeration count **entries** against `[object-walk-too-large]` and check the deadline every *k* entries; fixtures: one `/Names` leaf, and a direct catalogue `/Dests`, each just over the entry ceiling (refuses) and at it (`Ok`), and a deadline that falls mid-object (refuses on time); mutation: count objects again |
+| round 2 security L-a | a translated destination array, or a bead's `/R`, that is also held by a kept page in another role (a form's `/Matrix` or `/BBox`, an annotation's `/Rect`); V6's exception would let the change pass | the exception holds only for an array the walk reached solely in the destination or bead role; any other array the writer would change **refuses, or is written as a fresh array** (the slice says which); fixtures: a destination array that is also a kept form's `/Matrix`, and a bead `/R` that is also a kept form's `/BBox`, each refusing (or each kept page's value byte-equal, if the slice writes fresh arrays); mutation: widen the exception to any array |
+| round 2 security L-b | a destination coordinate that is an indirect reference to a number: `set_array_item` would replace the reference, and V5's set can then disagree with the report | an indirect operand is **malformed**, kept unchanged and counted (§3's table); fixture: a `/XYZ` into page *N* whose *left* is an indirect integer (unchanged, counted); mutation: resolve and translate it |
+| round 2 code S-4 | a destination whose page element is an integer equal to page *N*'s index, which §3 leaves unchanged by identity, is neither counted nor disclosed | a census column counting such destinations at §3's sites, and a disclosure 4 clause if the census finds any; fixture: a local destination with an integer page element equal to *N*'s index (unchanged, counted) |
 
 ## Open questions, for round 2 and the owner
 
@@ -1206,7 +1322,11 @@ decision 57 item 4 (decision 61, item 2); the every-object scan (decision 61, it
 orientation (decision 66, item 1); page *N*'s own content stream (decision 66, item 2); that round 2
 is final (decision 64, item 1); that tiling patterns refuse, that objects reached only through page
 *N*'s annotation appearances are in the refusing set, and that the written page's coordinates start
-at zero with destinations into it translated (decision 68, item 2). R9's reading was confirmed by
+at zero with destinations into it translated (decision 68, item 2). Decided since round 2: that a
+surviving stream's kind is the role the walk reached it through, with three disclosed roles (decision
+69); when a destination array counts toward disclosure 5, that article beads on page *N* stay
+translated and are held by V6's exception and V7, and that V7 holds every other destination
+byte-equal (decision 70). R9's reading was confirmed by
 round 1's security review, on the conditions §8 now states. Rule 9 is proposed (decision 56, item
 3). Still open:
 
