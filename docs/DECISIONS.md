@@ -277,12 +277,14 @@ one is decided in an issue, with the same three parts.
     **The principle is unchanged, and it binds v1.** v1's same-source assertions are the closed
     list in ADR 0031 §4 (*What it leaves undetectable*), kept current by that record's revisions
     while it is Proposed and by its dated amendments once it is Accepted, and each needs an
-    independent reading before S9. On 2026-10-27, after round 1 (owner decisions 61 and 66), that
-    list is: the set of objects the page used that the output keeps, which one walk both decides and
-    checks; page identity across the two engines, which rests on refusals that read qpdf's page tree;
-    the two engines reading the redacted page's content differently; and the region-to-pixel
-    arithmetic, only where the display frame that PDFium's transform (which paints) and burrow's
-    arithmetic (which checks) both start from is wrong in the same way. If ADR 0031 is rejected,
+    independent reading before S9. On 2026-10-27, after rounds 1 and 2 (owner decisions 61, 66, 68
+    and 69), that list is: the set of objects the page used that the output keeps, which one walk
+    both decides and checks; page identity across the two engines, which rests on refusals that read
+    qpdf's page tree; the two engines reading the redacted page's content differently; the
+    region-to-pixel arithmetic, only where the display frame that PDFium's transform (which paints)
+    and burrow's arithmetic (which checks) both start from is wrong in the same way; and a
+    destination into the redacted page at a site ADR 0031 §3 does not list, which keeps its position
+    because the check reads by the same list. If ADR 0031 is rejected,
     there is no v1 list, and this rule's instances are v2's alone. *Decided:* owner, 2026-10-21
     (decisions 55 and 57). *Does not cover:* R10, which still gates S9 for v1 through #206's web
     runtime digest; or what v1's independent readings are, which ADR 0031 proposes and its reviews
