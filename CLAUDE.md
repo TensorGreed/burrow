@@ -148,7 +148,10 @@ still local. **Which reviewer depends on what the change decides** (2026-10-14, 
   `outcomes.tsv` show no measured input moving from refused to `Ok`.
 - **Mechanical changes** -- budgets, test wiring, docs, ledgers, `outcomes.tsv` regeneration, and
   the 2026-09-24 tooling class (tooling, gates, checkers, their self-tests, CI wiring, fixture
-  generators) -- get one `code-reviewer` pass.
+  generators) -- get one `code-reviewer` pass, except that docs-only, budget re-record,
+  regenerated-table and ROADMAP/DECISIONS-wording diffs get no agent review: CI plus owner approval
+  (rule 17, amended 2026-10-26). A reviewer run is at most two per PR, and none after a rebase
+  that only regenerated tables or budget lines.
 
 A slice that adds a refusal fixture with a twin also renders the twin's output in all five readers
 and puts the result in the PR body (DECISIONS.md rule 17, amended 2026-10-19).
@@ -579,5 +582,5 @@ those at full candour is working and is not what "summarise" is asking you to sh
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
 - **Review before the first push**: both reviewers for a change that makes redaction or split
-  accept more, one review for a new refusal, and one `code-reviewer` pass for a mechanical change
-  (DECISIONS.md rule 17). See *Conventions*; this is the working-agreement half of the same rule.
+  accept more, one review for a new refusal, and one `code-reviewer` pass for a mechanical tooling change, none for a
+  docs/budget/table one (DECISIONS.md rule 17, amended 2026-10-26). See *Conventions*; this is the working-agreement half of the same rule.
