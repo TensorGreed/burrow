@@ -5439,9 +5439,9 @@ one place the number lives.
 
 ## Amendment, 2026-10-21 — the #344 S9 gate applies to v2 only
 
-This amendment is the owner's decision 55 of 2026-10-21. Redaction v1 flattens the redacted page
-([ADR 0031](0031-redaction-v1-flattens-the-redacted-page.md), Proposed). This amendment is the
-owner's, decided independently of 0031's status (decision 57, item 9). Until 0031 is accepted, this
+This amendment is the owner's decision 55 of 2026-10-21, decided independently of ADR 0031's status
+(decision 57, item 9). Redaction v1 flattens the redacted page
+([ADR 0031](0031-redaction-v1-flattens-the-redacted-page.md), Proposed). Until 0031 is accepted, this
 record is unchanged except for one point. The #344 amendment says that the ROADMAP row and
 #206's ink half carry "a font whose outlines draw outside the box it declares". That gate on the
 un-hold (S9), on the web path, **now applies to v2 only**, that is, to this record's content-stream
