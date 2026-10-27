@@ -1,13 +1,9 @@
-# The age PUBLIC key that fuzz-nightly.yml encrypts every finding to (owner decision (62)(1)).
-# The private key is held by the owner and is never in this repository or in CI.
+# The age PUBLIC key that fuzz-nightly.yml encrypts every finding to (owner decision (62)(1),
+# key installed by decision (66)(4), 2026-10-27). The private key is held by the owner and is never
+# in this repository or in CI. This file must hold exactly one key line: a missing, empty,
+# placeholder or malformed recipient FAILS the seal step (tools/fuzz-seal-finding.sh), so the job
+# goes red rather than silently keeping nothing.
 #
-# While the line below is the placeholder, tools/fuzz-seal-finding.sh REFUSES to seal or upload
-# anything (exit 4, a workflow warning): nothing is published and nothing is kept. The owner's
-# key swap is the only change needed:
-#
-#   age-keygen -o ~/burrow-security/fuzz-crash.key
-#
-# then replace the PLACEHOLDER line with the `# public key: age1...` value it prints (the bare
-# age1... string, nothing else on the line). Decrypt a downloaded artifact with
+# Decrypt a downloaded artifact with
 #   age -d -i ~/burrow-security/fuzz-crash.key <target>.age | tar -x
-PLACEHOLDER-NOT-A-KEY-REPLACE-WITH-age-keygen-PUBLIC-KEY
+age1s0lqn7rhe69uhf378cwem65ddrpc0jfkqgfxjvw4h8rje6sy94sqefdma2

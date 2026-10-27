@@ -257,9 +257,10 @@ jobs:
       # `tools/check-no-published-reproducers.py` still refuses any upload naming the inputs or the
       # raw log. Nothing here changes what the public log shows: redaction is untouched.
       #
-      # WHILE THE RECIPIENT FILE IS THE PLACEHOLDER the seal step warns and uploads nothing (exit 4
-      # of the script): the owner's key swap is the only change needed. Any other failure of the
-      # seal step fails it, and the upload step then does not run -- fail closed.
+      # EVERY CRASH IS SEALED, ledger-matched ones included: the steps run on any crash or failed
+      # fuzz step, whatever tools/fuzz-classify.sh decided. A missing, empty, placeholder or
+      # malformed recipient FAILS the seal step (owner decision (66)(4)): a finding that cannot be
+      # kept must turn the job red. On any failure the upload step does not run -- fail closed.
       - name: Install the pinned age
         id: age
         if: >-
@@ -273,15 +274,9 @@ jobs:
         id: seal
         if: always() && steps.age.outcome == 'success'
         run: |
-          rc=0
           tools/fuzz-seal-finding.sh "${{ matrix.target }}" "$RUNNER_TEMP/fuzz.log" \
             .github/fuzz-findings.recipient "$RUNNER_TEMP/sealed" \
-            "fuzz/artifacts/${{ matrix.target }}" || rc=$?
-          if [ "$rc" -eq 4 ]; then
-            echo "::warning title=finding NOT kept::.github/fuzz-findings.recipient is still the placeholder; the owner must install a key (see the file). Nothing was encrypted or uploaded."
-            exit 0
-          fi
-          exit "$rc"
+            "fuzz/artifacts/${{ matrix.target }}"
 
       - name: Upload the encrypted finding (ciphertext only)
         if: always() && steps.seal.outputs.sealed == 'true'

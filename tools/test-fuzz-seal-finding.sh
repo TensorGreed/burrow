@@ -19,7 +19,7 @@ work="$(mktemp -d)"
 mutant="$here/fuzz-seal-finding.MUTANT.sh"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=19
+EXPECTED_CASES=20
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -91,21 +91,34 @@ if "$AGE" -d -i "$work/other.txt" "$work/up1/reorder.age" > /dev/null 2>&1; then
   bad "a different private key decrypted the artifact"
 else ok "a different private key cannot decrypt"; fi
 
-# 6. THE PLACEHOLDER refuses: exit 4, nothing written.
-: > "$work/gh-output"
-run_seal "$seal" "$work/placeholder.pub" "$work/up2"
-if [ "$rc" -eq 4 ] && [ ! -e "$work/up2" ] && grep -q '^sealed=false$' "$work/gh-output" \
-  && grep -q "placeholder" <<< "$note"; then
-  ok "the placeholder recipient exits 4, names the reason, and writes nothing"
-else bad "placeholder: exit $rc, note: $note"; fi
+# 6. A PLACEHOLDER, MISSING or EMPTY recipient FAILS (owner decision (66)(4)): exit 1, the
+#    reason named, nothing written to the upload path, never a pass.
+: > "$work/empty.pub"
+printf '# only a comment\n' > "$work/comment-only.pub"
+bad6=""
+i=0
+for spec in "placeholder:$work/placeholder.pub:still the placeholder" \
+  "missing:$work/no-such.pub:no recipient file" \
+  "empty:$work/empty.pub:exactly one recipient" \
+  "comment-only:$work/comment-only.pub:exactly one recipient"; do
+  name="${spec%%:*}"; rest="${spec#*:}"; file="${rest%%:*}"; reason="${rest#*:}"
+  i=$((i + 1)); : > "$work/gh-output"
+  run_seal "$seal" "$file" "$work/up2-$i"
+  if [ "$rc" -ne 1 ] || [ -e "$work/up2-$i" ] || grep -q '^sealed=true$' "$work/gh-output" \
+    || ! grep -q "$reason" <<< "$note"; then
+    bad6="$bad6 [$name: exit $rc, note: $note]"
+  fi
+done
+if [ -z "$bad6" ]; then
+  ok "placeholder, missing, empty and comment-only recipients each exit 1, name the reason, write nothing"
+else bad "recipient refusals:$bad6"; fi
 
-# 7. The COMMITTED recipient file is the placeholder or a well-formed key, exactly one line.
+# 7. The COMMITTED recipient file is one well-formed key, and NOT the placeholder.
 committed="$repo/.github/fuzz-findings.recipient"
 line="$(grep -vE '^[[:space:]]*(#|$)' "$committed" | tr -d '[:space:]')"
-if [ "$(grep -vcE '^[[:space:]]*(#|$)' "$committed")" -eq 1 ] \
-  && { [[ "$line" == PLACEHOLDER* ]] || grep -qE '^age1[a-z0-9]{58}$' <<< "$line"; }; then
-  ok "the committed recipient file is the placeholder or one well-formed age key"
-else bad "committed recipient file is neither"; fi
+if [ "$(grep -vcE '^[[:space:]]*(#|$)' "$committed")" -eq 1 ] && grep -qE '^age1[a-z0-9]{58}$' <<< "$line"; then
+  ok "the committed recipient file is one well-formed age key, not the placeholder"
+else bad "committed recipient file is not one well-formed age key"; fi
 
 # 8. A malformed key is a failure (1), not a skip, and leaves nothing.
 printf 'age1notakey\n' > "$work/bad.pub"
@@ -158,7 +171,8 @@ else bad "missing log exit $r1, hostile name exit $rc"; fi
 rc=0; GITHUB_OUTPUT="$work/gh-output" "$seal" reorder "$work/fuzz.log" "$work/recipient.pub" "$work/up9" "$work/no-such-dir" > /dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] && [ -f "$work/up9/reorder.age" ] && ok "a finding with no input file still seals the log" || bad "no-input seal: exit $rc"
 
-# 14. MUTANT: the placeholder arm deleted. Applied, then the placeholder must stop exiting 4.
+# 14. MUTANT: the placeholder arm deleted. Applied; the placeholder then falls to the malformed-key
+#     check, so the reason named is no longer "placeholder" (case 6 asserts the reason).
 cp "$seal" "$mutant"
 python3 - "$mutant" <<'PY'
 import sys
@@ -170,7 +184,25 @@ open(p, "w").write(s.replace(old, "  NEVERMATCH*)", 1))
 PY
 cmp -s "$seal" "$mutant" && { bad "mutant 1 identical to the original"; }
 run_seal "$mutant" "$work/placeholder.pub" "$work/up10"
-[ "$rc" -ne 4 ] && ok "mutant without the placeholder arm no longer exits 4 (case 6 would catch it)" || bad "mutant still exits 4"
+if ! grep -q "still the placeholder" <<< "$note"; then
+  ok "mutant without the placeholder arm no longer names the placeholder (case 6 would catch it)"
+else bad "mutant still names the placeholder"; fi
+
+# 14b. MUTANT: a missing recipient passes (exit 0). Applied; case 6 requires exit 1 for it.
+cp "$seal" "$mutant"
+python3 - "$mutant" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = 'status_note "no recipient file at $recipient_file"; exit 1;'
+assert old in s, "mutation did not apply"
+open(p, "w").write(s.replace(old, 'status_note "no recipient file at $recipient_file"; exit 0;', 1))
+PY
+cmp -s "$seal" "$mutant" && { bad "mutant 14b identical to the original"; }
+run_seal "$mutant" "$work/no-such.pub" "$work/up10b"
+if [ "$rc" -eq 0 ]; then
+  ok "mutant that passes on a missing recipient exits 0 (case 6 requires exit 1, so it would catch it)"
+else bad "missing-recipient mutant: exit $rc"; fi
 
 # 15. MUTANT: the header check deleted. The plaintext-writing age must then get through.
 cp "$seal" "$mutant"
@@ -229,6 +261,18 @@ assert len(install) == 1
 order = [steps.index(install[0]), steps.index(seal[0]), steps.index(up)]
 assert order == sorted(order), "install, seal, upload must run in that order"
 assert "steps.seal.outputs.sealed == 'true'" in str(up["if"])
+# (66)(4): a seal failure is a red step -- no warn-and-pass, no exit-code-4 branch, no continue-on-error.
+sr = str(seal[0]["run"])
+assert "exit 0" not in sr and "-eq 4" not in sr and "::warning" not in sr, "seal step must not swallow a failure"
+assert not seal[0].get("continue-on-error"), "seal step must not continue-on-error"
+# (66)(4): every crash is sealed. Both steps run under always() on any failed fuzz step or non-zero
+# status, and neither is gated on the classifier's verdict (ledger-matched or not).
+for s in (install[0], seal[0]):
+    cond = str(s["if"])
+    assert cond.lstrip().startswith("always()"), f"{s['name']}: not always()-gated"
+    assert not any(w in cond.lower() for w in ("classif", "matched", "ledger", "unmatched")), \
+        f"{s['name']}: filters on the classifier verdict"
+assert "steps.fuzz.outputs.status != '0'" in str(install[0]["if"]) and "steps.fuzz.outcome == 'failure'" in str(install[0]["if"])
 PY
 if [ "$wired" -eq 1 ] && python3 "$repo/tools/check-no-published-reproducers.py" > /dev/null 2>&1; then
   ok "fuzz-nightly.yml: install -> seal -> upload of one .age path, short retention; reproducer gate accepts it"

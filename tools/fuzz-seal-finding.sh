@@ -13,11 +13,11 @@
 # and the message may now be kept, but only ciphertext leaves the runner; the private key is
 # owner-held and is not in this repository or in CI.
 #
-# EXIT CODES (the workflow reads 4 only):
+# EXIT CODES:
 #   0  sealed; <out-dir>/<target>.age exists
-#   4  the recipient file still holds the PLACEHOLDER: nothing was sealed or written. Not a
-#      failure of the tool -- the owner has not installed a key yet.
-#   1  anything else. FAIL CLOSED: on any failure no file is left in <out-dir>.
+#   1  anything else, INCLUDING a missing, empty, placeholder or malformed recipient (owner
+#      decision (66)(4), 2026-10-27: a finding that cannot be kept must turn the step red, never
+#      pass quietly). FAIL CLOSED: on any failure no file is left in <out-dir>.
 #
 # PLAINTEXT NEVER REACHES <out-dir>. The bundle is staged in a private (0700) mktemp directory that
 # is outside <out-dir>, deleted on exit; it is written to disk there because a pipe would put tar's
@@ -61,21 +61,19 @@ case "$target" in
 esac
 
 # THE RECIPIENT: comments and blank lines dropped, exactly one line left, and it must be an age
-# X25519 public key (age1 + 58 bech32 characters). The placeholder is recognised by name and is
-# the only thing that exits 4; a malformed key is a failure, not a skip.
+# X25519 public key (age1 + 58 bech32 characters). Missing, empty, the placeholder and a malformed
+# key are all failures, each naming its reason; none is a skip.
 [ -f "$recipient_file" ] || { status_note "no recipient file at $recipient_file"; exit 1; }
 recipient_lines="$(grep -vE '^[[:space:]]*(#|$)' "$recipient_file" || true)"
 if [ "$(printf '%s\n' "$recipient_lines" | grep -c .)" -ne 1 ]; then
-  status_note "$recipient_file must hold exactly one recipient line"
+  status_note "$recipient_file must hold exactly one recipient line (empty, or more than one)"
   exit 1
 fi
 recipient="$(printf '%s' "$recipient_lines" | tr -d '[:space:]')"
 case "$recipient" in
   PLACEHOLDER*)
-    status_note "$recipient_file is still the placeholder; nothing sealed, nothing uploaded"
-    echo "sealed=false" >> "$GITHUB_OUTPUT"
-    trap - EXIT
-    exit 4
+    status_note "$recipient_file is still the placeholder; install the owner's public key"
+    exit 1
     ;;
 esac
 if ! printf '%s' "$recipient" | grep -qE '^age1[a-z0-9]{58}$'; then
