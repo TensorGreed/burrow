@@ -389,12 +389,21 @@ out="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-hit.log" 2>&1
 out2="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-other.log" 2>&1)"; s2=$?
 out3="$(python3 "$here/check-known-crashes.py" --log "$work/reorder-handle.log" 2>&1)"; s3=$?
 set -e
+# A near-miss must come back as the checker's NORMAL unmatched verdict, not merely as "not KNOWN":
+# Python exits 1 on an uncaught exception, which is the new-finding code, and exit 3 is the tool
+# failing, so "nonzero and no KNOWN" passes a checker that crashed. Require the exact new-finding
+# status, the verdict line, and no traceback or tooling banner.
+unmatched_normally() { # <status> <output>
+  [ "$1" -eq 1 ] && grep -qF "UNMATCHED --" <<<"$2" \
+    && ! grep -qF "Traceback" <<<"$2" && ! grep -qF "TOOLING" <<<"$2" \
+    && ! grep -qF "KNOWN" <<<"$2"
+}
 if [ "$s1" -eq 0 ] && grep -qF "#285" <<<"$out" \
-  && [ "$s2" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out2" \
-  && [ "$s3" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out3"; then
+  && unmatched_normally "$s2" "$out2" \
+  && unmatched_normally "$s3" "$out3"; then
   ok "the real ledger's reorder #285 entry matches its own panic and rejects both near-misses"
 else
-  bad "the real ledger's reorder #285 entry (exits $s1/$s2/$s3)"
+  bad "the real ledger's reorder #285 entry (exits $s1/$s2/$s3; the two near-misses must each exit 1 with the UNMATCHED verdict, no traceback, no TOOLING, no KNOWN)"
   sed 's/^/         /' <<<"$out $out2 $out3" >&2
 fi
 
