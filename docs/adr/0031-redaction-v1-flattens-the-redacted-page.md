@@ -5,9 +5,10 @@ Date: 2026-10-21
 ## Status
 
 **Proposed**, 2026-10-21, from the owner's decision of that date (decision 55, item 1). Revised the
-same day after round 0, under the owner's decision 57 (*Round 0*, below). It becomes *Accepted* after
-round 1 with both reviewers (security-reviewer and code-reviewer) and the owner's reading. No
-flatten code is written before this line changes.
+same day after round 0, under the owner's decision 57 (*Round 0*, below), and again on 2026-10-27
+after round 1, under the owner's decisions 61, 64 and 66 (*Round 1*, below). **Round 2 is the final
+round** (DECISIONS.md rule 15; decision 64, item 1). This record becomes *Accepted* only after round 2
+and the owner's reading of the record. No flatten code is written before this line changes.
 
 Scoped to **decisions**, as [0029](0029-what-redaction-does-and-what-it-refuses-to-do.md) is: what
 v1 does, what it refuses, what it discloses, what verification may assert, and what the page may
@@ -45,6 +46,24 @@ below, under decision 57, which adopts the code-reviewer's three blocking correc
 should-fix, and the security-reviewer's four High fixes, and decides ten open points. Shapes the
 security review recorded privately are worded here at the level of the rule. The reviews themselves
 are kept where rule 24 keeps every round.
+
+### Round 1
+
+Both reviewers ran round 1 on `3b99350` on 2026-10-26, reasoning against the code at `b8bf0ba` and
+the vendored qpdf 12.4.1, without reproducers:
+
+| reviewer | model | on | findings |
+|---|---|---|---|
+| security-reviewer | Opus | `3b99350` | no Critical; 4 High, 4 Medium, 6 Low; R9's reading confirmed, with four conditions |
+| code-reviewer | Opus | `3b99350` | 1 Blocking, 10 Should-fix, 7 Nits |
+
+The owner decided the points the reviews could not (decision 61: the survivor walk's start and stops,
+which survivors refuse, and the every-object scan; decision 66: the page's orientation, and the page's
+own content stream). This revision fixes every High and the Blocking finding in the text. Each
+Medium, Low, Should-fix and Nit is either fixed in the text or, where only a measurement or slice
+code can close it, listed under *Open for the build PRs* with the fixture or test it becomes
+(decision 64, item 1). **After round 2, only a Critical or High finding blocks the core build.** As in
+round 0, shapes the security review recorded privately are worded here by class.
 
 ## Context
 
@@ -107,6 +126,24 @@ It does **not** remove:
 | The web asks for `max_pixels` = **4,194,304**. The core default is 268,435,456 | `apps/web/src/components/tool-host.ts`; `burrow_types::Limits::DEFAULT`; ADR 0027 §1 |
 | The web PDFium bridge already exposes `FPDFBitmap_FillRect` | `apps/web/src/worker/bridge-pdfium.js` |
 
+Added for round 1, rechecked on 2026-10-27 against the same tree:
+
+| fact | where |
+|---|---|
+| burrow renders in **display orientation**: it passes `rotate = 0` to `FPDF_RenderPageBitmap_Start`, so PDFium applies the page's `/Rotate` itself. The selection picture depends on this: its frame is the display frame, "after `/Rotate`" | `core/burrow-engines/src/pdfium/ffi.rs:533`; `apps/web/src/components/region-picture.ts:9-13` |
+| `page_frames` reports the **display frame**: the box's width and height, swapped for `/Rotate` 90 and 270 | `core/burrow-engines/src/pdfsyntax/region.rs:121-130` (`displayed_size`); `core/burrow-engines/src/redact/frames.rs:157-166` |
+| `FPDF_PageToDevice` returns **integer** device coordinates, rounded, and takes the same start, size and rotate arguments as the render | `fpdfview.h:1072-1081` (the pinned PDFium headers) |
+| A loaded page's width changes with its rotation. What the no-load `FPDF_GetPageSizeByIndexF` reports for a rotated page is not stated | `fpdfview.h:733`; `fpdfview.h:790-802`; the bridge reads the no-load size without `FPDF_LoadPage` (`bridge-pdfium.js:85-92`) |
+| The bridge's one route out of PDFium's memory is `__burrow_pdfium_copy_out`, a `HEAPU8.slice`: a **JavaScript-owned copy**, wiped by `handOut` | `apps/web/src/worker/bridge-pdfium.js:240-247` |
+| `sha2` is a dev- and build-dependency only. No shipped module computes SHA-256 today | `core/burrow-engines/Cargo.toml:47` (dev), `:59` (build); `core/burrow-ops/Cargo.toml:43` (dev) |
+| qpdf treats a **null-valued key as absent**: `hasKey` is "not null", and iteration and unparse skip nulls | `QPDF_Dictionary.cc:64`, `:102`, `:142` (12.4.1) |
+| `qpdf_oh_new_array` and `qpdf_oh_new_real_from_string` / `_from_double` are untrapped, like `new_stream`. `qpdf_oh_append_item` runs inside `do_with_oh_void`'s trap. None of the six constructors is in the wasm export list | `qpdf-c.cc:1495`, `:1502`, `:1544`, `:1610` (12.4.1); `engines/build-wasm.sh:287-305` |
+| burrow's own code records `qpdf_oh_new_array` as **not meeting** the untrapped list's non-parsing bar | `core/burrow-engines/src/qpdf/ffi.rs:641-645` |
+| qpdf's whole-file resolution runs **once**, behind the flag `fixed_dangling_refs`. The writer calls it again in `prepareFileForWrite`, where the flag makes it a no-op | `QPDF_objects.cc:1240-1249`; `QPDFWriter.cc:2286` (12.4.1) |
+| #227's reference pass **already lexes every object in the file**: after each `obj` and `trailer` keyword, and inside each object stream qpdf would decode. Its rows (`[reference-to-nothing]`, `[reference-unreadable]`, `[name-read-differently]`, `[syntax-read-differently]`, `[null-value]`) are whole-file | `core/burrow-engines/src/redact/references.rs:47-58`; ADR 0029's 2026-10-14 amendments |
+| The resource-graph walk's ceilings: depth 32, and 4,096 resource dictionaries | `core/burrow-engines/src/redact/sharing.rs:63`, `:81` |
+| Of the 369 `PAGE` rows in `page-frames.tsv`, 27 are refusals. **342 pages are framed** | `tests/redaction/page-frames.tsv` |
+
 ## Decision
 
 ### 1. The pipeline: which engine does what, and in which heap
@@ -117,12 +154,12 @@ run**, across both workers: the render worker is given what is left of it, not a
 | step | engine | heap (web / native) | what happens |
 |---|---|---|---|
 | 1. open | qpdf | redaction worker / caller's thread | Redaction's open: `Limits`, password, page count, the document-level refusals of §2 and §5, and the frames (`page_frames`). **The whole cross-reference table is resolved here, inside the trap** (*Resolution at open*, below). Any repair refuses, `[engine-repaired-input]` |
-| 2. render | PDFium | render worker's `pdfium.wasm` / the engine thread (ADR 0011) | The page at **150 dpi**, with `FPDF_ANNOT` alone (the flags the selection picture uses, ADR 0029's S4 amendment; §2 rule 9), no form-fill handle, on opaque white. It is laid out in unrotated user space over the page's effective box, so that the page keeps its `/Rotate`. **The same render route as the selection picture** (§2 rule 7) |
-| 3. bind | PDFium side | the same | The unpainted render's digest is taken **inside the render worker's linear memory** and compared with the selection picture's record (§2 rule 7). No JavaScript-owned copy of the unpainted pixels is made |
-| 4. paint | PDFium | the same | The region, given in display points with a top-left origin (ADR 0029's frame amendment), is mapped to bitmap pixels **by PDFium's own page-to-device transform** (`FPDF_PageToDevice`, decision 57 item 5), widened outward to whole pixels and then by one more pixel on each side (§2 rule 8). Every pixel in that rectangle is filled with opaque black by `FPDFBitmap_FillRect`, **in PDFium's heap**. Until this step, no pixel of this render leaves the render worker's linear memories |
-| 5. hand-off | | render worker → redaction worker | The painted bitmap, converted to RGB, and its digest cross, with the fields §8 lists and nothing else. It does not pass through the page's code as content (§8). The redaction worker digests what it received and refuses on a mismatch. The render worker is then zeroed and terminated (§7) |
-| 6. cross-check | burrow | redaction worker / caller's thread | Before allocating, the redaction worker re-checks `max_pixels`, and that the buffer's length is exactly *W*·*H*·3, by checked arithmetic. Then **burrow's own arithmetic** maps the region to pixels from qpdf's frame, and every pixel of that rectangle must be the paint. Otherwise it refuses, `[paint-disagrees]`. Two sources, at run time |
-| 7. replace | qpdf | the same | **In place**: the page dictionary keeps its object identity, so every reference to the page (outline, destinations, other pages' links) still resolves to it. Every key outside §3's allowlist is removed. `/Resources` becomes a new dictionary naming one image XObject. `/Contents` becomes one new stream holding one line that draws it. The catalogue loses `/StructTreeRoot` and `/MarkInfo` (§2 rule 1). burrow does not edit any other page. **`[engine-repaired-input]` is checked again after the constructors**, then qpdf writes the document |
+| 2. render | PDFium | render worker's `pdfium.wasm` / the engine thread (ADR 0011) | The page at **150 dpi**, with `FPDF_ANNOT` alone (the flags the selection picture uses, ADR 0029's S4 amendment; §2 rule 9), no form-fill handle, on opaque white. **It is rendered as displayed** (decision 66, item 1): `rotate = 0` to the render call, so PDFium applies the page's `/Rotate`, exactly as burrow renders today (`pdfium/ffi.rs:533`). The bitmap covers the **display frame**, *d*w × *d*h points (the effective box with width and height swapped for `/Rotate` 90 and 270), at *W* × *H* pixels (§2 rule 6). **The same render route as the selection picture** (§2 rule 7), whose frame is the display frame already (`region-picture.ts:9-13`). The written page carries `/Rotate 0` (§3), so the picture is not rotated a second time |
+| 3. bind | PDFium side | the same | The unpainted bitmap is copied **from `pdfium.wasm`'s memory into a buffer `burrow_wasm_render_bg.wasm` allocated**, by one view-to-view `set` from a `HEAPU8.subarray` taken fresh after the last engine call: a view, never a `slice`. The bridge's existing `__burrow_pdfium_copy_out` slices (`bridge-pdfium.js:247`) and is **not** used for these pixels. In the Rust module's memory the pixels are converted to the canonical RGB form and digested (SHA-256, a new runtime dependency: §8), and the digest is compared with the selection picture's record (§2 rule 7). No JavaScript-owned copy of the unpainted pixels is made. The unpainted pixels therefore exist in **both** of the render worker's linear memories, and §7 zeroes both |
+| 4. paint | PDFium | the same | The region arrives in display points with a top-left origin (ADR 0029's frame amendment). The render module converts it to user space with burrow's region conversion (`pdfsyntax/region.rs`), and **PDFium's own page-to-device transform** maps the corners to pixels (`FPDF_PageToDevice`, decision 57 item 5), with the same start, size and `rotate = 0` as the render. `FPDF_PageToDevice` returns rounded integers (*Facts*), so the corners are widened **by one pixel on each side to cover that rounding, and by one more for §2 rule 8**. Every pixel in that rectangle is filled with opaque black by `FPDFBitmap_FillRect`, **in PDFium's heap**. The painted bitmap is copied into the Rust module's memory by the same view-to-view route and converted to RGB there. Until the hand-off, no pixel of this render leaves the render worker's linear memories |
+| 5. hand-off | | render worker → redaction worker | The painted RGB bitmap and its digest cross, with the fields §8 lists and nothing else, **transferred port to port** on a channel between the two workers (§8). It does not pass through the page's code. The redaction worker digests what it received and refuses on a mismatch. The render worker is then zeroed and terminated (§7) |
+| 6. cross-check | burrow | redaction worker / caller's thread | Before allocating, the redaction worker **re-derives *W* = ⌈*d*w·150/72⌉ and *H* = ⌈*d*h·150/72⌉ from qpdf's display frame**, by checked arithmetic, and refuses unless the render worker's width and height equal them; it re-checks `max_pixels`, and that the buffer's length is exactly *W*·*H*·3. Then **burrow's own arithmetic** maps the region from display points to pixels at the displayed scale, *W*/*d*w across and *H*/*d*h down, from the top-left, **without converting to user space**. It widens outward to whole pixels and by rule 8's one pixel, and every pixel of **that** rectangle, burrow's own, must be the paint. Otherwise it refuses, `[paint-disagrees]`, and the census counts every such refusal. Two sources at run time: the paint goes through burrow's display-to-user conversion and PDFium's transform; the check goes through neither |
+| 7. replace | qpdf | the same | **In place**: the page dictionary keeps its object identity, so every reference to the page (outline, destinations, other pages' links) still resolves to it. Every key outside §3's allowlist is removed. `/Rotate` becomes 0, and `/MediaBox` and `/CropBox` the display frame (§3). `/Resources` becomes a new dictionary naming one image XObject. `/Contents` becomes one new stream holding one line that draws it. The catalogue loses `/StructTreeRoot` and `/MarkInfo` (§2 rule 1). burrow does not edit any other page. **`[engine-repaired-input]` is checked again after the constructors**, then qpdf writes the document |
 | 8. verify | qpdf, fresh | the same | §4, on the emitted bytes |
 | 9. emit | | redaction worker | One reply, after verification: R8, R9 and R10 (§8) |
 
@@ -133,18 +170,31 @@ is why none of ADR 0029's content refusals applies to v1 (§10).
 The image is 8-bit `/DeviceRGB`, `/FlateDecode`, with no `/DecodeParms`, `/Decode`, `/SMask`, `/Mask`,
 `/Interpolate`, `/Intent` or `/OC`. That is the plainest shape every reader decodes alike. **qpdf
 encodes it, through zlib, inside the write**: one engine call. The one line is fixed text, with only
-the image's size and origin in points varying. The slice writes it down exactly, and verification
-compares it byte for byte.
+the image's size in points, *d*w and *d*h, varying; its origin is always (0, 0), because §3 writes the
+display frame with its origin there. The slice writes it down exactly, and verification compares it
+byte for byte.
 
 **Resolution at open.** Because `qpdf_oh_new_stream` can resolve the cross-reference table the first
 time it runs (*Facts*), a resolution, and any repair it makes, must not first happen at step 7, outside
 the trap, where a repair would change the page tree after every check had run on the old one. So the
 open forces qpdf's whole-file resolution **inside the trap**, and asserts that it ran. qpdf's C API
 offers no direct entry point for this, so the slice names the route: a trapped call that reaches it,
-or a burrow shim in the qpdf build ADR 0004 already extends. After it, `new_stream` finds the table
-resolved and parses nothing, which is the argument its entry in `qpdf-untrapped-accepted.toml` rests
-on. `new_dictionary` and `new_name` touch only the cache and take `qpdf_oh_new_integer`'s argument. The
-repair refusal is read again after the constructors, so that the argument is checked, not assumed.
+or a burrow shim in the qpdf build ADR 0004 already extends. **"Asserts that it ran" means reading
+qpdf's resolved-once flag, `fixed_dangling_refs`** (*Facts*), set after the open's resolution. With
+the flag set, neither `new_stream` nor the write's own call in `prepareFileForWrite` can resolve
+again. A check that only observed that some call returned would not say that. After it, `new_stream`
+finds the table resolved and parses nothing, which is the argument its entry in
+`qpdf-untrapped-accepted.toml` rests on.
+
+**The constructors step 7 needs**, each listed in §8: `qpdf_oh_new_stream`, `qpdf_oh_new_dictionary`,
+`qpdf_oh_new_name`, and, because §3 writes `/MediaBox` and `/CropBox` with computed, usually
+non-integer values, `qpdf_oh_new_array`, `qpdf_oh_new_real_from_string` or `_from_double`, and
+`qpdf_oh_append_item`. All but `append_item` are untrapped. `new_dictionary`, `new_name`, `new_array`
+and the real constructors touch only the object cache, and are argued against the list's
+non-parsing bar as `qpdf_oh_new_integer` is. **burrow's own code says `new_array` does not meet that
+bar** (`qpdf/ffi.rs:641-645`). The slice either argues it does, and corrects that comment in the same
+change, or writes the boxes by a route that needs no new array. The repair refusal is read again after
+the constructors, so that the argument is checked, not assumed.
 
 ### 2. The v1 rules
 
@@ -154,9 +204,22 @@ signal here is keyed on what the operation can see (ADR 0029 §5), and each has 
 (*Fixtures and census*).
 
 **A walk that stops at pages.** Rules 1, 3 and 5 each walk a set of objects. Each walk **stops at, and
-does not enter, every page dictionary, every page-tree node and the catalogue**, whatever key leads
-there (an annotation's `/P`, a destination, a structure element's `/Pg`). Otherwise a walk from one
-page reaches every page.
+does not enter, the members of the page tree and the catalogue**, whatever key leads there (an
+annotation's `/P`, a destination, a structure element's `/Pg`). Otherwise a walk from one page
+reaches every page.
+
+- **Membership is by identity, never by what an object declares** (decision 61, item 1). The members
+  are the objects, compared by object number and generation, that are either in qpdf's page list or
+  reached from the catalogue's `/Pages` through `/Kids`, plus the catalogue the trailer's `/Root`
+  names. §5's `[page-tree-ambiguous]` already refuses where those two readings of the tree differ.
+  **Every other object is entered, whatever its `/Type` says.** An object that declares itself a page
+  or a page-tree node and is not a member is walked like any other. An off-tree "page", such as a
+  template, is walked through too. Both fail closed.
+- **Each walk is bounded** (non-negotiable 3). It is iterative, not recursive, and it keeps a visited
+  set, so it enters each object at most once and its work is at most the object count qpdf resolved
+  at open. It checks the deadline between objects. A walk that passes its ceiling refuses,
+  `[object-walk-too-large]`; the ceiling's value is measured on the census (*Open for the build
+  PRs*). The same holds for V5's parallel walk and V6's mapping (§4).
 
 **Rule 1. The structure tree is dropped from the output, and that is disclosed.** The catalogue's
 `/StructTreeRoot` and `/MarkInfo` are removed (decision 57, item 1; a document claiming tags it no
@@ -185,7 +248,8 @@ tagged document refused today becomes redactable.
 0029 §5 holds: a refusal keyed on a signal the operation cannot see is a bypass. So the signal fails
 closed. Any one of these refuses:
 
-- an `/Annots` entry on the page with `/Subtype /Widget`, whether or not a field claims it;
+- an `/Annots` entry on the page with a `/Subtype` of `Widget`, written as a name or as a string
+  (PDFium accepts both), whether or not a field claims it;
 - an `/Annots` entry that is a field or a field's kid: a `/FT` on itself or on any `/Parent`
   ancestor, or a place in the `/AcroForm /Fields` tree;
 - an object in the `/Fields` tree whose `/P` names the page.
@@ -196,21 +260,28 @@ narrows ADR 0029's `[acroform-field]`, which refuses every document with a form.
 acceptance change**, and the census must show it on real files.
 
 **Rule 2a. Refuse any XFA form,** `[xfa-form]` (decision 57, item 2). An `/XFA` key on the
-`/AcroForm`, of any value or type, or a `/NeedsRendering` key on the catalogue, refuses. **Key
-presence, never the parsed value**: a reader that renders XFA draws pages that PDFium does not, and
-carries data that no rule here reads.
+`/AcroForm`, or a `/NeedsRendering` key on the catalogue, that **qpdf reports present, with any
+non-null value of any type**, refuses. **Key presence, never the parsed value**: a reader that renders
+XFA draws pages that PDFium does not, and carries data that no rule here reads. A key whose value is
+null is not seen: qpdf treats it as absent (*Facts*), and so does the specification. Refusing it would
+need a raw-byte reading, which this rule does not have; that is said rather than claimed.
 
 **Rule 3. Refuse if anything the output keeps reaches an annotation of the redacted page,**
 `[annotation-dependent-kept]` (the #239 rule id, kept). Round 0 found the narrower wording (another
 page's annotation, through `/IRT`, `/Parent` or `/Popup`) was not what rule 5 relied on, and the owner
 adopted the widening (decision 57, item 1):
 
-- **An annotation survivor refuses.** Let *A* be the redacted page's annotations and everything
-  reachable from them (their appearance streams, popups, replies and rich text), by the walk that
-  stops at pages. If any member of *A* is reachable from the output's trailer, by any path, the
-  redaction refuses. That covers another page's annotation, an annotation another page's `/Annots`
-  also lists, an `/Annots` array another page shares (#240), actions, the catalogue, names, the
-  trailer and fields.
+- **An annotation survivor refuses.** Let *A* be the redacted page's annotations themselves and the
+  annotation-owned objects reachable from them: their annotation dictionaries, their appearance
+  dictionaries and appearance streams (every state, every `/AP` entry), their popups, their replies
+  and their rich-text streams, by the walk that stops at pages. **The resources those appearance
+  streams name are not in *A*.** They are in rule 5's set *S*, and rule 5 classifies them: an image or
+  form XObject among them refuses there, and a font is disclosed (decision 61, item 2). Without that
+  narrowing, an annotation whose appearance uses a font a kept page also uses would refuse here,
+  through rule 3, against the owner's decision that fonts are disclosed. If any member of *A* is
+  reachable from the output's trailer, by any path, the redaction refuses. That covers another
+  page's annotation, an annotation another page's `/Annots` also lists, an `/Annots` array another
+  page shares (#240), actions, the catalogue, names, the trailer and fields.
 - **An appearance stream shared with something kept counts as an annotation survivor.** So it
   refuses too.
 - Annotations on the redacted page are **flattened into the picture** where `FPDF_ANNOT` draws them
@@ -230,36 +301,64 @@ the owner's decision for v1, not a wall (§*Conditions for revisiting*).
 - **One exception refuses: page thumbnails in the document's XMP metadata,** `[metadata-thumbnail]`
   (decision 57, item 3). A thumbnail of the redacted page is a picture of the region. If the
   catalogue's metadata stream carries a thumbnail property, the redaction refuses. The signal is the
-  property's presence, never its parsed value, and a metadata stream that cannot be decoded within
-  `Limits` refuses too. **Census-conditional:** the census reports how often it fires. **If it refuses
-  more than 1% of real documents, the rule becomes a strip instead**: the XMP thumbnail is removed on
+  property's presence, never its parsed value. **The property is identified by its namespace URI and
+  local name, never by the prefix a packet binds**, since any prefix can be bound to that namespace.
+  It is looked for in every character encoding an XMP packet may use. A metadata stream that cannot be
+  decoded within `Limits`, or a packet that cannot be read as XMP, refuses too. The evasion fixtures
+  are by class: a rebound prefix, each permitted encoding, and an unreadable packet (*Fixtures*).
+  **Census-conditional:** the census reports how often it fires. **If it refuses more than 1% of real
+  documents, the rule becomes a strip instead**: the XMP thumbnail is removed on
   output, and the refusal goes. That change gets its own review, as a scrub is a write.
 - A signature anywhere in the document no longer validates after the write. That is disclosed (§9,
   item 6).
 
-**Rule 5. Objects the redacted page shares are disclosed, or refused.** Precisely: let *S* be every
-object reachable from the input page's dictionary, by the walk that stops at pages. After the
-replacement, the **survivors** are the members of *S* still reachable from the output's trailer:
-through another page, a page-tree node's inherited `/Resources`, the `/AcroForm` default resources,
-the names tree's appearances or templates, or anything else kept. Rules 1 and 3 already refuse the
-survivors that are tree elements or annotations.
+**Rule 5. Objects the redacted page used are refused or disclosed, by kind.** Precisely:
 
-- **A drawing only the redacted page used** is a survivor that is a content stream or a Form XObject
-  which the redacted page drew and **no kept page draws**. It can hold the region's text in a form
-  that the output carries but never shows. Examples are an inherited form that only this page drew,
-  and a page that is not in the page tree sharing this page's content. **Census-conditional**
-  (decision 57, item 4): **if refusing it costs under 1% of real documents, it refuses**,
-  `[drawing-survives]`. **Otherwise it is disclosed**, and the disclosure names drawings (§9, item 5).
-- **Fonts and images are disclosed.** A subset font with a `/ToUnicode` map reveals which characters
-  the page used. An image reveals itself. Neither is drawn anywhere by the output's redacted page.
-- The operation **reports the survivors**: a count by kind (content streams, forms, fonts, images,
-  other).
-- Verification asserts that the survivors in the output are exactly the set reported (§4, V5).
-- **The disclosure is conditional on that report being non-empty.** A page that shares nothing does
-  not carry a caveat about sharing.
+- **The set *S* starts from everything the page has, including everything it inherits** (decision
+  61, item 1). Its roots are the page dictionary's own values, **and the value of every inheritable
+  key (`/Resources`, `/MediaBox`, `/CropBox`, `/Rotate`) on every page-tree node above the page**,
+  whether or not the page's own key overrides it. Taking every ancestor's value, rather than the one
+  a reader would resolve, fails closed: a null or unreadable entry that PDFium and qpdf could resolve
+  differently cannot hide a dictionary from *S*. From those roots, *S* is everything reachable by the
+  walk that stops at pages. Without this, page *N*'s `/Parent` is a page-tree node, the walk stops
+  there, and an inherited `/Resources` is never in *S*.
+- After the replacement, the **survivors** are the members of *S* still reachable from the output's
+  trailer: through another page, a page-tree node's inherited `/Resources`, the `/AcroForm` default
+  resources, the names tree's appearances or templates, or anything else kept. Rules 1 and 3 already
+  refuse the survivors that are tree elements or annotation-owned objects.
+- **Refused, `[drawing-survives]`: a survivor that is a drawing.** That is:
+  - **page *N*'s own content stream**, or any stream of its `/Contents` (decision 66, item 2);
+  - **any image XObject or form XObject in *S*** (decision 61, item 2). The decision names those
+    reachable from page *N*'s original resources; this record takes every one in *S*, which adds
+    those reached only through the page's annotations' appearance resources. That is the wider set,
+    and it fails closed;
+  - **whether or not a kept page draws it.** v1 reads no page's content, so "drawn by a kept page" is
+    not something it can compute. Reachability is the predicate, and it is computable;
+  - **a tiling pattern's content stream in *S***. Decision 61 names images and forms, and decision 57
+    item 4 put every content stream in the drawings class. This record applies decision 61's
+    treatment to that remaining content stream, fail closed. **That is this record's reading, and
+    the owner confirms it** (*Open questions*).
+- **Disclosed: every other survivor**, with **fonts** named (decision 61, item 2, an accepted
+  residual). A subset font with a `/ToUnicode` map reveals which characters the page used. A Type 3
+  font is a font, glyph procedures included, but an image or form its glyphs use is a drawing in *S*
+  and refuses. The rest are resources such as colour spaces, graphics states, shadings and
+  marked-content property lists, which can carry text of their own.
+- **Census** (decision 61, item 2): the census reports what `[drawing-survives]` costs, by producer.
+  **If it refuses more than 1% of real documents, the work stops** and the owner is brought the
+  figure and the producers. The rule is not adjusted to fit. Decision 57, item 4's census condition,
+  which disclosed drawings above 1%, is superseded.
+- The operation **reports the survivors that are disclosed**: a count by kind (fonts, other).
+- Verification asserts that the survivors in the output are exactly the set reported, and that
+  none is a drawing (§4, V5).
+- **The disclosure is conditional on that report being non-empty.** A page whose objects nothing else
+  keeps does not carry a caveat about them.
 
 **Rule 6. 150 dpi, lossless Flate, and refuse above the pixel ceiling,** `[page-too-large-to-flatten]`.
-The bitmap is ⌈w·150/72⌉ × ⌈h·150/72⌉ pixels over the page's effective box. It is checked against the
+The bitmap is *W* × *H* = ⌈*d*w·150/72⌉ × ⌈*d*h·150/72⌉ pixels over the page's **display frame**,
+*d*w × *d*h points: the effective box, with width and height swapped for `/Rotate` 90 and 270. *W* and
+*H* come from qpdf's 64-bit frame, and the redaction worker re-derives them (§1 step 6). A frame
+whose 32-bit reading would round to a different *W* or *H* refuses there, or at §5's comparison. It
+is checked against the
 caller's `max_pixels` at `Stage::Pixels`, **before anything is allocated**, as every raster is (ADR
 0027 §1), and against **redaction's own ceiling** of 89,478,485 pixels, the most whose RGB bytes
 qpdf's 256 MiB decode ceiling lets verification read back (§6). Above either, the redaction refuses.
@@ -286,10 +385,16 @@ paint. **The record is required natively too**, not only on the web.
 - **The digest's canonical form** is SHA-256 over the width and height, as two 32-bit big-endian
   integers, followed by the pixels as RGB, three bytes each, rows top to bottom, with no padding. The
   4-byte BGRx bitmap is converted before the digest, by one function both sides share.
-- **Selection and run use one route**: one orientation, the same progressive or one-shot call, the
-  same flags, the same fill. PDFium is expected to be deterministic for one build, one size and one
+- **Selection and run use one route**: one orientation, **the display orientation** (`rotate = 0`,
+  PDFium applying `/Rotate`; decision 66, item 1), the same progressive or one-shot call, the same
+  flags, the same fill. PDFium is expected to be deterministic for one build, one size and one
   set of flags. **That is a claim until the census measures it** (*Fixtures and census*), across
   progressive and one-shot rendering, pauses, the native font mapper and the bitmap fill.
+- **What the comparison defends against, and what it does not.** It runs inside the render worker,
+  which is parsing the hostile file. It catches a render that is not reproducible. It is **not** a
+  defence against a PDFium the file has compromised, which could report any digest. Against that, the
+  control is the redaction worker's own check of the paint (§1 step 6, V3), made in another worker
+  with another engine.
 - Rule 7 holds **within one build**. Whether wasm, native x64 and native arm64 PDFium produce the same
   pixels is unmeasured, and it matters only to goldens and the native–web differential (§4).
 
@@ -300,6 +405,9 @@ questions*, item 1).
 conservative box meets the region is removed whole, and ink crossing the edge refuses. **Under v1 the
 edge is a pixel edge.** Every pixel the region touches is painted, and **one more pixel on each side**,
 because hinting and hairlines can put ink up to about a pixel beyond where the arithmetic places it.
+The paint side adds a further pixel for `FPDF_PageToDevice`'s rounding (§1 step 4); the check holds
+burrow's own rectangle, with rule 8's pixel, to be entirely paint (§1 step 6), so the extra pixel has
+an independent check.
 A glyph, a line of text, an image or a signature crossing the edge **stays visible outside it**, and
 part of a word can stay legible. No content refusal stands in for this. The page tells the person to
 mark generously (§9, item 2), and the operation's rustdoc states the pixel-edge semantics.
@@ -308,8 +416,8 @@ What lies outside the painted rectangle is **not detectable at run time**: no ch
 something there is what the person meant to cover.
 
 **Rule 9. Annotations on the redacted page: what reaches the picture, and what the person is told.**
-The owner kept this rule (decision 56, item 3), with the reviewers' measurements and an added
-disclosure.
+Proposed per decision 56, item 3, which asked for the rule and its question to be added to the
+round-0 package. Round 1 did not dispute it; it is for round 2 and the owner's reading of the record.
 
 - **The render's flags are `FPDF_ANNOT`, and nothing else**, and no form-fill handle exists. That is
   the selection picture's setting (ADR 0029's S4 amendment), and the selection render uses the same
@@ -350,19 +458,25 @@ disclosure.
 **The page dictionary's keys after the replacement are `/Type`, `/Parent`, `/MediaBox`, `/CropBox`,
 `/Rotate`, `/Resources` and `/Contents`, and nothing else.**
 
-- `/MediaBox` is the box PDFium rendered: the page's effective box, the crop clipped to the media box,
-  written explicitly on the page.
+- **`/Rotate` is written as 0**, explicitly (decision 66, item 1), so that no `/Rotate` inherited from
+  the page tree can reach the replaced page. The picture is already in display orientation (§1 step
+  2), and a page that kept its rotation would be rotated twice.
+- `/MediaBox` is **the display frame PDFium rendered**: `[0 0 dw dh]`, where *d*w × *d*h is the
+  page's effective box (the crop clipped to the media box) with width and height swapped for
+  `/Rotate` 90 and 270. It is written explicitly on the page.
 - **`/CropBox` is always written, equal to `/MediaBox`** (decision 57, item 8). A crop inherited from
   the page tree would otherwise reach the replaced page and cut the picture. Writing it removes that
   case, so `[page-attribute-inherited]`'s `/CropBox` half is not needed for v1. **That is an
   acceptance**, and the census counts it as one.
-- `/Rotate` is the page's **effective** rotation, inherited or not, written explicitly. V1 compares
-  the effective rotation read from the output with the input's.
+- The page's user space changes with it. A destination into this page from elsewhere still reaches
+  the page, but a position it names inside the page was measured in the old space, and lands
+  wherever that is now.
 
 This is ADR 0029 §2's allowlist, narrowed. Every other key goes. That includes `/Annots`, `/B`, `/AA`,
 `/Thumb`, `/StructParents`, `/PieceInfo`, `/Metadata`, `/Group`, the other boxes, `/Tabs`, `/VP`,
 `/AF`, `/UserUnit`, and every key nobody listed. The frame check (§4, V1) holds the display frame
-equal to the input's.
+equal to the input's: the output's `/MediaBox` under `/Rotate 0` against the input's box **with width
+and height swapped for 90 and 270**, which is what `page_frames`' display frame already is (*Facts*).
 
 ### 4. Verification (ADR 0022)
 
@@ -372,11 +486,11 @@ re-derived from the emitted bytes through a fresh qpdf:
 
 | | asserts |
 |---|---|
-| V1 | `verify::output`'s half: the input's page count and its **effective** rotation vector. Also, every page's display frame read from the output (`page_frames`) equals the input's |
+| V1 | `verify::output`'s half: the input's page count, and the expected **effective** rotation vector, which is the input's with page *N*'s entry 0 (`verify::Expected` takes the vector the operation computes, `core/burrow-ops/src/verify.rs:85-102`). Also, every page's display frame read from the output (`page_frames`) equals the input's: page *N*'s output frame, `/MediaBox` under `/Rotate 0`, against the input's box with width and height swapped for 90 and 270 |
 | V2 | The flattened page's dictionary has exactly §3's seven keys, with `/CropBox` equal to `/MediaBox`. `/Resources` has exactly one entry, `/XObject`, naming exactly one image. `/Contents` is one stream whose decoded bytes equal the line burrow wrote, **byte for byte** |
-| V3 | The image dictionary has exactly the keys §1 lists, and its `/Width` and `/Height` are the render's. Its decoded length is checked to be exactly *W*·*H*·3 **before it is read**, and the read is capped there. **Its decoded bytes have the digest bound to the painted bitmap** (§1 step 5), and **every pixel in the painted rectangle is the paint**, compared exactly |
+| V3 | The image dictionary has exactly the keys §1 lists, and its `/Width` and `/Height` are the *W* and *H* the redaction worker derived. qpdf learns a decoded length only by decoding, so **the read is capped at *W*·*H*·3 + 1 bytes, and refused unless it is exactly *W*·*H*·3**. **Its decoded bytes have the digest bound to the painted bitmap** (§1 step 5), and **every pixel in the painted rectangle is the paint**, compared exactly. The painted rectangle is **the one the redaction worker computed** (§1 step 6), never one the render worker reported |
 | V4 | The catalogue has no `/StructTreeRoot` and no `/MarkInfo`, and **no member of rule 1's element set** is in the output, by V5's parallel walk |
-| V5 | The survivors (§2 rule 5) present in the output are **exactly** the set the operation reported. Nothing reachable only from the input page is present. qpdf renumbers, so this is a parallel walk that maps each input object to its output object from the trailer down, not a comparison of object numbers |
+| V5 | The survivors (§2 rule 5) present in the output are **exactly** the set the operation reported, and none is a drawing. Nothing reachable only from the input page is present. qpdf renumbers, so this is a parallel walk that maps each input object to its output object from the trailer down, not a comparison of object numbers. It is bounded as every walk is (§2) |
 | V6 | Every other page's reachable graph equals the input's as qpdf reads it, under the same mapping: unparsed dictionaries equal, and stream data equal, **raw where qpdf preserved the filters and decoded where it did not** |
 
 **V6 is not "byte-identical to the input", and the claim must not be worded so.** qpdf renumbers every
@@ -392,14 +506,28 @@ still one uninterruptible call), and compares raw bytes wherever the filters wer
   page PDFium rendered as *N* is held by §5's checks, not by verification. The residue is two pages
   with identical frames that the two engines order differently: ADR 0022's #111 class, with
   `five-pages-or-six.pdf` as its example.
-- **The region-to-pixel arithmetic, where the two sources agree wrongly.** PDFium's transform paints
-  and burrow's arithmetic checks (§1 steps 4 and 6), so a wrong conversion on one side refuses at run
-  time. Both read the frame the two engines agreed on (§5). If both are wrong in the same way, the
-  wrong place is painted and passes. The rotation by box-origin by crop-offset matrix (*Fixtures and
-  census*) is the gate on that.
+- **The region-to-pixel arithmetic, where the two sources agree wrongly.** The paint goes through
+  burrow's display-to-user conversion and PDFium's transform; the check maps display points to pixels
+  by the displayed scale alone (§1 steps 4 and 6). They share no step but their input: the display
+  frame, and *W* and *H* derived from it. So a wrong conversion on either side refuses at run time,
+  and they can agree wrongly only where that shared frame is wrong, which §5's comparison of the two
+  engines' frames holds. The rotation by box-origin by crop-offset matrix (*Fixtures and census*)
+  tests the paint side against the check across every case.
 - **The survivor set is same-source.** The walk that decides it also checks it. V5 checks that the
   output agrees with the report, not that the report was right. The independent reading is a
   test-time decoded scan (spike 0006's I2) over every census output. It gates S9 under rule 19.
+- **Page identity across the two engines** (above) is same-source for the same reason: §5's
+  structural refusals read qpdf's tree. Its independent reading is the census render of each
+  output's page *N* against the painted bitmap (§5). It gates S9 under rule 19.
+- **The engines read page *N*'s content differently** (decision 61, item 3). The set *S*, rules 1, 3
+  and 5 and V5 all read qpdf's object graph. The page PDFium drew is PDFium's reading. If PDFium
+  resolves page *N*'s `/Contents` or `/Resources` to an object other than the one qpdf resolves, the
+  stream PDFium drew is not in qpdf's *S*, and a kept referrer can carry it out, unreported, with V1
+  to V6 passing. The every-object scan (§5) refuses the syntactic routes to that disagreement that
+  have been measured. It cannot prove there is no other. Rendering qpdf's own rewrite of the input,
+  instead of the original bytes, would remove some of those routes; that is recorded as a future
+  option (*Conditions for revisiting*), not taken for v1. It is same-source under rule 19, and its
+  independent reading is the census's decoded I2 scan of every output.
 - **Whether a survivor, or a document-level carrier, holds the region's content.** These are
   disclosures because no read-back can turn them into assertions.
 - **Anything outside the painted rectangle** that the person meant to cover: rule 8.
@@ -413,9 +541,10 @@ still one uninterruptible call), and compares raw bytes wherever the filters wer
 
 The DoD's fake-engine test applies. Fakes return an image with one region pixel unpainted, an image
 one row short, a decoded length one byte over, an extra page key, a `/CropBox` unequal to the
-`/MediaBox`, a second `/Resources` entry, a content stream one byte off, a dropped tree still present
-by an untyped element, and a survivor the report left out. **The mutation that deletes each check
-makes its test fail.**
+`/MediaBox`, a `/Rotate` other than 0, a `/MediaBox` with width and height unswapped on a quarter-turn
+page, a second `/Resources` entry, a content stream one byte off, a dropped tree still present by an
+untyped element, a survivor the report left out, and a drawing among the survivors. **The mutation
+that deletes each check makes its test fail.**
 
 ### 5. Page identity
 
@@ -427,11 +556,22 @@ is then written out intact, elsewhere in the document. V1 to V6 would pass.
 therefore requires all of the following, and refuses otherwise:
 
 - **PDFium's page count equals qpdf's**, `[page-identity-mismatch]`;
-- **every page's frame and rotation, as PDFium reads it, equals qpdf's**, not only the rendered
-  page's, `[page-identity-mismatch]`. PDFium reports 32-bit floats and qpdf 64-bit, so the comparison
-  is **qpdf's value rounded to 32 bits equals PDFium's**, and the census counts every disagreement.
-  On the web this is the first time PDFium vouches for a frame, so `[media-box-unverified]`'s web
-  half can be lifted. That is an acceptance change, and it needs a census;
+- **every page's display size, as PDFium reads it, equals qpdf's display frame**, not only the
+  rendered page's, `[page-identity-mismatch]`. qpdf's frame is compared as the display frame, **with
+  width and height swapped for `/Rotate` 90 and 270** (decision 66, item 1). PDFium reports 32-bit
+  floats and qpdf 64-bit, so the comparison is **qpdf's value rounded to 32 bits equals PDFium's**,
+  and the census counts every disagreement. On the web this is the first time PDFium vouches for a
+  frame, so `[media-box-unverified]`'s web half can be lifted. That is an acceptance change, and it
+  needs a census;
+- **the route, and its cost.** Every page other than *N* is read by the no-load size,
+  `FPDF_GetPageSizeByIndexF`, which the bridge already calls without `FPDF_LoadPage` (*Facts*). A
+  load builds the page's display list, one uninterruptible parse of a hostile page each, so v1 does
+  not load every page. Whether the no-load size reflects `/Rotate` is **measured on the pinned build
+  before it is relied on**; if it does not, the comparison swaps PDFium's side too, and says so. Page
+  *N* is loaded anyway, for the render: **its rotation is compared exactly**, PDFium's
+  `FPDFPage_GetRotation` (a new bridge export) against qpdf's. The residue, stated: on a page other
+  than *N*, a rotation disagreement the size cannot show (a square page, or 180 degrees) is not
+  seen. Each no-load read checks the deadline between pages, and the census costs the pass;
 - **a page tree whose shape lets two readers disagree about which object is page *N*** refuses,
   `[page-tree-ambiguous]` (decision 57, item 1): any warning qpdf raises while enumerating pages;
   any page or node reachable by more than one path through the page tree; a node count the tree does
@@ -439,14 +579,25 @@ therefore requires all of the following, and refuses otherwise:
 - **resolution happens at open, inside the trap** (§1), so the page tree every check reads is the
   one the write uses. `[engine-repaired-input]` stays, and is read again after the constructors. A
   repaired file is where the two engines' page trees part. `[reference-to-nothing]` and
-  `[reference-unreadable]` stay with it, for the same reason.
+  `[reference-unreadable]` stay with it, for the same reason;
+- **the every-object scan** (decision 61, item 3). `[engine-repaired-input]` is qpdf's flag only, and
+  the two engines can resolve one object differently without qpdf repairing anything. So #227's
+  reference pass and the 2026-10-14 object-syntax rows, `[reference-to-nothing]`,
+  `[reference-unreadable]`, `[name-read-differently]`, `[syntax-read-differently]` and
+  `[null-value]`, **run over every object in the file in v1**, not only page *N*'s graph. That is
+  their shape on `main` already (*Facts*): the pass lexes after every `obj` and `trailer` keyword and
+  inside every object stream qpdf would decode, and resolution at open has already parsed the whole
+  cross-reference table, so it adds no second pass. v1 must not narrow it. What it does not close is
+  in §4's undetectable list: the engines reading page *N*'s content differently by a route no row
+  measures.
 
 **What the frame comparison adds is limited.** On a document whose pages all share one size and
 rotation, which is most documents, comparing frames adds nothing beyond the count. There, identity
 rests on the structural refusals above. That is said, not smoothed over.
 
 The census renders each output's page *N* in PDFium and compares it with the painted bitmap: a
-test-time check that the replaced page is the one drawn. **Open:** whether PDFium exposes an
+test-time check that the replaced page is the one drawn, and **the independent reading that gates S9
+for page identity** under rule 19 (§11). **Open:** whether PDFium exposes an
 object-number accessor, which would compare page *object* identity rather than frames.
 
 ### 6. Limits
@@ -473,23 +624,35 @@ pixels:
 
 So the web flattens a page of up to about 966,000 square points (983 pt on a side for a square), about
 twice the area of US Letter. Native flattens up to about 20.6 million square points (about 4,541 pt on
-a side for a square), under its default `max_pixels` of 268,435,456. Of the 369 pages in the committed
-fixtures' `page-frames.tsv`, one exceeds the web ceiling: the OCR scan. The 99-document census is the
+a side for a square), under its default `max_pixels` of 268,435,456. Of the 342 framed pages in the
+committed fixtures' `page-frames.tsv` (369 page rows, 27 of them refusals), one exceeds the web
+ceiling: the OCR scan. The 99-document census is the
 slice's to run (rule 2), and it reports the pages each ceiling refuses (§2 rule 6).
 
 **`max_duration_ms` is cooperative, and one deadline covers both workers** (§1). The render is
 progressive (ADR 0027's 2026-09-17 amendment), checkpointed between pauses. **PDFium's page load,
 qpdf's write (which encodes the image through zlib), and each stream decode in verification are each
 one engine call that nothing can interrupt**, so overshoot of up to one such call remains, as
-everywhere. ADR 0027 §2a measured one path-heavy page at 34 s, so the render, not the write, is where
-a deadline will be spent. V6 checks the deadline between objects.
+everywhere. Since the render became progressive, the uninterruptible part is the page load: ADR 0027's
+Amendment 2 measured it at **1,166 ms and 757 MiB** for 3 M paths, and **3,511 ms and 1,765 MiB** for
+10 M. (Its §2a figure of 34 s was a one-shot render, before the progressive amendment.) So the load,
+not the write, is where an overshoot will be spent. V6 and every walk check the deadline between
+objects (§2).
 
-**`max_memory_bytes` is detected, not bounded.** A length-based estimate is made before the render:
-PDFium's bitmap at 4 bytes per pixel, the RGB copy across the hand-off at 3, the encoder's output (up
-to about 3), and verification's decoded copy at 3, so about 13 bytes per pixel: about 55 MB at the
-web's ceiling, and about 1.16 GB at native's. A measured check follows after. **What PDFium's
-rasteriser allocates for itself is bounded by nothing** (ADR 0027's *What is bounded*), as for every
-render.
+**`max_memory_bytes` is detected, not bounded.** A length-based estimate is made before the render. It
+spans **two heaps** on the web, so it is stated per heap, and natively it is their sum in one:
+
+| heap | what, per pixel | bytes per pixel |
+|---|---|--:|
+| render worker | PDFium's bitmap (4), the Rust module's copy of it, unpainted then painted (4), the RGB conversion (3) | 11 |
+| redaction worker | the RGB buffer received (3), qpdf's copy at `replace_stream_data` (3), the encoder's output (up to about 3), verification's decoded copy (3) | 12 |
+| sum | | **about 23** |
+
+That is about 46 MB and 50 MB in the two web workers at the web's ceiling, and about 2.06 GB in one
+native heap at native's. **Two costs are not per pixel and are added by length:** the write decodes
+and re-encodes other pages' streams with generalized filters, and V6 holds two decoded copies of a
+stream at once, up to 256 MiB each. A measured check follows after. **What PDFium's rasteriser
+allocates for itself is bounded by nothing** (ADR 0027's *What is bounded*), as for every render.
 
 **The page load's posture is the render tool's, and no more.** It is guarded by
 `estimate::before_page_load` before `FPDF_LoadPage` and by the measured memory check after. DECISIONS.md
@@ -506,21 +669,28 @@ flatten, that is the redacted page's decoded content, and the region's unpainted
 rendered pixels are decoded content).
 
 - **qpdf's heap.** In v1 qpdf never decodes the redacted page's content. The page is replaced before
-  the write, and the old streams are unreachable and not written, unless they are survivors. It
-  holds the input, which #199 already covers, and the painted bitmap, which carries nothing removed.
-  ADR 0004's wipe-on-free stays.
+  the write, and the old streams are unreachable and not written: a content stream of page *N* that
+  something kept would still reach refuses (rule 5). It holds the input, which #199 already covers,
+  and the painted bitmap, which carries nothing removed. ADR 0004's wipe-on-free stays.
 - **The render worker** (decision 57, item 6). ADR 0004's hook cannot reach `pdfium.wasm`, which
   arrives already linked. The owner chose route (b): **zero both of the render worker's linear
   memories, `pdfium.wasm`'s and `burrow_wasm_render_bg.wasm`'s, then terminate the worker.**
-  **Termination is the control**: a terminated worker's memories are discarded with it. Zeroing is
-  defence in depth for the time between the hand-off and the termination. Building PDFium from source
-  with the hook (route (a)) is not taken, and stays a condition for revisiting. The conditions on (b):
+  **Termination is the control**: once the worker is terminated, its memories are unreachable from
+  any script. Zeroing is defence in depth for the time between the hand-off and the termination.
+  Building PDFium from source with the hook (route (a)) is not taken, and stays a condition for
+  revisiting. The conditions on (b):
+  - **on every path**: the reply, a refusal, an error, a trap and the deadline. Where zeroing cannot
+    run, because the worker is stuck inside an uninterruptible page load, the redaction worker
+    terminates it anyway, and termination is what holds;
   - zeroing takes a **fresh view** of each memory after the last engine call, since a memory can grow,
     and **no engine call runs after it**;
   - each memory is asserted **not shared** (no `SharedArrayBuffer`), so no other agent holds a view;
-  - the unpainted render's digest (§1 step 3) is computed **inside a linear memory**, with no
-    `SubtleCrypto` call, `slice` or `postMessage` of unpainted pixels, so no JavaScript-owned copy
-    exists to miss;
+  - the unpainted pixels move from `pdfium.wasm`'s memory into `burrow_wasm_render_bg.wasm`'s by a
+    **view-to-view `set` and nothing else** (§1 step 3), and the digest is computed **in the Rust
+    module's memory**, with no `SubtleCrypto` call, `slice` or `postMessage` of unpainted pixels, so
+    no JavaScript-owned copy exists to miss. **The canary has a mutation for this route**: replacing
+    the view-to-view copy with the bridge's slicing `copy_out` must turn the JavaScript-heap canary
+    red;
   - **no file-system copy** of a decoded stream is made in the module's virtual file system;
   - the bridge's own JavaScript copies are listed and each is zeroed or never made;
   - **the canary** plants a text and a pixel pattern in the region and searches **both linear
@@ -529,7 +699,10 @@ rendered pixels are decoded content).
 - **The redaction worker's JavaScript.** The painted bitmap reaches it, and carries nothing removed.
   It does not reach the page before verification (D9, and §8).
 - **The selection picture**, which is unpainted and is the person's own input, keeps #136 D1's
-  posture: terminate on file change, before a run, on cancel and on `pagehide`.
+  posture: terminate on file change, before a run, on cancel and on `pagehide`. **It is the same
+  pixels as the run's unpainted render** (rule 7), and it lives in the page's heap until one of those
+  events. D1 exempts it as the person's input, and D4's rule applies to the run's copies, not to it.
+  That is the residue, stated.
 - **Native.** PDFium's heap is the process heap, and it is not wiped. Native posture is M3/M4's, as
   ADR 0004's amendment already says of qpdf, and the native API's rustdoc says so.
 
@@ -539,35 +712,52 @@ rendered pixels are decoded content).
   engines.
 - **What crosses the boundary, and nothing else.** From the redaction worker to the render worker: the
   input bytes, the page index, the region, the deadline that is left, and the selection record (§2 rule
-  7). From the render worker back: PDFium's page count, every page's frame and rotation (§5), the
-  painted RGB bitmap, its width, height and digest, and a refusal if there was one. R8's spec extends
+  7). From the render worker back: PDFium's page count, every page's display size and page *N*'s
+  rotation (§5), the painted RGB bitmap, its width, height and digest, and a refusal if there was
+  one. R8's spec extends
   to the render worker and to each of these fields.
-- **The hand-off does not go through the page's code as content.** The bitmap travels on a dedicated
-  channel between the two workers, transferred rather than copied, and the page never holds it before
-  verification.
+- **The hand-off does not go through the page's code.** The bitmap travels on a dedicated channel
+  between the two workers, transferred port to port rather than copied, and the page never receives
+  a pixel buffer at all.
 - **R8** is unchanged: one reply carrying output, after verification, from the worker that wrote the
   document. **The painted bitmap is an input to the write, not output.**
 - **R9's words are "nothing is written outside the wasm heap before verification passes"**, and the
   painted bitmap leaves a wasm heap before verification. The reading this record argues: R9 names the
   ways a page keeps a file (OPFS, the File System Access API, a `blob:` URL), and none of them is used.
   The bitmap moves from one worker's heap to the other's, carries nothing the redaction removes, and
-  is never handed to the page. **The R9 spec extends to the render worker**: its stubs are armed there
-  too, and its one transfer is the only exit. Round 1 is asked to confirm the reading. If it does not
-  hold, R9's wording is amended by the owner, not read around.
+  is never handed to the page. **Round 1's security review confirmed this reading, on four
+  conditions, which are now part of the rule:**
+  1. R9's stubs are armed in **both** workers, the render worker as well as the redaction worker;
+  2. the **one** transfer is port to port, between the two workers;
+  3. the page **never receives a pixel buffer**;
+  4. on a refusal, the redaction worker **drops the buffer** it received, and it is never written.
+
+  The owner's reading of this record confirms it. If it does not hold, R9's wording is amended by the
+  owner, not read around.
 - **R10** concerns the bytes verified and the bytes delivered. **On the web it is bound at run time by
   #206's digest once it merges.** Its final hop needs #206's web half, re-scoped to the runtime digest
   only, since the second reading it also carried is v2 by decision 55. This record does not say that
   R10 is met; the owner records that. The hand-off digest in §1 binds the *pixels* to the output. It
   does not discharge R10. A v1 twin of `redact_verify_same_bytes` holds R10 over the flatten write.
+- **SHA-256 becomes a runtime dependency.** Today `sha2` is a dev- and build-dependency only
+  (*Facts*). Rule 7's digest needs it in `burrow_wasm_render_bg.wasm`, which every tool loads, and
+  natively in the operation. So the license-auditor pass decision 59 (item 3) asks for on `sha2`,
+  with its transitive runtime crates as resolved in `Cargo.lock`, extends to the render build; it gets
+  a `THIRD_PARTY_NOTICES.md` entry; and it counts in rule 22's line for the render bundle.
 - **Bundles and budgets.** The paint, the digest and their refusal strings are redaction-only code in
   a bundle every tool loads (`burrow_wasm_render_bg.wasm`). DECISIONS.md rule 22 applies: under 0.5% of
   the page's total, or a separate bundle that only `/redact-pdf` loads. The slice measures which. The
   gates this touches are named in *Fixtures and census*.
 - **The v2 rewriter stays callable behind a cargo feature, and is excluded from the shipped module**
   (decision 57, item 10). Its tests run with the feature on. Visitors do not download it.
-- **New qpdf exports** (`qpdf_oh_new_stream`, `qpdf_oh_new_dictionary`, `qpdf_oh_new_name`, and the
-  resolution route of §1) are listed in `EXPORTED_FUNCTIONS`, held by `check-wasm-exports`, argued in
-  `qpdf-untrapped-accepted.toml`, and their cost to `qpdf.wasm`, which every tool loads, is measured.
+- **New qpdf exports**: `qpdf_oh_new_stream`, `qpdf_oh_new_dictionary`, `qpdf_oh_new_name`,
+  `qpdf_oh_new_array`, `qpdf_oh_new_real_from_string` or `_from_double`, `qpdf_oh_append_item`, and
+  the resolution route of §1. None is in the wasm export list today (*Facts*). Each is listed in
+  `EXPORTED_FUNCTIONS` and held by `check-wasm-exports`; each untrapped one is argued in
+  `qpdf-untrapped-accepted.toml` (§1, including `new_array` against `qpdf/ffi.rs`'s comment); and
+  their cost to `qpdf.wasm`, which every tool loads, is measured.
+- **New PDFium bridge exports**: `FPDF_PageToDevice` and `FPDFPage_GetRotation`, neither exported by
+  the bridge today, and the view-to-view copy of §1 step 3.
 - **The new `burrow-core` entry point** gets rustdoc and a fuzz target. **Its uniffi binding is
   deferred** to M3/M4, and that is said here rather than left out.
 
@@ -598,9 +788,11 @@ list:
    metadata, attached files, bookmarks, named destinations, page labels, layer names, any JavaScript,
    and application data that can hold previews of pages. Check File → Properties, the bookmarks panel
    and the attachments panel. If one of them holds what you removed, it is still in this file.
-5. *(Only when §2 rule 5's report is non-empty.)* **Parts of this page that other parts of the
-   document also use stay in the file**, such as fonts and images (and drawings, if the census sends
-   rule 5's drawings to disclosure), with whatever they contained.
+5. *(Only when §2 rule 5's report is non-empty.)* **Some of what this page used is still in the
+   file, because the file keeps it for other reasons.** That means fonts, which can show which
+   characters this page used, and other resources, such as colour settings and marked-content
+   properties, with whatever they contain. (Pictures and drawings this page used are never left
+   behind: if the file would keep one, the redaction refuses.)
 6. **Form fields on other pages, and their values, are not changed. A digital signature in the
    document will no longer validate.**
 7. **The file usually grows**, because the page is now an image.
@@ -614,8 +806,8 @@ list:
 | §1 rewrite content streams and fonts | **v2** |
 | §2 page-key allowlist | **Kept, narrowed** to §3's seven keys |
 | §3 per-channel table | **Superseded for v1** by §2 here. Content-stream channels (rows 1–9, 18–22 of spike 0006) are handled by not carrying the content. The page's `/Thumb` and page metadata go by §3. Annotations are flattened or refused (rules 2, 3 and 9). Optional content hidden on the page is not drawn and not carried; layer names are disclosed (rule 4). Images and vector paths in the region are painted. **Every content refusal in the table is v2's**, because burrow does not read the content |
-| §3 rows kept for v1 | The rows that keep qpdf's object graph and page tree the ones PDFium reads: `[engine-repaired-input]` (#224), `[reference-to-nothing]` and `[reference-unreadable]` (#227), the 2026-10-14 object-syntax rows (names outside the allowlist, vertical tab, a value qpdf drops on write), `[page-frame-unreadable]`, `[user-unit-not-one]`, `[rotate]`, `[rotate-not-whole]`, `[page-tree-depth]` and `[page-out-of-range]` (#224's frame rows). `[annotation-dependent-kept]` is reused and widened by rule 3, and covers #240's shared `/Annots` array |
-| §3 rows changed for v1 | `[acroform-field]` narrowed (rule 2). `[structure-tree]` replaced by the drop (rule 1). `[media-box-unverified]`'s web half lifted by §5. `[page-attribute-inherited]` is not needed: `/CropBox` and `/Rotate` are written explicitly (§3), and inherited resources are survivors (rule 5). `[annotation-in-region]` (#136 D3) cannot arise as D3 framed it, since nothing in the region is silently kept; whether it is retired for v1 is the owner's (*Open questions*) |
+| §3 rows kept for v1 | The rows that keep qpdf's object graph and page tree the ones PDFium reads, **over every object in the file** (§5): `[engine-repaired-input]` (#224), `[reference-to-nothing]` and `[reference-unreadable]` (#227), and the 2026-10-14 object-syntax rows `[name-read-differently]`, `[syntax-read-differently]` (vertical tab) and `[null-value]` (a value qpdf drops on write). The frame rows, each still raised by `page_frames` or the region conversion (`redact/frames.rs:107-118`, `pdfsyntax/region.rs:177-183`): `[page-frame-unreadable]`, `[user-unit-not-one]`, `[no-display-box]`, `[display-box]`, `[user-unit]`, `[rotate]`, `[rotate-not-whole]`, `[page-tree-depth]`, `[page-out-of-range]` and `[region-extent]`. The annotation-reading rows rules 2, 3 and 9 still raise: `[annots-too-long]` (`redact/steps.rs:1335`) and `[annotation-popup-unreadable]`. `[document-poisoned]` (`redact/mod.rs:473-482`), kept as the name of the refusal a poisoned document gives; no production step raises it yet, and v1 keeps that shape. `[annotation-dependent-kept]` is reused and widened by rule 3, and covers #240's shared `/Annots` array. The resource-graph rows `[resource-graph-cycle]`, `[resource-graph-depth]` and `[resource-graph-work]` are **not** kept as they are: v1's walks are bounded by §2's visited set and `[object-walk-too-large]`, and a cycle is no longer an error to a walk that enters each object once |
+| §3 rows changed for v1 | `[acroform-field]` narrowed (rule 2). `[structure-tree]` replaced by the drop (rule 1). `[media-box-unverified]`'s web half lifted by §5. `[page-attribute-inherited]` is not needed: `/CropBox` and `/Rotate` are written explicitly (§3), and inherited resources are in rule 5's set *S*, which starts from every inheritable key on every ancestor; an inherited image or form that survives refuses there. **Lifting its `/Resources` and `/Rotate` halves are acceptances**, each with a census row (*Census*). `[annotation-in-region]` (#136 D3) cannot arise as D3 framed it, since nothing in the region is silently kept; whether it is retired for v1 is the owner's (*Open questions*) |
 | §4 `/Contents` per stream | **v2** |
 | §5 refusal keyed on what the operation can see | **Kept as the rule.** It binds every rule here: each signal needs an evasion fixture it fires on |
 | §6 what verification asserts | **Superseded for v1** by §4 here. The rule that "verified" is never worded as "the secret is gone" is kept |
@@ -642,9 +834,19 @@ These changes are the owner's (decision 55), and **stand independently of this r
 - **Rule 19:** its principle stands, that a same-source check may gate a merge and never the launch.
   Its S9 instance (the PDFium ink read-back, after #344) and rule 17's 2026-10-17 sentence ("the
   PDFium ink read-back still gates S9 via #206's ink half") **now apply to v2 only**. For v1, the
-  same-source assertions are **the closed list in §4's *What it leaves undetectable***, kept current
-  by this record's revisions. Today that is the survivor set, and the region-to-pixel arithmetic only
-  where PDFium and burrow agree wrongly. Their independent readings gate S9.
+  same-source assertions are **the closed list in §4's *What it leaves undetectable***: this
+  record's revisions while it is Proposed, and its dated amendments once it is Accepted. On 2026-10-27
+  that list is four items, each with the independent reading that gates S9:
+  1. **the survivor set**, which one walk decides and checks: the census's decoded I2 scan;
+  2. **page identity across the two engines**, held by §5's refusals on qpdf's reading of the tree:
+     the census render of each output's page *N* against the painted bitmap;
+  3. **the engines reading page *N*'s content differently** (decision 61, item 3): the census's
+     decoded I2 scan;
+  4. **the region-to-pixel arithmetic**, only where the display frame both sides share is wrong in
+     the same way (the two sides share no other step, §1 steps 4 and 6): the rotation by box-origin by
+     crop-offset matrix, and the census render.
+
+  If this record is rejected, there is no v1 flatten list, and rule 19's instances are v2's alone.
 - **#344 decision 4** (owner, 2026-10-15): #206's ink half asserting PDFium's tight character boxes
   against the region, as an S9 gate on the web path, **applies to v2 only**. v1 does not rely on
   `/FontBBox`, or on any glyph box, at all. ADR 0029 gets a short dated amendment saying the same,
@@ -662,29 +864,33 @@ The slice builds from this list.
 
 | rule | fixture (fires) | near-miss twin (does not fire) | asserted mutation |
 |---|---|---|---|
-| §1 resolution at open | a file whose resolution repairs | the same file, well formed | skip the forced resolution: the repair surfaces after the constructors, and the re-check refuses; skip the re-check too: the test goes red |
-| §1 step 6 `[paint-disagrees]` | a fake transform one pixel off | the true transform | delete the cross-check |
-| §1 step 6 length check | a hand-off buffer one byte short, and one byte long | exact length | delete the checked multiplication |
+| §1 resolution at open | a file whose resolution repairs | the same file, well formed | skip the forced resolution: the repair surfaces after the constructors, and the re-check refuses; skip the re-check too: the test goes red; assert on the call's return instead of `fixed_dangling_refs` |
+| §1 step 6 `[paint-disagrees]` | a fake transform one pixel off; a fault planted in the paint side's display-to-user conversion; PDFium's rounding half a pixel the wrong way | the true transform | delete the cross-check; compute the check through user space |
+| §1 step 6 size and length | a render worker reporting *W* or *H* one more than the frame gives; a hand-off buffer one byte short, and one byte long | exact size and length | trust the reported size; delete the checked multiplication |
+| §2 walk membership (H-2 class) | an object off the page tree that declares itself a page and holds the page's content, kept by a referrer; an off-tree template page | a real page-tree member | recognise members by `/Type`: the fixture goes `Ok` and red |
+| §2 walk bound `[object-walk-too-large]` | a graph one object over the ceiling | a graph at it | drop the visited set; drop the deadline check |
 | rule 1 `[structure-tree-kept]` | a tree element kept by another page's object; an **untyped** element kept by a document-level object; each tree entry in rule 1's list | the same trees with no kept referrer | key membership on `/Type`: the untyped fixture goes `Ok` and red |
 | rule 1 drop | a tagged document claiming tags | an untagged one | keep `/MarkInfo` |
-| rule 2 `[form-field-on-page]` | a widget with no field; a field kid with `/FT` only on an ancestor; a `/Fields` entry whose `/P` names the page; a signature field | a field whose widgets are all on other pages | drop each clause in turn |
-| rule 2a `[xfa-form]` | `/XFA` as an array, as a stream, as a null; `/NeedsRendering` on the catalogue | neither key | key on the parsed value |
-| rule 3 `[annotation-dependent-kept]` | an annotation listed on two pages; an appearance shared with a kept annotation; an action that names a page annotation; a shared `/Annots` array | the same shapes on two unrelated pages | narrow to `/IRT`, `/Parent`, `/Popup` |
-| rule 4 `[metadata-thumbnail]` | catalogue XMP carrying a page thumbnail; an undecodable metadata stream | XMP without one | delete the check |
-| rule 5 `[drawing-survives]` (or its disclosure) | an inherited form only this page draws; an off-tree page sharing this page's content; `/AcroForm` default resources holding the page's font | a form another kept page draws | let the walk enter pages: the report fills with every page's objects |
-| rule 5 walk | a destination or `/P` back to another page | none | remove the stop at pages |
-| rule 6 ceilings | a page at exactly 4,194,304 px and at one more; at exactly 89,478,485 px and at one more | the ceiling minus one | check after allocation |
+| rule 2 `[form-field-on-page]` | a widget with no field; a widget whose `/Subtype` is a string; a field kid with `/FT` only on an ancestor; a `/Fields` entry whose `/P` names the page; a signature field | a field whose widgets are all on other pages | drop each clause in turn |
+| rule 2a `[xfa-form]` | `/XFA` as an array, as a stream, as an integer; `/NeedsRendering` on the catalogue | neither key | key on the parsed value |
+| rule 3 `[annotation-dependent-kept]` | an annotation listed on two pages; an appearance shared with a kept annotation; an action that names a page annotation; a shared `/Annots` array | the same shapes on two unrelated pages; **an annotation whose appearance uses a font a kept page uses** (rule 3 does not fire; rule 5 discloses the font) | narrow to `/IRT`, `/Parent`, `/Popup`; widen *A* to the appearance resources: the font twin refuses and goes red |
+| rule 4 `[metadata-thumbnail]` | catalogue XMP carrying a page thumbnail; the same under a rebound prefix; in each encoding XMP permits; an undecodable metadata stream; an unreadable packet | XMP without one; a property of the same local name in another namespace | delete the check; key on the prefix |
+| rule 5 `[drawing-survives]` | an image only this page draws, in an inherited `/Resources`; an inherited form; an image and a form a **kept page also draws**; page *N*'s `/Contents` stream shared with a kept page, and kept by an off-tree object; a tiling pattern in *S*; an image in an annotation appearance's resources, kept elsewhere | a font shared with a kept page (`Ok`, disclosed); `/AcroForm` default resources holding the page's font (`Ok`, disclosed) | start *S* from the page's own keys only: the inherited fixtures go `Ok` and red; exempt drawings a kept page draws |
+| rule 5 walk | a destination or `/P` back to another page | none | remove the stop at pages: the report fills with every page's objects |
+| rule 6 ceilings | 983 × 983 pt (2048 × 2048 = 4,194,304 px) and 983 × 983.5 pt (one row more); 2992.5 × 6888.25 pt (6235 × 14351 = 89,478,485 px) and one row more. Every side is exact in 32 and 64 bits, and **the fixture asserts that both readings give the same *W* and *H*** | the ceiling minus a row | check after allocation |
 | rule 7 binding | the same pixels from another file; another page with the same pixels; a different size | the recorded file, page and size | drop each field of the record |
+| rule 7 and §3 orientation (B1) | a `/Rotate 90` page, and a `/Rotate 270` one, whose output rendered back matches the selection picture's orientation, with `/Rotate 0` and a swapped `/MediaBox` | a `/Rotate 0` page | keep the effective `/Rotate` on the written page: the picture turns twice and the test goes red; leave `/MediaBox` unswapped |
 | rule 8 edge | a hairline one pixel outside the region | ink two pixels outside | remove the extra pixel |
 | rule 9 annotation flags | each of NoView, Print, Hidden, ToggleNoView; `/AP /N` as states with no `/AS`; an annotation under optional content; a `/Rect` outside the box; a Popup open and closed | an ordinary annotation | add `FPDF_PRINTING`, or a form-fill handle |
 | §3 keys | an inherited `/CropBox` smaller than the media box | a declared one | omit `/CropBox` |
-| §5 `[page-identity-mismatch]` | engines disagreeing on count; on one page's frame; on rotation | agreeing | compare the rendered page only |
+| §5 `[page-identity-mismatch]` | engines disagreeing on count; on one page's display size; on page *N*'s rotation; a quarter-turn page whose sizes agree only unswapped | agreeing | compare the rendered page only; compare without the swap |
 | §5 `[page-tree-ambiguous]` | a page reachable by two paths; a count the tree does not bear out; a node of the wrong kind; a node of two kinds | a well-formed deep tree | delete each clause |
-| §6 frames as floats | a frame value where 64-bit and 32-bit readings differ | an exactly representable one | compare without rounding |
+| §5 frames as floats | a frame value where 64-bit and 32-bit readings differ | an exactly representable one | compare without rounding |
+| §5 every-object scan | each object-syntax row's shape in an object outside page *N*'s graph | the same shape absent | narrow the scan to page *N*'s graph |
 | §4 V1–V6 lies | each fake listed in §4 | an honest fake | delete each check |
-| §4 A7 transform matrix | every rotation (0, 90, 180, 270) by box origin (zero, offset, negative) by crop offset, checked against `FPDF_PageToDevice` | — | a sign flip in burrow's arithmetic |
-| §7 heap canary | a dense page with planted text and pixels in the region | — | skip each wipe in turn; skip the termination |
-| §8 R8 / R9 | an extra posted field; a stub called in the render worker | the listed fields | emit a chunk; call a stub |
+| §4 transform matrix | every rotation (0, 90, 180, 270) by box origin (zero, offset, negative) by crop offset: the paint side (`FPDF_PageToDevice`) against burrow's display-space check | — | a sign flip in the display-to-user conversion; a missing swap in the check |
+| §7 heap canary | a dense page with planted text and pixels in the region, on the reply, a refusal, an error and the deadline | — | skip each wipe in turn; skip the termination; replace the view-to-view copy with the slicing `copy_out` |
+| §8 R8 / R9 | an extra posted field; a stub called in the render worker; a pixel buffer posted to the page; a buffer kept after a refusal | the listed fields | emit a chunk; call a stub; post the bitmap through the page |
 
 **Carried over** from v2 and still applying, extended where v1 changes them: `page-frames.tsv`; the
 fuzz targets `redact_page_frames`, `redact_references` and `redact_verified_output`; `secret_leak.rs`;
@@ -692,12 +898,14 @@ the R8 and R9 specs; the heap canary (with its new PDFium half); `test-redaction
 the census harness. **New:** a v1 twin of `redact_verify_same_bytes`, and fuzz targets for the flatten
 operation, for its write half, and for the survivor and structure walks. **v2 only:** `outcomes.tsv`
 as it is (its goldens split into v1 and v2), `redaction_defences.rs`, the geometry and rewriter fuzz
-targets, and the differential ledger.
+targets including `redact_shared_contents`, and the differential ledger.
 
 **Gates the design touches**, each checked by the slice: `check-redaction-not-in-base` (the render
 bundle gains paint, digest and refusal strings); `production-build.test.ts`'s held `redact` operation;
 `check-pdfium-is-render-only`'s partition; the R8 and R9 specs, which today cover only the redaction
-worker; rule 22's line for `burrow_wasm_render_bg.wasm`; `check-wasm-exports` and `EXPORTED_FUNCTIONS`.
+worker; rule 22's line for `burrow_wasm_render_bg.wasm`, which now carries `sha2`; `check-wasm-exports`
+and `EXPORTED_FUNCTIONS`, for qpdf's six constructors and PDFium's two new exports; and the
+license-auditor pass and `THIRD_PARTY_NOTICES.md` entry for `sha2` as a runtime dependency (§8).
 
 ### Census
 
@@ -708,12 +916,19 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 - **every new refusal against the 1% bar**: `[form-field-on-page]`, `[xfa-form]`,
   `[annotation-dependent-kept]` (widened), `[structure-tree-kept]`, `[metadata-thumbnail]`,
   `[drawing-survives]`, `[page-tree-ambiguous]`, `[page-identity-mismatch]`, `[paint-disagrees]`,
-  `[render-not-reproducible]`, and `[page-too-large-to-flatten]` per ceiling. Over the bar: the number
+  `[render-not-reproducible]`, `[object-walk-too-large]`, and `[page-too-large-to-flatten]` per
+  ceiling. Over the bar: the number
   goes to the owner, and the rule is not adjusted, except where an outcome below is already decided;
 - **at least one real document moving from refused to `Ok`** for each acceptance: the tree drop (rule
-  1), forms elsewhere (rule 2), the web's inherited media box (§5), the written `/CropBox` (§3), and
-  the content refusals as a whole;
-- the survivor distribution by kind, with the walk that stops at pages;
+  1), forms elsewhere (rule 2), the web's inherited media box (§5), the written `/CropBox` (§3),
+  `[page-attribute-inherited]`'s `/Resources` half and its `/Rotate` half (§10), and the content
+  refusals as a whole;
+- **`[drawing-survives]`'s cost by producer**, split into page *N*'s own content, images, forms and
+  tiling patterns (decision 61, item 2; *the census decides*, below);
+- the disclosed survivor distribution by kind, with the walk that stops at pages;
+- the object counts the walks meet, from which `[object-walk-too-large]`'s ceiling is set;
+- whether PDFium's no-load page size reflects `/Rotate`, and what the per-page identity pass costs
+  (§5);
 - PDFium's 32-bit frames against qpdf's 64-bit ones: every disagreement;
 - how many files resolution at open repairs;
 - render determinism three ways (progressive and one-shot, with pauses, through the native font
@@ -730,8 +945,8 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 |---|---|---|
 | decision 3, `[metadata-thumbnail]` | it refuses **1% or fewer** of real documents | it refuses |
 | | it refuses **more than 1%** | the XMP thumbnail is **stripped on output** instead, and the refusal goes |
-| decision 4, `[drawing-survives]` | refusing costs **under 1%** of real documents | it refuses |
-| | refusing costs **1% or more** | it is **disclosed**, and §9 item 5 names drawings |
+| decision 61, item 2, `[drawing-survives]` | it refuses **1% or fewer** of real documents | it refuses |
+| | it refuses **more than 1%** | **the work stops**, and the owner is brought the figure and the producers. It still refuses; it is never moved to disclosure (decision 57, item 4's disclosure branch is superseded) |
 | decision 7, the web ceiling | any number of pages refused at 4,194,304 px | the ceiling **stays**; the count is reported |
 | decision 8, `/CropBox` = `/MediaBox` | any number of pages whose crop was inherited | it is **always written**, and each such page counts as an acceptance, with at least one real one shown |
 
@@ -760,13 +975,18 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   renumbers, re-encodes generalized filters, and drops what it cannot read. Every document-level
   object is carried. "Other pages untouched" means burrow does not edit them, not that their bytes
   are unchanged.
-- **New qpdf C entry points, and a resolution at open** (§1, §8). Each constructor needs an argued
-  entry in `engines/qpdf-untrapped-accepted.toml`; `new_stream`'s argument rests on the resolution at
-  open, and is re-checked after the constructors.
+- **New qpdf C entry points, and a resolution at open** (§1, §8). Six constructors, five of them
+  untrapped, each with an argued entry in `engines/qpdf-untrapped-accepted.toml`; `new_stream`'s
+  argument rests on the resolution at open, and is re-checked after the constructors.
+- **SHA-256 ships in the render bundle every tool loads**, and natively (§8).
+- **Documents whose images or forms sit in a shared or inherited `/Resources` refuse** (rule 5), a
+  common producer layout. The census measures what that costs; over 1%, the owner decides (decision
+  61, item 2).
 - **The web refuses Tabloid and A3** at 150 dpi, and native refuses above 89,478,485 pixels (§6).
 - **Native heaps are not wiped** (§7).
 - **Rule 17 tier: acceptance.** v1 accepts much of what ADR 0029 refuses: every content refusal, the
-  tree, forms elsewhere, the web's inherited media box and an inherited crop. So the slice gets round 0
+  tree, forms elsewhere, the web's inherited media box, an inherited crop, and inherited resources and
+  rotation (`[page-attribute-inherited]`'s other halves). So the slice gets round 0
   and both reviewers. Its census shows at least one real file moving from refused to `Ok` for each
   acceptance, and measures every new refusal against rule 2's 1% bar (*Fixtures and census*).
 
@@ -785,6 +1005,13 @@ and nothing in this record reopens them.
   #239.
 - **PDFium exposing page-object identity**, which would close §5's residue.
 - **PDFium built from source for wasm**, which would make route (a) in §7 available.
+- **Rendering qpdf's rewrite instead of the original bytes** (decision 61, item 3: a future option,
+  not taken for v1). PDFium would draw qpdf's canonical rewrite of the input, so the two engines would
+  no longer read different cross-reference tables or escapes. It would not remove PDFium's own limits
+  on names, so §5's every-object scan would still be needed. It would rebind rule 7's input digest to
+  the rewrite and change the pipeline, so it is the owner's to take.
+- **The census's `[drawing-survives]` figure over 1%** (rule 5): the owner decides, with the figure
+  and the producers.
 
 ## Alternatives considered
 
@@ -815,19 +1042,43 @@ reading the text out from under it. It is rejected, as it was in ADR 0029.
 v1, and each scrub would be a decision of its own. The XMP thumbnail strip is the one scrub the census
 can trigger (rule 4).
 
-## Open questions, for round 1 and the owner
+## Open for the build PRs
+
+Under decision 64, item 1, a Medium or Low finding that only a measurement or slice code can close
+becomes a fixture or test in the build PRs. The text above states each rule; what is open is the
+measurement or the code that holds it. Each is listed with what it becomes:
+
+| from round 1 | what stays open | becomes |
+|---|---|---|
+| security M-1 | whether PDFium's no-load page size reflects `/Rotate`; the per-page identity pass's cost | a measurement test on the pinned build (a `/Rotate 90` non-square page read without a load, against a loaded read), and a census row (§5) |
+| security L-1 | the XMP thumbnail signal's namespace matching across every packet encoding | the rule 4 fixtures: rebound prefix, each encoding, unreadable packet, other-namespace twin |
+| security L-6 | the route that reads qpdf's `fixed_dangling_refs` | the §1 resolution fixture's mutation "assert on the call's return instead of the flag" |
+| code S3 | the untrapped-list arguments for `new_array` and the real constructors, `qpdf/ffi.rs:641-645`'s comment, and their `qpdf.wasm` cost | entries in `engines/qpdf-untrapped-accepted.toml`, the `check-wasm-exports` gate, and a rule 22 measurement |
+| code S5 | `sha2` as a runtime dependency of the render bundle | the license-auditor pass, a `THIRD_PARTY_NOTICES.md` entry, and rule 22's render line |
+| code S7 | the value of `[object-walk-too-large]`'s ceiling | the census's object counts, and the §2 walk-bound fixture, twin and mutations |
+| code N3 | that both frame readings give the same *W* and *H* at each ceiling | the rule 6 fixtures' assertion |
+
+## Open questions, for round 2 and the owner
 
 Decided by decision 57 since round 0: the web's `max_pixels` (item 7); rule 3's widening (item 1);
-`/MarkInfo` (item 1); rule 5's drawings (item 4); §7's wipe route (item 6); whether the v2 rewriter
-ships (item 10); and rule 9, kept (decision 56, item 3). Still open:
+`/MarkInfo` (item 1); §7's wipe route (item 6); whether the v2 rewriter ships (item 10). Decided since
+round 1: the survivor walk's start and stops (decision 61, item 1); which survivors refuse, superseding
+decision 57 item 4 (decision 61, item 2); the every-object scan (decision 61, item 3); the page's
+orientation (decision 66, item 1); page *N*'s own content stream (decision 66, item 2); that round 2
+is final (decision 64, item 1). R9's reading was confirmed by round 1's security review, on the
+conditions §8 now states. Rule 9 is proposed (decision 56, item 3). Still open:
 
 1. **D9 ("no after-picture of the result").** The output's pixels are exact (V3), so a picture of the
    result can no longer mislead the way ADR 0029's S4 amendment feared. Whether to show one is worth
    revisiting. It is not decided here. Until it is, the painted bitmap does not reach the page.
 2. **Rule 7's reading.** This record reads it as one render for selection and output, bound by its
    record. The owner confirms the reading.
-3. **R9's reading** for the painted bitmap (§8).
+3. **R9's reading** for the painted bitmap (§8): confirmed by round 1, on four conditions; the
+   owner's reading of the record confirms it.
 4. **V6's wording**, and qpdf's decode level.
 5. **`[annotation-in-region]`** (#136 D3) for v1.
 6. **§5's residue**, and whether page-object identity can be had from PDFium.
-7. **The §3 rows kept for v1** (§10): confirm that the list is complete.
+7. **The §3 rows kept for v1** (§10): completed after round 1's code review; round 2 confirms it.
+8. **Tiling patterns' content streams** (rule 5). Decision 61 names images and forms; this record
+   refuses a tiling pattern in *S* too, reading decision 57 item 4's "drawings" as including every
+   content stream. The owner confirms the reading or decides otherwise.
