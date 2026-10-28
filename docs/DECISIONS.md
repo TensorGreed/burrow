@@ -283,8 +283,10 @@ one is decided in an issue, with the same three parts.
     qpdf's page tree; the two engines reading the redacted page's content differently; the
     region-to-pixel arithmetic, only where the display frame that PDFium's transform (which paints)
     and burrow's arithmetic (which checks) both start from is wrong in the same way; and a
-    destination into the redacted page at a site ADR 0031 §3 does not list, which keeps its position
-    because the check reads by the same list. If ADR 0031 is rejected,
+    destination into the redacted page at a site ADR 0031 §3 does not list, which the check does not
+    hold because it reads by the same list. On 2026-10-28 (owner decision 74, which accepted ADR 0031)
+    v1 keeps every destination unchanged; the translation of destinations into the redacted page that
+    decisions 68 and 70 had added is post-launch. If ADR 0031 is rejected,
     there is no v1 list, and this rule's instances are v2's alone. *Decided:* owner, 2026-10-21
     (decisions 55 and 57). *Does not cover:* R10, which still gates S9 for v1 through #206's web
     runtime digest; or what v1's independent readings are, which ADR 0031 proposes and its reviews
