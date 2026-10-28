@@ -16,11 +16,11 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Result};
+use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result};
 
 use super::super::Picture;
 use super::lie::{Lie, plant};
-use super::{IMAGE_KEYS, PAGE_KEYS};
+use super::{CONTENTS_KEYS, IMAGE_KEYS, PAGE_KEYS};
 use crate::qpdf::Qpdf;
 use crate::redact::frames::PageFrameReading;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
@@ -104,13 +104,25 @@ fn pixels_for_page(bytes: &[u8], page: usize) -> (u32, u32, Vec<u8>) {
     (wide, high, rgb)
 }
 
+/// Flatten under `limits`, with the operation's deadline started on the same clock.
+fn flatten_with(
+    bytes: &[u8],
+    page: usize,
+    picture: &Picture<'_>,
+    limits: Limits,
+) -> Result<Vec<u8>> {
+    let options = options(limits);
+    let deadline = Deadline::start(options.clock.as_ref(), &options.limits);
+    Qpdf.flatten_page(bytes, page, picture, &options, &deadline)
+}
+
 fn flatten(bytes: &[u8], page: usize) -> Result<Vec<u8>> {
     let (wide, high, rgb) = pixels_for_page(bytes, page);
-    Qpdf.flatten_page(
+    flatten_with(
         bytes,
         page,
         &Picture::new(wide, high, &rgb),
-        &options(Limits::DEFAULT),
+        Limits::DEFAULT,
     )
 }
 
@@ -245,12 +257,7 @@ fn tree_with_inherited_crop() -> Vec<u8> {
 
 /// Flatten with a picture of any size: for inputs whose frame is refused before the size matters.
 fn flatten_unframed(bytes: &[u8], page: usize) -> Result<Vec<u8>> {
-    Qpdf.flatten_page(
-        bytes,
-        page,
-        &Picture::new(1, 1, &[0; 3]),
-        &options(Limits::DEFAULT),
-    )
+    flatten_with(bytes, page, &Picture::new(1, 1, &[0; 3]), Limits::DEFAULT)
 }
 
 /// §2 rule 1's drop. Twin: an untagged document. KILLS: keeping `/MarkInfo` or
@@ -289,7 +296,7 @@ fn the_pixel_ceilings_are_exact() {
     let over_web = document(&["/MediaBox [0 0 983 983.5]"], "");
     let web = web_limits();
     let empty = |bytes: &[u8], wide, high, limits| {
-        Qpdf.flatten_page(bytes, 0, &Picture::new(wide, high, &[]), &options(limits))
+        flatten_with(bytes, 0, &Picture::new(wide, high, &[]), limits)
     };
     assert!(matches!(
         empty(&at_web, 2048, 2048, web),
@@ -326,8 +333,7 @@ fn a_page_at_the_web_ceiling_flattens() {
     let (wide, high, rgb) = pixels_for_page(&bytes, 0);
     assert_eq!((wide, high), (2048, 2048));
     let limits = web_limits();
-    Qpdf.flatten_page(&bytes, 0, &Picture::new(wide, high, &rgb), &options(limits))
-        .unwrap();
+    flatten_with(&bytes, 0, &Picture::new(wide, high, &rgb), limits).unwrap();
 }
 
 /// §1 step 6's size and length: the drawing side's size is never trusted. KILLS: trusting the
@@ -337,12 +343,7 @@ fn a_picture_of_the_wrong_size_or_length_is_refused() {
     let bytes = document(&[LETTER], "");
     let (wide, high, rgb) = pixels_for_page(&bytes, 0);
     let run = |wide, high, rgb: &[u8]| {
-        Qpdf.flatten_page(
-            &bytes,
-            0,
-            &Picture::new(wide, high, rgb),
-            &options(Limits::DEFAULT),
-        )
+        flatten_with(&bytes, 0, &Picture::new(wide, high, rgb), Limits::DEFAULT)
     };
     let mut long = rgb.clone();
     long.push(0);
@@ -367,7 +368,7 @@ fn a_picture_of_the_wrong_size_or_length_is_refused() {
 fn every_lie_in_the_write_is_rejected_by_the_read_back() {
     let rotated = document(&["/MediaBox [0 0 300 500] /Rotate 90", LETTER], "");
     let plain = document(&[LETTER, "/MediaBox [0 0 300 500]"], "");
-    let cases: [(Lie, &[u8], &str); 13] = [
+    let cases: [(Lie, &[u8], &str); 24] = [
         (
             Lie::ExtraPageKey,
             &plain,
@@ -409,7 +410,52 @@ fn every_lie_in_the_write_is_rejected_by_the_read_back() {
         (Lie::WidthOff, &plain, "/Width is not the integer written"),
         (Lie::OtherPageFrame, &plain, "page 2 of the output"),
         (Lie::KeepMarkInfo, &plain, "structure tree or /MarkInfo"),
+        (
+            Lie::ParentReplaced,
+            &plain,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::ContentsExtraKey,
+            &plain,
+            "the content stream does not have exactly the keys",
+        ),
+        (
+            Lie::SecondImageName,
+            &plain,
+            "/Resources /XObject does not have exactly the keys",
+        ),
+        (Lie::HeightOff, &plain, "/Height is not the integer written"),
+        (
+            Lie::ColorSpaceOther,
+            &plain,
+            "/ColorSpace is not the name written",
+        ),
+        (Lie::FilterOther, &plain, "/Filter is not the name written"),
+        (
+            Lie::BitsPerComponentOff,
+            &plain,
+            "/BitsPerComponent is not the integer written",
+        ),
+        // QPDF'S OWN PAGE-TREE READ rewrites a page whose `/Type` is not `/Page`, and a repair is
+        // refused: V1's read refuses this lie before V2's `/Type` check sees it.
+        (Lie::PageTypeOther, &plain, "its frames cannot be read"),
+        (
+            Lie::ImageTypeOther,
+            &plain,
+            "the image's /Type is not the name written",
+        ),
+        (
+            Lie::ImageSubtypeOther,
+            &plain,
+            "the image's /Subtype is not the name written",
+        ),
+        // qpdf DECODES EVERY `/FlateDecode` it is handed, or fails: its read is an error here, and
+        // the `None` arm (a filter qpdf does not decode) is unreachable past the `/Filter` check.
+        (Lie::ImageUndecodable, &plain, "its image cannot be decoded"),
     ];
+    // `/MediaBox` HAS NO LIE OF ITS OWN: a box that differs is a frame that differs, and V1's
+    // frame check refuses it first (`Lie::MediaBoxUnswapped`, `Lie::RotateNinety`).
     for (lie, bytes, says) in cases {
         plant(lie);
         let error = flatten(bytes, 0).expect_err("a lying write must not come back");
@@ -420,6 +466,106 @@ fn every_lie_in_the_write_is_rejected_by_the_read_back() {
     }
     // AND THE LIE IS SPENT: the next flatten is honest.
     flatten(&plain, 0).expect("an unplanted flatten is honest");
+}
+
+/// The `/Parent` hold, on a nested tree: page *N* two levels down flattens, and a write that hands
+/// it a different `/Parent` is refused. KILLS: deleting V2's `/Parent` place check.
+#[test]
+fn page_n_keeps_its_place_in_a_nested_tree() {
+    let nested = nested_tree();
+    flatten(&nested, 1).expect("a page two levels down flattens");
+    plant(Lie::ParentReplaced);
+    let error = flatten(&nested, 1).expect_err("a write that replaces /Parent must not come back");
+    assert!(
+        matches!(error, Error::OutputRejected(ref what) if what.contains("/Parent")),
+        "{error:?}"
+    );
+}
+
+/// The `/Contents` stream's dictionary holds only what qpdf's write adds.
+#[test]
+fn the_content_stream_has_exactly_its_keys() {
+    let output = flatten(&document(&[LETTER], ""), 0).unwrap();
+    let (document, _) = Qpdf
+        .open_for_redaction(&output, &options(Limits::DEFAULT))
+        .unwrap();
+    let contents = document
+        .page(0)
+        .unwrap()
+        .key(&crate::name::Name::literal(b"/Contents\0"));
+    let mut keys =
+        crate::pdfsyntax::dict::top_level_keys(&contents.stream_dict().unparse()).unwrap();
+    keys.sort();
+    assert_eq!(keys, CONTENTS_KEYS.map(<[u8]>::to_vec));
+}
+
+/// The flatten runs on the operation's deadline, not on one of its own: a budget already spent
+/// when it is called is refused. Twin: the same call on an unspent budget flattens. KILLS:
+/// starting a fresh `Deadline` inside the flatten.
+#[test]
+fn the_flatten_spends_the_operation_s_deadline() {
+    let bytes = document(&[LETTER], "");
+    let (wide, high, rgb) = pixels_for_page(&bytes, 0);
+    let picture = Picture::new(wide, high, &rgb);
+    let clock = Arc::new(ManualClock::new(0));
+    let mut limits = Limits::DEFAULT;
+    limits.max_duration_ms = 1_000;
+    let options = OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>);
+    let deadline = Deadline::start(clock.as_ref(), &options.limits);
+    Qpdf.flatten_page(&bytes, 0, &picture, &options, &deadline)
+        .expect("an unspent budget flattens");
+    clock.advance(1_001);
+    let error = Qpdf
+        .flatten_page(&bytes, 0, &picture, &options, &deadline)
+        .expect_err("a spent budget must not flatten");
+    assert!(
+        matches!(
+            error,
+            Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+/// Catalogue → `/Pages` → an intermediate node → two letter pages: page 1 is two levels down.
+fn nested_tree() -> Vec<u8> {
+    let line = "0 0 m 10 10 l S";
+    let stream = format!(
+        "<< /Length {} >>\nstream\n{line}\nendstream",
+        line.len() + 1
+    );
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 2 >>".to_owned(),
+        "<< /Type /Pages /Parent 2 0 R /Kids [4 0 R 5 0 R] /Count 2 >>".to_owned(),
+        format!("<< /Type /Page /Parent 3 0 R {LETTER} /Resources << >> /Contents 6 0 R >>"),
+        format!("<< /Type /Page /Parent 3 0 R {LETTER} /Resources << >> /Contents 6 0 R >>"),
+        stream,
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
 }
 
 /// The rotated twins: V2's `/Rotate` check is not shadowed by V1's frames on a square page, where

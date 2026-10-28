@@ -1111,14 +1111,19 @@ pub trait PageFlattener {
     /// # Errors
     ///
     /// As `redact::flatten`'s `flatten`: every ceiling, the page's own frame refusal, a picture of
-    /// the wrong size, a repair, and [`Error::OutputRejected`](burrow_types::Error::OutputRejected)
-    /// for an output that does not read back as promised.
+    /// the wrong size, a repair, [`Error::OutputRejected`](burrow_types::Error::OutputRejected)
+    /// for an output that does not read back as promised, and `max_memory_bytes` -- detected
+    /// after the write and after the read-back, not bounded.
+    ///
+    /// `deadline` is the operation's: the flatten checkpoints against it rather than starting a
+    /// clock of its own, so `max_duration_ms` is the whole operation's budget.
     fn flatten_page(
         &self,
         bytes: &[u8],
         page: usize,
         picture: &redact::flatten::Picture<'_>,
         options: &OpenOptions<'_>,
+        deadline: &Deadline,
     ) -> Result<Vec<u8>>;
 
     /// Every page's `/Rotate` as written, in page order, read from the **input**: the vector

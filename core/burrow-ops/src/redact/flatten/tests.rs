@@ -43,6 +43,7 @@ impl PageFlattener for Fake {
         _page: usize,
         _picture: &Picture<'_>,
         _options: &OpenOptions<'_>,
+        _deadline: &Deadline,
     ) -> Result<Vec<u8>> {
         Ok(b"%PDF-1.7\n%flattened\n".to_vec())
     }

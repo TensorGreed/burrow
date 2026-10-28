@@ -466,6 +466,8 @@ and the open refuses as `[engine-repaired-input]`), so this call finds the table
 and touches only the object cache. Reading that flag directly, rather than relying on the \
 trapped call having run, is ADR 0031's next slice (security L-6); until then the argument is \
 also checked after the fact: the repair refusal is read again after the constructors and \
-after the write. The range check in `nextObjGen` throws only at INT_MAX objects, past \
-`max_input_bytes` on every platform. Fails otherwise only by allocation, or the `QTC::TC` \
+after the write. The range check in `nextObjGen` throws only when the highest object NUMBER \
+is INT_MAX, and qpdf caps the numbers it reads at a third of the file's length \
+(QPDF_objects.cc:239), which `max_input_bytes` keeps far below INT_MAX on every platform. \
+Fails otherwise only by allocation, or the `QTC::TC` \
 paths `qpdf_oh_new_null` records."""

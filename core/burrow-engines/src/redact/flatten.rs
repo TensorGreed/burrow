@@ -37,6 +37,11 @@
 //!    touched** (decision 74).
 //! 5. **Write, then read back** through a fresh open: V1's frames, V2 and V3 (`check_output`).
 //!    `burrow_ops` adds V1's page count and rotation vector through `verify::output`.
+//!
+//! **`max_memory_bytes` is detected, not bounded**: the resident set is read before step 3 and
+//! compared after the write and after the read-back, so an overrun is a typed refusal once it has
+//! happened, never a ceiling on the allocation. `max_duration_ms` is the operation's own deadline,
+//! handed in, checkpointed between steps.
 
 use burrow_types::{Error, Result};
 

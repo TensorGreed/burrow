@@ -2,7 +2,6 @@
 
 use core::ffi::c_int;
 use std::ffi::CString;
-use std::sync::Arc;
 
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
@@ -63,6 +62,8 @@ const COLOR_SPACE: Name = Name::literal(b"/ColorSpace\0");
 const BITS_PER_COMPONENT: Name = Name::literal(b"/BitsPerComponent\0");
 const FILTER: Name = Name::literal(b"/Filter\0");
 const ROOT: Name = Name::literal(b"/Root\0");
+const PAGES: Name = Name::literal(b"/Pages\0");
+const KIDS: Name = Name::literal(b"/Kids\0");
 const STRUCT_TREE_ROOT: Name = Name::literal(b"/StructTreeRoot\0");
 const MARK_INFO: Name = Name::literal(b"/MarkInfo\0");
 const PAGE_VALUE: Name = Name::literal(b"/Page\0");
@@ -94,6 +95,107 @@ pub(crate) const IMAGE_KEYS: [&[u8]; 8] = [
     b"Width",
 ];
 
+/// The `/Contents` stream dictionary's keys after qpdf's write (V2), sorted: the `/Filter` and
+/// `/Length` qpdf adds as it encodes the line, and nothing burrow did not write.
+pub(crate) const CONTENTS_KEYS: [&[u8]; 2] = [b"Filter", b"Length"];
+
+/// How far up the page tree [`Place`] climbs before it stops. A page tree this deep is not one any
+/// writer produces; the climb records that it stopped rather than walking on.
+const MAX_TREE_DEPTH: usize = 64;
+
+/// Where page *N* sits in its document's page tree, climbed from the page by `/Parent` (V2's hold
+/// on `/Parent`, which the write keeps verbatim).
+///
+/// Each step is the position, in the `/Parent`'s `/Kids`, of the object one level down, compared
+/// **by object identity within the one document** (qpdf renumbers as it writes, so numbers are
+/// never compared across the input and the output). Read from the input's open before the edit and
+/// from the output's fresh open after it; the two must be equal, so a write that hands page *N* a
+/// different `/Parent` -- one that does not list it, or lists it elsewhere, or does not lead to the
+/// same place under the catalogue's `/Pages` -- is refused.
+///
+/// # What it leaves undetectable
+///
+/// It holds the output to the **input's** shape, whatever that is. An input whose `/Parent` is
+/// not the node listing the page is held to that same shape, not refused: refusing it is a later
+/// slice's (ADR 0031 §2's walk), and this records only that the write did not change it.
+#[derive(Debug, PartialEq, Eq)]
+struct Place {
+    /// From the page upward: the page's index in its `/Parent`'s `/Kids`, then that node's in its
+    /// own `/Parent`'s, and so on.
+    steps: Vec<c_int>,
+    end: PlaceEnd,
+}
+
+/// How the climb in [`Place`] ended.
+#[derive(Debug, PartialEq, Eq)]
+enum PlaceEnd {
+    /// At the catalogue's `/Pages`, by identity.
+    Root,
+    /// At a node with no `/Parent` dictionary that is not the catalogue's `/Pages`.
+    Detached,
+    /// At a `/Parent` that is direct, or whose `/Kids` does not list the object below it.
+    Unlisted,
+    /// After [`MAX_TREE_DEPTH`] steps.
+    TooDeep,
+}
+
+/// Climb from `page` to the catalogue's `/Pages`, as [`Place`] describes.
+///
+/// # Errors
+///
+/// Whatever the engine latched reading an object's identity; `max_duration_ms`, checkpointed per
+/// step.
+fn place<O: PdfObject>(
+    trailer: &O,
+    page: &O,
+    clock: &dyn burrow_types::Clock,
+    deadline: &Deadline,
+) -> Result<Place> {
+    let root = trailer.key(&ROOT).key(&PAGES).object()?;
+    let mut steps = Vec::new();
+    let mut child = page.object()?;
+    let mut parent = page.key(&PARENT);
+    for _ in 0..MAX_TREE_DEPTH {
+        deadline.checkpoint(clock)?;
+        if parent.type_code() != object_type::DICTIONARY {
+            return Ok(Place {
+                steps,
+                end: PlaceEnd::Detached,
+            });
+        }
+        let id = parent.object()?;
+        let kids = parent.key(&KIDS);
+        let mut at = None;
+        if id.0 != 0 && child.0 != 0 && kids.type_code() == object_type::ARRAY {
+            for index in 0..kids.array_len() {
+                if kids.array_item(index).object()? == child {
+                    at = Some(index);
+                    break;
+                }
+            }
+        }
+        let Some(at) = at else {
+            return Ok(Place {
+                steps,
+                end: PlaceEnd::Unlisted,
+            });
+        };
+        steps.push(at);
+        if id == root {
+            return Ok(Place {
+                steps,
+                end: PlaceEnd::Root,
+            });
+        }
+        child = id;
+        parent = parent.key(&PARENT);
+    }
+    Ok(Place {
+        steps,
+        end: PlaceEnd::TooDeep,
+    })
+}
+
 /// What the flattened page must read back as: computed before the edit, from the input.
 #[derive(Debug)]
 struct Promise {
@@ -124,12 +226,21 @@ struct Promise {
 /// - `[engine-repaired-input]` for a repair at the open's resolution, after the constructors, or
 ///   in the write.
 /// - [`Error::OutputRejected`] for an output that does not read back as promised.
+/// - [`Error::LimitExceeded`] for `max_memory_bytes`, **detected, not bounded**: the resident set
+///   is read before the open and compared after the write and again during the read-back, with its
+///   document and decoded pixels held (`estimate::check_measured_memory`), so an overrun is reported once it has happened, never
+///   prevented. The picture itself is the caller's and was resident before the first reading.
+///   Each reading is the resident set at that moment, not a peak, so a transient freed before the
+///   reading is not seen. Measured on a ceiling-sized page whose pixels do not compress: both
+///   readings about 0.81 GB, the peak about 0.3 GB above them -- just over the default 1 GiB, and
+///   undetected (`tests/flatten_memory.rs`).
 pub(crate) fn flatten<E, F>(
     engine: &E,
     bytes: &[u8],
     page: usize,
     picture: &Picture<'_>,
     options: &crate::OpenOptions<'_>,
+    deadline: &Deadline,
     frames: F,
 ) -> Result<Vec<u8>>
 where
@@ -137,12 +248,14 @@ where
     for<'d> <E::Document as PdfDocument>::Object<'d>: BuildsObjects,
     F: Fn(&[u8]) -> Result<PageFrames>,
 {
-    let clock = Arc::clone(&options.clock);
-    let deadline = Deadline::start(clock.as_ref(), &options.limits);
+    let clock = options.clock.as_ref();
 
     // 1. THE FRAMES, FROM THE INPUT, before anything is edited.
     let promise = promise(frames(bytes)?, page, picture, &options.limits)?;
-    deadline.checkpoint(clock.as_ref())?;
+    deadline.checkpoint(clock)?;
+
+    // THE MEMORY READING the write and the read-back are measured against.
+    let rss_before = crate::rss::resident_bytes();
 
     // 3. THE OPEN, AND THE RESOLUTION INSIDE THE TRAP.
     let (document, _) = engine.open_for_redaction(bytes, options)?;
@@ -151,11 +264,12 @@ where
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
-    deadline.checkpoint(clock.as_ref())?;
+    deadline.checkpoint(clock)?;
 
-    // 4. THE REPLACEMENT.
+    // 4. THE REPLACEMENT, with page N's place in the tree read first, from the input.
     let handle = document.page(page)?;
     same_frame(&handle, &promise)?;
+    let place = place(&trailer, &handle, clock, deadline)?;
     replace(&handle, &promise, picture)?;
     drop_structure(&trailer)?;
     #[cfg(test)]
@@ -166,20 +280,33 @@ where
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
-    deadline.checkpoint(clock.as_ref())?;
+    deadline.checkpoint(clock)?;
 
     let output = document.write()?;
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    // WHAT THE OPEN, THE EDIT AND THE WRITE COST, read while the document is still held: detected,
+    // not bounded (ADR 0007's 2026-09-12 amendment).
+    crate::estimate::check_measured_memory(
+        rss_before,
+        crate::rss::resident_bytes(),
+        &options.limits,
+    )?;
     // EVERY HANDLE, AND THE DOCUMENT, released before the read-back opens its own.
     drop((handle, trailer, resolved));
     drop(document);
-    deadline.checkpoint(clock.as_ref())?;
+    deadline.checkpoint(clock)?;
 
     // 5. THE READ-BACK, through fresh opens of the emitted bytes.
-    check_output(engine, &output, &promise, picture, options, &frames)?;
-    deadline.checkpoint(clock.as_ref())?;
+    let expected = Expected {
+        promise: &promise,
+        place: &place,
+        picture,
+        rss_before,
+    };
+    check_output(engine, &output, &expected, options, deadline, &frames)?;
+    deadline.checkpoint(clock)?;
     Ok(output)
 }
 
@@ -235,6 +362,17 @@ fn promise(
         pixels_wide,
         pixels_high,
     })
+}
+
+/// What [`check_output`] holds the output to: the promise from the input's frames, page *N*'s
+/// place in the input's tree, and the picture written.
+#[derive(Clone, Copy)]
+struct Expected<'e, 'p> {
+    promise: &'e Promise,
+    place: &'e Place,
+    picture: &'e Picture<'p>,
+    /// The resident set before the flatten's open, for the read-back's measured-memory check.
+    rss_before: Option<u64>,
 }
 
 /// The page about to be replaced has the frame the promise was computed from.
@@ -357,7 +495,9 @@ fn drop_structure<O: PdfObject>(trailer: &O) -> Result<()> {
 ///   frame. (V1's page count and rotation vector are `burrow_ops::verify::output`'s.)
 /// - **V2:** page *N* has exactly [`PAGE_KEYS`]; `/Type /Page`; `/Rotate 0`; `/MediaBox` and
 ///   `/CropBox` each exactly `[0 0 dw dh]` as written; `/Resources` exactly `/XObject` naming
-///   exactly one stream; `/Contents` one stream whose decoded bytes are the line, byte for byte.
+///   exactly one stream; `/Contents` one stream, its dictionary exactly [`CONTENTS_KEYS`], whose
+///   decoded bytes are the line, byte for byte; and `/Parent` leading to page *N*'s [`Place`] in
+///   the input's tree.
 /// - **V4, the catalogue's half:** no `/StructTreeRoot` and no `/MarkInfo`.
 /// - **V3:** the image has exactly [`IMAGE_KEYS`], `/Type /XObject`, `/Subtype /Image`, `/Width`
 ///   *W* and `/Height` *H* as derived here, `/DeviceRGB`, 8 bits, `/FlateDecode`; and its decoded
@@ -372,15 +512,21 @@ fn drop_structure<O: PdfObject>(trailer: &O) -> Result<()> {
 fn check_output<E, F>(
     engine: &E,
     output: &[u8],
-    promise: &Promise,
-    picture: &Picture<'_>,
+    expected: &Expected<'_, '_>,
     options: &crate::OpenOptions<'_>,
+    deadline: &Deadline,
     frames: &F,
 ) -> Result<()>
 where
     E: OpensForRedaction,
     F: Fn(&[u8]) -> Result<PageFrames>,
 {
+    let Expected {
+        promise,
+        place: input_place,
+        picture,
+        rss_before,
+    } = *expected;
     // V1, FRAMES.
     let read = frames(output).map_err(|error| rejected("its frames cannot be read", &error))?;
     if read.readings.len() != promise.frames.len() {
@@ -422,8 +568,16 @@ where
     keys_are(&page, &PAGE_KEYS, "the flattened page")?;
     name_is(&page.key(&TYPE), &PAGE_VALUE, "/Type")?;
     integer_is(&page.key(&ROTATE), 0, "/Rotate")?;
+    // `/MediaBox`'s own check is shadowed by V1's frames, which read it under `/Rotate 0`: a box
+    // that differs is a frame that differs. It is kept as the statement of what was written.
     box_is(&page.key(&MEDIA_BOX), promise, "/MediaBox")?;
     box_is(&page.key(&CROP_BOX), promise, "/CropBox")?;
+    // `/Parent`, KEPT VERBATIM BY THE WRITE: page N is where the input had it in the tree.
+    let output_place = place(&trailer, &page, options.clock.as_ref(), deadline)
+        .map_err(|error| rejected("its page tree cannot be read back", &error))?;
+    if output_place != *input_place {
+        return Err(reject("/Parent is not the input's place in the page tree"));
+    }
 
     let resources = page.key(&RESOURCES);
     dictionary_keys_are(&resources, &[b"XObject"], "/Resources")?;
@@ -434,6 +588,11 @@ where
     if contents.type_code() != object_type::STREAM {
         return Err(reject("/Contents is not one stream"));
     }
+    keys_are(
+        &contents.stream_dict(),
+        &CONTENTS_KEYS,
+        "the content stream",
+    )?;
     let line = contents
         .stream_data()
         .map_err(|error| rejected("its content cannot be decoded", &error))?;
@@ -466,6 +625,13 @@ where
     let pixels = image
         .stream_data()
         .map_err(|error| rejected("its image cannot be decoded", &error))?;
+    // WHAT THE READ-BACK COST, on top of the write: read while its document and the decoded
+    // pixels are still held, so the measurement sees them. Detected, not bounded.
+    crate::estimate::check_measured_memory(
+        rss_before,
+        crate::rss::resident_bytes(),
+        &options.limits,
+    )?;
     match pixels {
         Some(pixels) if pixels.len() == picture.rgb.len() && pixels == picture.rgb => Ok(()),
         Some(pixels) if pixels.len() != picture.rgb.len() => {
@@ -602,6 +768,17 @@ pub(crate) mod lie {
         WidthOff,
         OtherPageFrame,
         KeepMarkInfo,
+        ParentReplaced,
+        ContentsExtraKey,
+        SecondImageName,
+        HeightOff,
+        ColorSpaceOther,
+        FilterOther,
+        BitsPerComponentOff,
+        PageTypeOther,
+        ImageTypeOther,
+        ImageSubtypeOther,
+        ImageUndecodable,
     }
 
     thread_local! {
@@ -640,7 +817,62 @@ pub(crate) mod lie {
                 burrow_types::Error::Internal("the planted image cannot be read".to_owned())
             })
         };
+        let image = || {
+            page.key(&super::RESOURCES)
+                .key(&super::XOBJECT)
+                .key(&super::IMAGE)
+        };
+        let name = |name: &Name| page.name_beside(name);
         match lie {
+            Lie::ParentReplaced => {
+                let parent = page.dictionary_beside();
+                parent.replace_key(&super::TYPE, &name(&Name::literal(b"/Pages\0")))?;
+                page.replace_key(&super::PARENT, &parent)
+            }
+            Lie::ContentsExtraKey => page
+                .key(&super::CONTENTS)
+                .stream_dict()
+                .replace_key(&FOO, &page.integer_beside(1)),
+            Lie::SecondImageName => page
+                .key(&super::RESOURCES)
+                .key(&super::XOBJECT)
+                .replace_key(&FOO, &image()),
+            Lie::HeightOff => image().stream_dict().replace_key(
+                &super::HEIGHT,
+                &page.integer_beside(i64::from(promise.pixels_high) + 1),
+            ),
+            Lie::ColorSpaceOther => image()
+                .stream_dict()
+                .replace_key(&super::COLOR_SPACE, &name(&Name::literal(b"/DeviceGray\0"))),
+            Lie::FilterOther => {
+                // RUN-LENGTH ENCODED, which qpdf's write keeps and its read-back decodes: the
+                // pixels read back are the picture's, and only the filter differs.
+                let mut encoded = Vec::new();
+                for run in picture()?.chunks(128) {
+                    encoded.push(u8::try_from(run.len() - 1).unwrap_or(0));
+                    encoded.extend_from_slice(run);
+                }
+                encoded.push(128);
+                let null = page.null_beside();
+                image().replace_stream_data(
+                    &encoded,
+                    &name(&Name::literal(b"/RunLengthDecode\0")),
+                    &null,
+                )
+            }
+            Lie::BitsPerComponentOff => image()
+                .stream_dict()
+                .replace_key(&super::BITS_PER_COMPONENT, &page.integer_beside(4)),
+            Lie::PageTypeOther => page.replace_key(&super::TYPE, &name(&FOO)),
+            Lie::ImageTypeOther => image().stream_dict().replace_key(&super::TYPE, &name(&FOO)),
+            Lie::ImageSubtypeOther => image()
+                .stream_dict()
+                .replace_key(&super::SUBTYPE, &name(&Name::literal(b"/Form\0"))),
+            Lie::ImageUndecodable => {
+                // `/FlateDecode` OVER BYTES THAT ARE NOT FLATE, which qpdf's write keeps as given.
+                let null = page.null_beside();
+                image().replace_stream_data(&picture()?, &name(&super::FLATE), &null)
+            }
             Lie::ExtraPageKey => page.replace_key(&FOO, &page.integer_beside(1)),
             Lie::CropBoxUnequal => {
                 let crop = page.array_beside();

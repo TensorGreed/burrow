@@ -57,7 +57,7 @@ where
     deadline.checkpoint(clock.as_ref())?;
 
     // V1'S FRAMES, V2 AND V3 ARE INSIDE: the engine's only path to bytes runs them.
-    let document = engine.flatten_page(bytes, page, picture, options)?;
+    let document = engine.flatten_page(bytes, page, picture, options, &deadline)?;
     deadline.checkpoint(clock.as_ref())?;
 
     verify::output(
