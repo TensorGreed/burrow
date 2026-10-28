@@ -649,7 +649,7 @@ it is measured: the census counts every destination into page *N*, by site and f
 V7 holds each one to its input.
 
 **What V7 does not detect:** a destination at a site the list above does not name. V7 reads by the
-same list, so it cannot see one; that is same-source (§4), and navigation only. V6 holds those inside
+same list, so it cannot see one; that is navigation only. V6 holds those inside
 another page's graph. The census's independent net is a scan of every output for any array whose
 first element is page *N*'s reference, wherever it is held, reporting each one V7 did not hold.
 
@@ -703,9 +703,6 @@ still one uninterruptible call), and compares raw bytes wherever the filters wer
   instead of the original bytes, would remove some of those routes; that is recorded as a future
   option (*Conditions for revisiting*), not taken for v1. It is same-source under rule 19, and its
   independent reading is the census's decoded I2 scan of every output.
-- **A destination into page *N* at a site §3 does not list** is not held by V7, which reads by the same
-  list, so this is same-source; it is navigation, not content (§3). v1 edits no destination (decision 74). Its independent reading is the census's
-  scan of every output for any array whose first element is page *N*'s reference.
 - **Whether a survivor, or a document-level carrier, holds the region's content.** These are
   disclosures because no read-back can turn them into assertions.
 - **Anything outside the painted rectangle** that the person meant to cover: rule 8.
@@ -1022,7 +1019,7 @@ These changes are the owner's (decision 55), and **stand independently of this r
   PDFium ink read-back still gates S9 via #206's ink half") **now apply to v2 only**. For v1, the
   same-source assertions are **the closed list in §4's *What it leaves undetectable***: this
   record's revisions while it is Proposed, and its dated amendments once it is Accepted. On 2026-10-27
-  that list is five items, each with the independent reading that gates S9:
+  that list is four items, each with the independent reading that gates S9:
   1. **the survivor set**, which one walk decides and checks: the census's decoded I2 scan;
   2. **page identity across the two engines**, held by §5's refusals on qpdf's reading of the tree:
      the census render of each output's page *N* against the painted bitmap;
@@ -1031,9 +1028,6 @@ These changes are the owner's (decision 55), and **stand independently of this r
   4. **the region-to-pixel arithmetic**, only where the display frame both sides share is wrong in
      the same way (the two sides share no other step, §1 steps 4 and 6): the rotation by box-origin by
      crop-offset matrix, and the census render;
-  5. **a destination into page *N* at a site §3 does not list**, which V7 does not hold because it reads
-     by the same list (navigation, not content; v1 keeps every destination unchanged, decision 74): the census's scan of every output
-     for any array whose first element is page *N*'s reference.
 
   If this record is rejected, there is no v1 flatten list, and rule 19's instances are v2's alone.
 - **#344 decision 4** (owner, 2026-10-15): #206's ink half asserting PDFium's tight character boxes
@@ -1146,7 +1140,7 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 - a PDFium render of each output's page *N* against the painted bitmap (§5);
 - shared `/Annots` arrays and annotations on the real set;
 - **every destination into page *N***, by site and form, each kept unchanged (§3; decision 74), and
-  the scan for page-*N* arrays held outside §3's sites (§4).
+  the scan for page-*N* arrays held outside §3's sites (§3).
 
 **The census decides five outcomes, already worded:**
 
@@ -1443,8 +1437,7 @@ it is measured: the census counts every destination into page *N*, by site and f
 kept unchanged (*Census*), and V7 holds each kept one to its input.
 
 **What the translation does not detect:** a destination at a site the list above does not name keeps
-its input position. V7 reads by the same list, so it cannot see one; that is same-source (§4), and
-navigation only. The census's independent net is a scan of every output for any array whose first
+its input position. V7 reads by the same list, so it cannot see one; that is navigation only. The census's independent net is a scan of every output for any array whose first
 element is page *N*'s reference, wherever it is held, reporting each one V7 did not hold.
 
 ### §4, V6's exception and V7
@@ -1496,7 +1489,7 @@ v1 writes to the catalogue only to remove `/StructTreeRoot` and `/MarkInfo`, to 
 ### Census
 
 - **every destination into page *N***, by site and form, translated and kept unchanged by reason
-  (§3), and the scan for page-*N* arrays held outside §3's sites (§4).
+  (§3), and the scan for page-*N* arrays held outside §3's sites (§3).
 
 ### Consequences
 
