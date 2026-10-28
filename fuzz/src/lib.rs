@@ -14,11 +14,13 @@
 /// the owner holds (`tools/fuzz-seal-finding.sh`); neither line is allowed by the redactor
 /// (`tools/test-fuzz-seal-finding.sh` plants one and checks).
 ///
-/// The marker's message is escaped (`escape_debug`: newline, carriage return and the other control
-/// characters become `\n`, `\r`, ...) so the marker is always exactly one line; `tools/redact-fuzz-log.py`
-/// allowlists lines by prefix, and a raw newline would start a new line that might match one. The
-/// panic line keeps the RAW text because `fuzz/known-crashes.toml` matches it exactly; the residual
-/// that leaves is documented in `tools/check-known-crashes.py`.
+/// The message is escaped (`escape_debug`: newline, carriage return and the other control
+/// characters become `\n`, `\r`, ...) in BOTH places, so the marker and the panic line are each
+/// exactly one line; `tools/redact-fuzz-log.py` allowlists lines by prefix, and a raw newline would
+/// start a new line that might match one. `fuzz/known-crashes.toml` matches the ESCAPED panic text
+/// (every existing entry is plain printable ASCII, which `escape_debug` leaves unchanged). What
+/// remains: this helper covers only messages that go through it; a target that panics with input
+/// in a message by another route is not covered (see `tools/check-known-crashes.py`).
 ///
 /// `#[track_caller]` is load-bearing: the panic line must name the CALLING target file
 /// (`fuzz_targets/<target>.rs`), because `tools/check-known-crashes.py` keys `panic_at` entries on
@@ -28,6 +30,7 @@
 /// treat it as sensitive exactly as the input is.
 #[track_caller]
 pub fn internal_error(target: &str, message: &str) -> ! {
-    eprintln!("BURROW-FUZZ-FINDING target={target} internal-error: {}", message.escape_debug());
-    panic!("{target} reported an internal error: {message}");
+    let escaped = message.escape_debug();
+    eprintln!("BURROW-FUZZ-FINDING target={target} internal-error: {escaped}");
+    panic!("{target} reported an internal error: {escaped}");
 }

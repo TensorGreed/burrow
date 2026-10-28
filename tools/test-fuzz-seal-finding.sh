@@ -237,7 +237,8 @@ if ! grep -qF "$MSG_MARK" <<< "$red" && ! grep -qF "BURROW-FUZZ-FINDING" <<< "$r
 else bad "redacted log: $red"; fi
 
 # 18. The marker format in the test is the one the helper writes.
-grep -qF 'BURROW-FUZZ-FINDING target={target} internal-error: {}", message.escape_debug()' "$repo/fuzz/src/lib.rs" \
+grep -qF 'BURROW-FUZZ-FINDING target={target} internal-error: {escaped}"' "$repo/fuzz/src/lib.rs" \
+  && grep -qF 'let escaped = message.escape_debug();' "$repo/fuzz/src/lib.rs" \
   && ok "the marker line planted here is the format fuzz/src/lib.rs writes" || bad "helper format drifted from the planted marker"
 
 # 19. WORKFLOW WIRING: the nightly seals with this script, uploads only a .age path with a short
@@ -304,16 +305,16 @@ if grep -q 'panicked at fuzz_targets/probe.rs:[0-9]*:[0-9]*:|probe reported an i
   ok "internal_error's panic line names the calling target file, directly above the message; without #[track_caller] it names the helper's file"
 else bad "track_caller: real=[$real] mutant=[$mut]"; fi
 
-# 21. THE MARKER IS ONE LINE. A message with a newline must not start a second log line: the redactor
-#     allowlists by line prefix, so "SUMMARY: leaked" at the start of a line would be published.
-#     The REAL lib.rs is compiled into a probe; the mutant drops the escape (asserted applied).
-#     WHAT THIS PROVES: the marker line is one line with the newline/CR shown escaped, and the marker
-#     adds no line of its own that begins "SUMMARY: leaked" (the count over the whole stderr is 1, the
-#     panic line's own, versus 2 without the escape); the redactor run on the marker line alone
-#     publishes no "leaked" line.
-#     WHAT IT DOES NOT PROVE: the panic line still carries the raw newline (the documented residual in
-#     tools/check-known-crashes.py), so the full stderr piped through the redactor still publishes the
-#     panic-borne "SUMMARY: leaked" line; that is deliberately not asserted away here.
+# 21. THE MARKER AND THE PANIC LINE ARE EACH ONE LINE (owner (72)). A message with a newline must not
+#     start a second log line: the redactor allowlists by line prefix, so "SUMMARY: leaked" at the
+#     start of a line would be published. The REAL lib.rs is compiled into a probe; there are two
+#     mutants, each dropping ONE of the two escapes (asserted applied).
+#     WHAT THIS PROVES: with the real helper the whole stderr has exactly one marker line and one
+#     panic line, no line begins "SUMMARY: leaked", and the full stderr piped through the redactor
+#     publishes nothing containing "leaked"; the marker-only mutant and the panic-only mutant each
+#     leave a line-start "SUMMARY: leaked" and the redactor publishes it.
+#     WHAT IT DOES NOT PROVE: a target that panics with input in a message by a route other than
+#     internal_error (documented in tools/check-known-crashes.py).
 esc_dir="$work/esc"; mkdir -p "$esc_dir/fuzz_targets"
 cat > "$esc_dir/fuzz_targets/probe.rs" <<'RS'
 fn main() { burrow_fuzz::internal_error("probe", "PRE\nSUMMARY: leaked\rTAIL"); }
@@ -322,34 +323,36 @@ esc_run() { # <rlib> -> stderr of the probe built against it, in $esc_dir/stderr
   (cd "$esc_dir" && rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$1" \
     -o probe fuzz_targets/probe.rs > /dev/null 2>&1 && { ./probe > stderr.txt 2>&1 || true; }) || echo BUILD-FAILED > "$esc_dir/stderr.txt"
 }
-esc_check() { # <stderr file> -> echoes marker line count, redacted-marker leaks, SUMMARY lines, marker
-  local f="$1" mk n_marker n_leak_marker n_sum
+esc_check() { # <stderr file> -> echoes marker lines|panic lines|line-start SUMMARY lines|published "leaked" lines
+  local f="$1" n_marker n_panic n_sum n_pub
   n_marker="$(grep -c '^BURROW-FUZZ-FINDING' "$f" || true)"
-  mk="$(grep '^BURROW-FUZZ-FINDING' "$f" | head -1)"
-  n_leak_marker="$(printf '%s\n' "$mk" | python3 "$repo/tools/redact-fuzz-log.py" 2> /dev/null | grep -c 'leaked' || true)"
+  n_panic="$(grep -c 'probe reported an internal error: ' "$f" || true)"
   n_sum="$(grep -c '^SUMMARY: leaked' "$f" || true)"
-  echo "$n_marker|$n_leak_marker|$n_sum|$mk"
+  n_pub="$(python3 "$repo/tools/redact-fuzz-log.py" < "$f" 2> /dev/null | grep -c 'leaked' || true)"
+  echo "$n_marker|$n_panic|$n_sum|$n_pub"
 }
-rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$esc_dir/libreal.rlib" "$repo/fuzz/src/lib.rs" > /dev/null 2>&1 \
-  && esc_run "$esc_dir/libreal.rlib" || echo BUILD-FAILED > "$esc_dir/stderr.txt"
-real_chk="$(esc_check "$esc_dir/stderr.txt")"
+esc_build() { # <lib.rs> <name> -> echoes esc_check of a probe built against it
+  rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$esc_dir/lib$2.rlib" "$1" > /dev/null 2>&1 \
+    && esc_run "$esc_dir/lib$2.rlib" || echo BUILD-FAILED > "$esc_dir/stderr.txt"
+  esc_check "$esc_dir/stderr.txt"
+}
+real_chk="$(esc_build "$repo/fuzz/src/lib.rs" real)"
 panic_ln="$(grep 'probe reported an internal error: ' "$esc_dir/stderr.txt" | head -1 || true)"
-cp "$esc_dir/stderr.txt" "$esc_dir/stderr.real"
-sed 's/message\.escape_debug()/message/' "$repo/fuzz/src/lib.rs" > "$esc_dir/lib_mutant.rs"
-cmp -s "$repo/fuzz/src/lib.rs" "$esc_dir/lib_mutant.rs" && bad "escape mutation did not apply"
-grep -qF 'internal-error: {}", message)' "$esc_dir/lib_mutant.rs" || bad "escape mutation did not produce the expected text"
-rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$esc_dir/libmutant.rlib" "$esc_dir/lib_mutant.rs" > /dev/null 2>&1 \
-  && esc_run "$esc_dir/libmutant.rlib" || echo BUILD-FAILED > "$esc_dir/stderr.txt"
-mut_chk="$(esc_check "$esc_dir/stderr.txt")"
-# (a) one marker line, newline and CR shown escaped; (b) the marker alone yields no published "leaked"
-# line; (c) the panic line still has the ledger shape "<target> reported an internal error: <msg>"
-# (raw text: it starts with the PRE segment before the raw newline).
-if [ "${real_chk%%|*}" = "1" ] && grep -qF 'PRE\nSUMMARY: leaked\rTAIL' <<< "$real_chk" \
-  && [ "$(cut -d'|' -f2-3 <<< "$real_chk")" = "0|1" ] \
-  && [ "$panic_ln" = "probe reported an internal error: PRE" ] \
-  && [ "$(cut -d'|' -f3 <<< "$mut_chk")" = "2" ]; then
-  ok "internal_error's marker is exactly one escaped line (no published 'leaked' from it); panic line keeps the raw ledger-shaped text; without the escape the marker splits"
-else bad "marker escape: real=[$real_chk] panic=[$panic_ln] mutant=[$mut_chk]"; fi
+# Mutant A drops the MARKER's escape; mutant B drops the PANIC line's.
+sed 's/internal-error: {escaped}"/internal-error: {message}"/' "$repo/fuzz/src/lib.rs" > "$esc_dir/lib_mut_marker.rs"
+cmp -s "$repo/fuzz/src/lib.rs" "$esc_dir/lib_mut_marker.rs" && bad "marker escape mutation did not apply"
+grep -qF 'internal-error: {message}"' "$esc_dir/lib_mut_marker.rs" || bad "marker mutation did not produce the expected text"
+sed 's/internal error: {escaped}")/internal error: {message}")/' "$repo/fuzz/src/lib.rs" > "$esc_dir/lib_mut_panic.rs"
+cmp -s "$repo/fuzz/src/lib.rs" "$esc_dir/lib_mut_panic.rs" && bad "panic-line escape mutation did not apply"
+grep -qF 'internal error: {message}")' "$esc_dir/lib_mut_panic.rs" || bad "panic mutation did not produce the expected text"
+mut_marker="$(esc_build "$esc_dir/lib_mut_marker.rs" mutmarker)"
+mut_panic="$(esc_build "$esc_dir/lib_mut_panic.rs" mutpanic)"
+if [ "$real_chk" = "1|1|0|0" ] \
+  && [ "$panic_ln" = 'probe reported an internal error: PRE\nSUMMARY: leaked\rTAIL' ] \
+  && [ "$(cut -d'|' -f3-4 <<< "$mut_marker")" = "1|1" ] \
+  && [ "$(cut -d'|' -f3-4 <<< "$mut_panic")" = "1|1" ]; then
+  ok "internal_error: marker and panic line are each one escaped line, nothing published from either; dropping either escape leaves a published line"
+else bad "escape: real=[$real_chk] panic=[$panic_ln] mut_marker=[$mut_marker] mut_panic=[$mut_panic]"; fi
 
 echo "fuzz-seal-finding: $pass passed, $fail failed (expected $EXPECTED_CASES cases)"
 [ "$fail" -eq 0 ] && [ "$pass" -eq "$EXPECTED_CASES" ]
