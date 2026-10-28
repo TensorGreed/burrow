@@ -1093,6 +1093,49 @@ pub trait PageRedactor {
     ) -> Result<Vec<i64>>;
 }
 
+/// An engine that can replace one page with a picture of itself: redaction v1's write (ADR 0031).
+///
+/// # Not a route, and not yet the operation
+///
+/// Implemented by the native `qpdf::Qpdf` only, over the policy in [`redact::flatten`]. Nothing in
+/// `burrow-core` or either binding names it, and the redaction tool is held (#136 S9). It is the
+/// write half of ADR 0031's pipeline and none of its refusals: the slices that add §2's walks and
+/// rules, §5's page identity and V4 to V7 come before anything can call it with a person's file.
+pub trait PageFlattener {
+    /// Replace page `page` of `bytes` with `picture`, verify the emitted bytes, and return them.
+    ///
+    /// **The bytes returned have already been read back** through fresh opens and held to ADR
+    /// 0031 §4's V1 frames, V2 and V3; see [`redact::flatten`]. `burrow_ops` adds V1's page count
+    /// and rotation vector.
+    ///
+    /// # Errors
+    ///
+    /// As `redact::flatten`'s `flatten`: every ceiling, the page's own frame refusal, a picture of
+    /// the wrong size, a repair, and [`Error::OutputRejected`](burrow_types::Error::OutputRejected)
+    /// for an output that does not read back as promised.
+    fn flatten_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        picture: &redact::flatten::Picture<'_>,
+        options: &OpenOptions<'_>,
+    ) -> Result<Vec<u8>>;
+
+    /// Every page's `/Rotate` as written, in page order, read from the **input**: the vector
+    /// `burrow_ops` promises with page `page`'s entry set to 0. As
+    /// [`PageRedactor::input_rotations`].
+    ///
+    /// # Errors
+    ///
+    /// As [`OutputReader::rotations`].
+    fn rotations_before_flattening(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
+}
+
 /// An engine that can read every page's display frame the way redaction reads it (#136).
 ///
 /// Read-only: it opens the document as redaction opens it and reads each page's dictionary and the

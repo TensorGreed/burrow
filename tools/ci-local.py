@@ -491,7 +491,7 @@ JOBS: list[dict] = [
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
             "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
-            "redact_shared_contents redact_verified_output redact_references redact_page_frames "
+            "redact_shared_contents redact_verified_output redact_references redact_page_frames redact_flatten "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -529,6 +529,8 @@ JOBS: list[dict] = [
             "fuzz:redact_references",
             # #136's: every page's frame from a whole document, through the operation.
             "fuzz:redact_page_frames",
+            # ADR 0031's page replacement, through the operation.
+            "fuzz:redact_flatten",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

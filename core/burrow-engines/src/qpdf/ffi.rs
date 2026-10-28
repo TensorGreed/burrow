@@ -640,9 +640,11 @@ unsafe extern "C" {
     /// Declared for font surgery. `/Widths` is **positional**: the width for code `c` is at
     /// index `c - /FirstChar`, so an entry cannot be removed without moving every later code's
     /// width onto the wrong glyph. Zeroing the removed ones keeps the array's shape and says
-    /// nothing about what was there. Building a replacement array is the other route and it is
-    /// closed — `qpdf_oh_new_array` is not trapped and does not meet
-    /// `engines/qpdf-untrapped-accepted.toml`'s non-parsing bar.
+    /// nothing about what was there. Building a replacement array is the other route, and it is
+    /// not the one taken here, for the positional reason above. (This said `qpdf_oh_new_array`
+    /// does not meet `engines/qpdf-untrapped-accepted.toml`'s non-parsing bar. It does: an empty
+    /// direct array, as `qpdf_oh_new_integer` is an integer, argued there since ADR 0031's
+    /// flatten write first needed it.)
     pub(super) fn qpdf_oh_set_array_item(
         qpdf: QpdfData,
         oh: QpdfObjectHandle,
@@ -770,6 +772,73 @@ unsafe extern "C" {
         reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
     )]
     pub(super) fn qpdf_oh_new_null(qpdf: QpdfData) -> QpdfObjectHandle;
+
+    // ---------------------------------------------------------------------------------
+    // Flattening's constructors (ADR 0031 §1 step 7 and §8). Native only until the web's
+    // flatten write lands; each is argued in `engines/qpdf-not-exported.toml`.
+    // ---------------------------------------------------------------------------------
+
+    /// `qpdf_oh qpdf_make_indirect_object(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:648`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// **The route to qpdf's whole-file resolution inside the trap** (ADR 0031 §1, *Resolution
+    /// at open*). `makeIndirectObject` takes the next object number from `nextObjGen`, which calls
+    /// `getObjectCount`, which calls `fixDanglingReferences` (`QPDF_objects.cc:1240-1258`,
+    /// `:1892-1906`): the first call resolves every entry of the cross-reference table, and may
+    /// repair the file while doing it. Reached here, under the trap, that parse is caught and its
+    /// repair is a warning the open reads, rather than happening later inside the untrapped
+    /// `qpdf_oh_new_stream`.
+    pub(super) fn qpdf_make_indirect_object(
+        qpdf: QpdfData,
+        oh: QpdfObjectHandle,
+    ) -> QpdfObjectHandle;
+
+    /// `qpdf_oh qpdf_oh_new_stream(qpdf_data qpdf)` — `qpdf-c.h:852`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`. **Not parse-free on
+    /// its own**: `newStream` takes `nextObjGen`, which resolves the whole cross-reference table
+    /// the first time anything asks. It is parse-free only after the open has forced that
+    /// resolution through [`qpdf_make_indirect_object`], inside the trap; the resolution runs once
+    /// (`fixed_dangling_refs`), so this call then touches only the object cache.
+    pub(super) fn qpdf_oh_new_stream(qpdf: QpdfData) -> QpdfObjectHandle;
+
+    /// `qpdf_oh qpdf_oh_new_dictionary(qpdf_data qpdf)` — `qpdf-c.h:844`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: an empty direct
+    /// dictionary, put in the handle cache. It never reads the document.
+    pub(super) fn qpdf_oh_new_dictionary(qpdf: QpdfData) -> QpdfObjectHandle;
+
+    /// `qpdf_oh qpdf_oh_new_name(qpdf_data qpdf, char const* name)` — `qpdf-c.h:829`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: stores the string it
+    /// is given, verbatim, as a name. Every name this crate passes is a literal (`crate::name`),
+    /// never anything a document supplied.
+    pub(super) fn qpdf_oh_new_name(qpdf: QpdfData, name: *const c_char) -> QpdfObjectHandle;
+
+    /// `qpdf_oh qpdf_oh_new_array(qpdf_data qpdf)` — `qpdf-c.h:842`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: an empty direct array.
+    /// It never reads the document. (This file used to say it does not meet that file's
+    /// non-parsing bar; it does, for the reason `qpdf_oh_new_integer` does. See
+    /// `qpdf_oh_set_array_item` for the correction.)
+    pub(super) fn qpdf_oh_new_array(qpdf: QpdfData) -> QpdfObjectHandle;
+
+    /// `qpdf_oh qpdf_oh_new_real_from_string(qpdf_data qpdf, char const* value)` —
+    /// `qpdf-c.h:825`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: stores the string
+    /// verbatim as a real, without parsing it. The string is always one this crate formatted from
+    /// a finite, positive `f64` (`redact::flatten`), so qpdf writes back exactly that text and a
+    /// reader parses back exactly that value. Not `_from_double`, which rounds to a fixed number
+    /// of places (ADR 0031 §1).
+    pub(super) fn qpdf_oh_new_real_from_string(
+        qpdf: QpdfData,
+        value: *const c_char,
+    ) -> QpdfObjectHandle;
+
+    /// `void qpdf_oh_append_item(qpdf_data qpdf, qpdf_oh oh, qpdf_oh item)` — `qpdf-c.h:862`.
+    /// **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+    pub(super) fn qpdf_oh_append_item(qpdf: QpdfData, oh: QpdfObjectHandle, item: QpdfObjectHandle);
 
     /// `void qpdf_oh_free_buffer(unsigned char** bufp)` — `qpdf-c.h:936`.
     ///

@@ -689,6 +689,34 @@ impl crate::PageRedactor for Qpdf {
 /// is not a ceiling to `[media-box-unverified]` -- the refusal a redaction of that page gives when
 /// its own renderer open fails. A ceiling the open reaches is returned as that ceiling, and is the
 /// whole operation's.
+/// Redaction v1's page replacement natively: the policy in `redact::flatten`, with every frame read
+/// as [`crate::PageFrameReader::page_frames`] reads it.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+impl crate::PageFlattener for Qpdf {
+    fn flatten_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        picture: &crate::redact::flatten::Picture<'_>,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<Vec<u8>> {
+        use crate::PageFrameReader;
+        crate::redact::flatten::flatten(self, bytes, page, picture, options, |document| {
+            self.page_frames(document, options)
+        })
+    }
+
+    fn rotations_before_flattening(
+        &self,
+        bytes: &[u8],
+        options: &crate::OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
+        rotations_of(&document, pages, options, deadline)
+    }
+}
+
 #[cfg(all(feature = "native-engines", burrow_native_engines))]
 impl crate::PageFrameReader for Qpdf {
     fn page_frames(

@@ -399,3 +399,73 @@ would be refused on this file's own bar, and the answer would be to stop calling
 bump re-reads `getObject` for that reason. \
 Used by redaction alone, to ask whether each reference the file writes resolves to null \
 (#227, ADR 0029)."""
+
+# ---------------------------------------------------------------------------------
+# Flattening's constructors (ADR 0031 §1 step 7, §8). Native only so far; see
+# engines/qpdf-not-exported.toml. The open forces qpdf's whole-file resolution inside the
+# trap first (`qpdf_make_indirect_object`, which is trapped), and the repair refusal is read
+# again after these run, so each argument below is checked at run time, not only assumed.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_oh_new_dictionary"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newDictionary())` (qpdf-c.cc:1551-1555) -- an empty \
+direct dictionary put in the handle cache (`++next_oh`, one map insert). It never reads the \
+document, never resolves an object and cannot see a byte of the input: the bar \
+`qpdf_oh_new_integer` meets, one constructor over. Fails only by allocation (defined abort), \
+or by the `QTC::TC` paths `qpdf_oh_new_null` records, neither reachable from file content. \
+Used by `redact::flatten` (ADR 0031) for the flattened page's `/Resources` and its \
+`/XObject` subdictionary."""
+
+[[function]]
+name = "qpdf_oh_new_name"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newName(name))` (qpdf-c.cc:1509-1513): stores the C \
+string it is given as a name, verbatim, without parsing it (QPDFObjectHandle.cc:1076-1079). \
+It never reads the document. Every name burrow passes is a `crate::name::Name` literal \
+(`/Page`, `/XObject`, `/Image`, `/DeviceRGB`), never a string a document supplied, so the \
+stored text is one this crate chose. Fails only by allocation, or the `QTC::TC` paths \
+`qpdf_oh_new_null` records. Used by `redact::flatten` (ADR 0031)."""
+
+[[function]]
+name = "qpdf_oh_new_array"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newArray())` (qpdf-c.cc:1544-1548): an empty direct \
+array in the handle cache. It never reads the document, never resolves an object and \
+cannot see a byte of the input -- the bar `qpdf_oh_new_integer` meets. \
+`core/burrow-engines/src/qpdf/ffi.rs` recorded the opposite until ADR 0031 asked for this \
+argument (code review S3); that comment is corrected in the same change. Items are added \
+with `qpdf_oh_append_item`, which IS trapped. Fails only by allocation, or the `QTC::TC` \
+paths `qpdf_oh_new_null` records. Used by `redact::flatten` for the written `/MediaBox` and \
+`/CropBox`."""
+
+[[function]]
+name = "qpdf_oh_new_real_from_string"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newReal(value))` (qpdf-c.cc:1495-1499): stores the \
+string verbatim as a real (QPDFObjectHandle.cc:1900-1903). It does not parse or convert it, \
+so no file-derived number reaches a conversion here; the string is one burrow formatted \
+itself from a finite, positive `f64` frame side (`redact::flatten`), never document text. \
+It never reads the document. Not `qpdf_oh_new_real_from_double`, which rounds to a fixed \
+number of places, so the written box would not equal the frame read (ADR 0031 §1). Fails \
+only by allocation, or the `QTC::TC` paths `qpdf_oh_new_null` records."""
+
+[[function]]
+name = "qpdf_oh_new_stream"
+reason = """\
+`new_object(qpdf, qpdf->qpdf->newStream())` (qpdf-c.cc:1558-1562). NOT parse-free by \
+itself: `newStream` (QPDF.cc:386-390) takes `nextObjGen` (QPDF_objects.cc:1892-1898), which \
+calls `getObjectCount`, which calls `fixDanglingReferences` (QPDF_objects.cc:1240-1258) -- \
+the first call resolves every cross-reference entry, a parse that can repair the file, and \
+here it would be outside any trap. Accepted ONLY because `redact::flatten`, its one caller, \
+forces that resolution at the open through `qpdf_make_indirect_object`, which reaches the \
+same `nextObjGen` INSIDE `trap_oh_errors`; `fixed_dangling_refs` is then set (it is cleared \
+only by a reconstruction, QPDF_objects.cc:332, which the resolution itself would have run \
+and the open refuses as `[engine-repaired-input]`), so this call finds the table resolved \
+and touches only the object cache. Reading that flag directly, rather than relying on the \
+trapped call having run, is ADR 0031's next slice (security L-6); until then the argument is \
+also checked after the fact: the repair refusal is read again after the constructors and \
+after the write. The range check in `nextObjGen` throws only at INT_MAX objects, past \
+`max_input_bytes` on every platform. Fails otherwise only by allocation, or the `QTC::TC` \
+paths `qpdf_oh_new_null` records."""

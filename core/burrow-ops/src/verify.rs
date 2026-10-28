@@ -299,6 +299,33 @@ pub enum Expected {
         /// Every page's `/Rotate` as written, in page order, read before the redaction.
         rotations: Vec<i64>,
     },
+
+    /// Page *N* was replaced by a picture of itself, and every page still displays as
+    /// `rotations` says: redaction v1 (ADR 0031 §4, proposed there as `PageFlattened`).
+    ///
+    /// **Not `Redacted`**, for `RegionCleared`'s reason: nothing here says the secret is gone.
+    ///
+    /// # What this variant covers here, and what covers the rest
+    ///
+    /// This one carries V1's shared half: the page count, and the rotation vector the
+    /// operation computes, which is the input's with page *N*'s entry 0, because the written
+    /// page carries `/Rotate 0`. V1's frames, V2 (the page's keys, boxes, resources and content
+    /// line) and V3 (the image's keys, size and pixels) are read inside the engine,
+    /// `burrow_engines::redact::flatten`, whose only path to bytes runs them.
+    ///
+    /// **Undetectable here, stated as ADR 0031 §4 requires:** everything that list names --
+    /// page identity across the two engines, the region-to-pixel arithmetic where its two sources
+    /// agree wrongly, the engines reading page *N*'s content differently, a destination at a site
+    /// V7 does not list, whether a survivor holds the region's content, anything outside the
+    /// painted rectangle, another viewer's rendering, pixel identity across engine builds, and
+    /// the heaps. **And, until the slices that add them, V4's element walk and V5 to V7**: what
+    /// else the output keeps from page *N*, and whether every other page's graph and every
+    /// destination is unchanged, are not read at all. The operation is reachable from nothing
+    /// until they land (`burrow_ops::redact::flatten`).
+    PageFlattened {
+        /// Every page's `/Rotate` as written, read before the replacement, with page *N*'s 0.
+        rotations: Vec<i64>,
+    },
 }
 
 impl Expected {
@@ -314,7 +341,8 @@ impl Expected {
             | Self::Reordered { rotations }
             | Self::Split { rotations }
             | Self::Compressed { rotations }
-            | Self::RegionCleared { rotations } => {
+            | Self::RegionCleared { rotations }
+            | Self::PageFlattened { rotations } => {
                 u64::try_from(rotations.len()).unwrap_or(u64::MAX)
             }
             Self::Merged { contributions } => contributions.iter().sum(),
@@ -328,7 +356,8 @@ impl Expected {
             | Self::Reordered { rotations }
             | Self::Split { rotations }
             | Self::Compressed { rotations }
-            | Self::RegionCleared { rotations } => Some(rotations),
+            | Self::RegionCleared { rotations }
+            | Self::PageFlattened { rotations } => Some(rotations),
             // See the variant's rustdoc: knowing it would cost a second parse of every input.
             Self::Merged { .. } => None,
         }
@@ -342,6 +371,7 @@ impl Expected {
             Self::Split { .. } => "split",
             Self::Compressed { .. } => "compress",
             Self::RegionCleared { .. } => "redact",
+            Self::PageFlattened { .. } => "redact (flatten)",
             Self::Merged { .. } => "merge",
         }
     }
