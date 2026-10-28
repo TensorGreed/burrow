@@ -348,7 +348,7 @@ the owner's decision for v1, not a wall (§*Conditions for revisiting*).
   It is looked for in every character encoding an XMP packet may use. A metadata stream that cannot be
   decoded within `Limits`, or a packet that cannot be read as XMP, refuses too. The evasion fixtures
   are by class: a rebound prefix, each permitted encoding, and an unreadable packet (*Fixtures*).
-  **Census-conditional:** the census reports how often it fires. **If it refuses more than 1% of real
+  **Census-conditional:** the census reports how often it fires. **If it refuses 1% or more of real
   documents, the rule becomes a strip instead**: the XMP thumbnail is removed on
   output, and the refusal goes. That change gets its own review, as a scrub is a write.
 - A signature anywhere in the document no longer validates after the write. That is disclosed (§9,
@@ -403,7 +403,8 @@ through.** Precisely:
   streams reached by several paths that all end in roles of one of these three kinds are in that
   role. For example: one font program that two font descriptors name, or one ICC profile two colour
   spaces use; a CMap that is one font's `/ToUnicode` and another CMap's `/UseCMap`; an ICC profile
-  in a `/ColorSpace` resource and in an output intent's `/DestOutputProfile`.
+  in a `/ColorSpace` resource and as the `/DestOutputProfile` of an output intent in page *N*'s own
+  `/OutputIntents`.
 - **Refused, `[drawing-survives]`: every other stream the walk reached from page *N* that survives.**
   Every stream reached in a role outside the three above, whatever it declares, and **every stream
   reached in more than one role**, which is what decision 69's "reached more than one way" means
@@ -423,8 +424,10 @@ through.** Precisely:
   - streams beside a font program that are not one: a font descriptor's `/CIDSet`, a CIDFont's
     `/CIDToGIDMap` where it is a stream, and the `/Metadata` of any stream above. **`/CIDSet` and a
     stream `/CIDToGIDMap` refuse if the census measures their cost under 1% of real documents;
-    otherwise they join the disclosed allowlist, by name, and the figure is reported to the owner**
-    (decision 71, item 2). The `/Metadata` of a stream refuses either way;
+    at 1% or more they join the disclosed allowlist, by name, and the figure is reported to the
+    owner** (decision 71, item 2). **This figure is settled first**: if they join, `[drawing-survives]`
+    is measured without them. **If they join, V5, disclosure 5 and the survivor report all gain the
+    two names in the same change.** The `/Metadata` of a stream refuses either way;
   - **roles that could be read either way, made refusals rather than guessed** (decision 69;
     confirmed by decision 71, item 2): a font program under the per-class font descriptors of a font descriptor's
     `/FD`; a `/ToUnicode` or a stream `/Encoding` on an element of `/DescendantFonts` rather than on
@@ -451,10 +454,12 @@ through.** Precisely:
   function streams, soft masks, `/CIDSet` and `/CIDToGIDMap` streams, the ambiguous roles above, and
   streams reached in more than one role). It measures **both readings of "reached more than one
   way"** (decision 71, item 1): in more than one role, which is the rule, and through more than one
-  path at all, the literal reading. It reports **`/CIDSet` and stream `/CIDToGIDMap` as their own
-  figure**, which decides whether they refuse or join the allowlist (decision 71, item 2). **If `[drawing-survives]` refuses more than 1% of real
-  documents, the work stops** and the owner is brought the figure, the producers and the roles. The
-  rule is not adjusted to fit. Decision 57, item 4's census condition, which disclosed drawings above
+  path in one disclosed kind, the literal reading, which stays disclosed. It reports **`/CIDSet` and
+  stream `/CIDToGIDMap` as their own figure**, which decides whether they refuse or join the
+  allowlist (decision 71, item 2), and is settled first: if they join, `[drawing-survives]` is
+  measured without them. **If `[drawing-survives]` refuses 1% or more of real documents, the work
+  stops** and the owner is brought the figure, the producers and the roles. The rule is not adjusted
+  to fit. Decision 57, item 4's census condition, which disclosed drawings above
   1%, is superseded.
 - The operation **reports the survivors**: a count by role (font programs, CMaps, ICC profiles,
   survivors that are not streams, and destination arrays that do not count).
@@ -1130,7 +1135,7 @@ The slice builds from this list.
 | §3 destinations, untranslatable | a two-operand `/XYZ`, an unknown form name, a string operand, into page *N* (each unchanged, counted); an integer page element (unchanged) | well-formed twins (translated) | "correct" the malformed one; read the integer as a page index |
 | §3 and V6, article beads (decision 70, item 2) | a thread of two beads, one on page *N* and one on a kept page, whose honest output **passes V6**, the kept page's bead unchanged and page *N*'s `/R` translated; V7's fake bead with `/R` untranslated | a thread on kept pages only (unchanged) | drop beads from V6's exception: the honest two-page thread refuses and goes red; skip the bead translation |
 | V7 outside page *N* (decision 70, item 3) | the fake that translates a destination into another page, placed in the outline and in the `/Names` `/Dests` tree | honest output, every other destination byte-equal | delete the byte-equal check; **widen the writer's identity rule to `/Type /Page`**: V7 must refuse, and the test goes red if it does not |
-| V7 beads outside page *N* (decision 70, item 3) | a thread of two beads, one on page *N* and one on a kept page that has no `/B`, so the second is reached only through the catalogue's `/Threads`; the fake that translates the second bead's `/R` | honest output, the kept page's bead byte-equal | delete the beads from V7's byte-equal clause; **widen the writer's identity rule to `/Type /Page`**: V7 must refuse, and the test goes red if it does not |
+| V7 beads outside page *N* (decision 70, items 2 and 3) | a thread of two beads, one on page *N* and one on a kept page that has no `/B`, so the second is reached only through the catalogue's `/Threads`; the fake that translates the second bead's `/R` | honest output, the kept page's bead byte-equal | delete the beads from V7's byte-equal clause; **widen the writer's identity rule to `/Type /Page`**: V7 must refuse, and the test goes red if it does not |
 | V7 round trip | mapped values that are not exact in decimal, on native and on the web | values exact in decimal | compare within a tolerance instead of exactly |
 | §5 `[page-identity-mismatch]` | engines disagreeing on count; on one page's display size; on page *N*'s rotation; a quarter-turn page whose sizes agree only unswapped | agreeing | compare the rendered page only; compare without the swap |
 | §5 `[page-tree-ambiguous]` | a page reachable by two paths; a count the tree does not bear out; a node of the wrong kind; a node of two kinds | a well-formed deep tree | delete each clause |
@@ -1166,7 +1171,7 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   `[annotation-dependent-kept]` (widened), `[structure-tree-kept]`, `[metadata-thumbnail]`,
   `[drawing-survives]`, `[page-tree-ambiguous]`, `[page-identity-mismatch]`, `[paint-disagrees]`,
   `[render-not-reproducible]`, `[object-walk-too-large]`, and `[page-too-large-to-flatten]` per
-  ceiling. Over the bar: the number
+  ceiling. At 1% or more: the number
   goes to the owner, and the rule is not adjusted, except where an outcome below is already decided;
 - **at least one real document moving from refused to `Ok`** for each acceptance: the tree drop (rule
   1), forms elsewhere (rule 2), the web's inherited media box (§5), the written `/CropBox` (§3),
@@ -1176,15 +1181,17 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   tiling patterns, and, as its own figure, **the cost of decision 69's wider refusal**: the documents
   that refuse only through a role the earlier text disclosed (Type 3 glyph procedures, shading and
   function streams, soft masks, `/CIDSet` and `/CIDToGIDMap` streams, the ambiguous roles of rule 5,
-  and streams reached in more than one role). **Over 1% of real documents, the work stops and the figure
-  comes back to the owner** (decision 69; *the census decides*, below);
+  and streams reached in more than one role). **At 1% or more of real documents, the work stops and
+  the figure comes back to the owner** (decision 69; *the census decides*, below). If `/CIDSet` and
+  stream `/CIDToGIDMap` join the disclosed allowlist (next item but one), this figure is measured
+  without them;
 - **streams reached more than one way, under both readings** (decision 71, item 1): reached in more
   than one role, which refuses, and reached through more than one path in one disclosed kind, which
   stays disclosed, each counted, so the difference between the rule and the literal reading is a
   figure;
-- **`/CIDSet` and stream `/CIDToGIDMap`, as their own figure** (decision 71, item 2): under 1% of
-  real documents they refuse; otherwise they join the disclosed allowlist by name, and the figure is
-  reported to the owner;
+- **`/CIDSet` and stream `/CIDToGIDMap`, as their own figure** (decision 71, item 2), **settled
+  before `[drawing-survives]`'s**: under 1% of real documents they refuse; at 1% or more they join
+  the disclosed allowlist by name, and the figure is reported to the owner;
 - the disclosed survivor distribution by role, with the walk that stops at pages, and the destination
   arrays that do not count toward disclosure 5 (decision 70, item 1);
 - the object counts the walks meet, from which `[object-walk-too-large]`'s ceiling is set;
@@ -1206,12 +1213,12 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
 
 | | if the census shows | then |
 |---|---|---|
-| decision 3, `[metadata-thumbnail]` | it refuses **1% or fewer** of real documents | it refuses |
-| | it refuses **more than 1%** | the XMP thumbnail is **stripped on output** instead, and the refusal goes |
-| decisions 61, item 2, and 69, `[drawing-survives]`, with the wider refusal | it refuses **1% or fewer** of real documents | it refuses |
-| | it refuses **more than 1%** | **the work stops**, and the owner is brought the figure and the producers. It still refuses; it is never moved to disclosure (decision 57, item 4's disclosure branch is superseded) |
-| decision 71, item 2, `/CIDSet` and stream `/CIDToGIDMap` | their cost is **under 1%** of real documents | they refuse |
-| | it is **1% or more** | they join the disclosed allowlist **by name**, and the figure is reported to the owner |
+| decision 3, `[metadata-thumbnail]` | it refuses **under 1%** of real documents | it refuses |
+| | it refuses **1% or more** | the XMP thumbnail is **stripped on output** instead, and the refusal goes |
+| decisions 61, item 2, and 69, `[drawing-survives]`, with the wider refusal, measured without `/CIDSet` and stream `/CIDToGIDMap` if they join the disclosed allowlist (the next row, settled first) | it refuses **under 1%** of real documents | it refuses |
+| | it refuses **1% or more** | **the work stops**, and the owner is brought the figure and the producers. It still refuses; it is never moved to disclosure (decision 57, item 4's disclosure branch is superseded) |
+| decision 71, item 2, `/CIDSet` and stream `/CIDToGIDMap`, settled before `[drawing-survives]` | their cost is **under 1%** of real documents | they refuse |
+| | it is **1% or more** | they join the disclosed allowlist **by name**, and V5, disclosure 5 and the survivor report gain the two names in the same change; the figure is reported to the owner |
 | decision 7, the web ceiling | any number of pages refused at 4,194,304 px | the ceiling **stays**; the count is reported |
 | decision 8, `/CropBox` = `/MediaBox` | any number of pages whose crop was inherited | it is **always written**, and each such page counts as an acceptance, with at least one real one shown |
 
@@ -1252,7 +1259,7 @@ documents** (DECISIONS.md rule 2), registered before the run. It reports:
   common producer layout. So does a document whose page *N* used any other stream that something
   else keeps, outside the three disclosed roles (font programs, CMaps, ICC profiles): a shared Type 3
   font's glyph procedures, a shading or function stream, a soft mask (decision 69). The census
-  measures what that costs; over 1%, the owner decides (decisions 61, item 2, and 69).
+  measures what that costs; at 1% or more, the owner decides (decisions 61, item 2, and 69).
 - **The web refuses Tabloid and A3** at 150 dpi, and native refuses above 89,478,485 pixels (§6).
 - **Native heaps are not wiped** (§7).
 - **Rule 17 tier: acceptance.** v1 accepts much of what ADR 0029 refuses: every content refusal, the
@@ -1281,7 +1288,7 @@ and nothing in this record reopens them.
   no longer read different cross-reference tables or escapes. It would not remove PDFium's own limits
   on names, so §5's every-object scan would still be needed. It would rebind rule 7's input digest to
   the rewrite and change the pipeline, so it is the owner's to take.
-- **The census's `[drawing-survives]` figure over 1%** (rule 5): the owner decides, with the figure
+- **The census's `[drawing-survives]` figure at 1% or more** (rule 5): the owner decides, with the figure
   and the producers.
 
 ## Alternatives considered
