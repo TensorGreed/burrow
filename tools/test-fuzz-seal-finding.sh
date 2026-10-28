@@ -16,6 +16,19 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 seal="$here/fuzz-seal-finding.sh"
 work="$(mktemp -d)"
+# ONE rustc for every probe build. The probes compile an rlib from the repo and then a bin in a temp
+# directory; bare `rustc` resolves per working directory, so the repo's rust-toolchain.toml pinned
+# the rlib while the temp dir got the runner's default, and rustc refused the mismatch (E0514) in CI
+# only. Resolve it once, from the repo, and use that path for both.
+rustc_bin="$(cd "$repo" && rustup which rustc 2> /dev/null || command -v rustc)"
+# Every probe build goes through probe_rustc. On failure it prints rustc's first lines (indented, to stderr) so a CI
+# failure names its cause. Safe to print: the sources are the repo's own fuzz/src/lib.rs, a mutant of it, and fixed
+# probe strings written by this script, never fuzz input.
+probe_rustc() {
+  "$rustc_bin" "$@" > /dev/null 2> "$work/rustc.err" && return 0
+  { echo "  probe build failed (rustc $rustc_bin):"; head -n 4 "$work/rustc.err" | sed 's/^/    /'; } >&2
+  return 1
+}
 mutant="$here/fuzz-seal-finding.MUTANT.sh"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
@@ -290,15 +303,15 @@ RS
 panic_line() { # <lib.rs> -> prints the panic location and the line after it
   # Run from probe_dir with a relative source path, as cargo does, so the location is the bare
   # `fuzz_targets/probe.rs` the classifier sees in a nightly log.
-  (cd "$probe_dir" && rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$2" \
-    -o probe fuzz_targets/probe.rs > /dev/null 2>&1 || exit 9
+  (cd "$probe_dir" && probe_rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$2" \
+    -o probe fuzz_targets/probe.rs || exit 9
   ./probe 2>&1 | grep -A1 'panicked at' | tr '\n' '|'; true)
 }
-rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libreal.rlib" "$repo/fuzz/src/lib.rs" > /dev/null 2>&1 \
+probe_rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libreal.rlib" "$repo/fuzz/src/lib.rs" \
   && real="$(panic_line x "$probe_dir/libreal.rlib")" || real="BUILD-FAILED"
 sed '/^#\[track_caller\]$/d' "$repo/fuzz/src/lib.rs" > "$probe_dir/lib_mutant.rs"
 cmp -s "$repo/fuzz/src/lib.rs" "$probe_dir/lib_mutant.rs" && bad "track_caller mutation did not apply"
-rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libmutant.rlib" "$probe_dir/lib_mutant.rs" > /dev/null 2>&1 \
+probe_rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$probe_dir/libmutant.rlib" "$probe_dir/lib_mutant.rs" \
   && mut="$(panic_line x "$probe_dir/libmutant.rlib")" || mut="BUILD-FAILED"
 if grep -q 'panicked at fuzz_targets/probe.rs:[0-9]*:[0-9]*:|probe reported an internal error: PLANTED-MSG|' <<< "$real" \
   && grep -q 'panicked at .*lib_mutant.rs' <<< "$mut" && ! grep -q 'fuzz_targets/probe.rs' <<< "$mut"; then
@@ -320,8 +333,8 @@ cat > "$esc_dir/fuzz_targets/probe.rs" <<'RS'
 fn main() { burrow_fuzz::internal_error("probe", "PRE\nSUMMARY: leaked\rTAIL"); }
 RS
 esc_run() { # <rlib> -> stderr of the probe built against it, in $esc_dir/stderr.txt
-  (cd "$esc_dir" && rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$1" \
-    -o probe fuzz_targets/probe.rs > /dev/null 2>&1 && { ./probe > stderr.txt 2>&1 || true; }) || echo BUILD-FAILED > "$esc_dir/stderr.txt"
+  (cd "$esc_dir" && probe_rustc --edition 2021 --crate-type bin --crate-name probe --extern "burrow_fuzz=$1" \
+    -o probe fuzz_targets/probe.rs && { ./probe > stderr.txt 2>&1 || true; }) || echo BUILD-FAILED > "$esc_dir/stderr.txt"
 }
 esc_check() { # <stderr file> -> echoes marker lines|panic lines|line-start SUMMARY lines|published "leaked" lines
   local f="$1" n_marker n_panic n_sum n_pub
@@ -332,7 +345,7 @@ esc_check() { # <stderr file> -> echoes marker lines|panic lines|line-start SUMM
   echo "$n_marker|$n_panic|$n_sum|$n_pub"
 }
 esc_build() { # <lib.rs> <name> -> echoes esc_check of a probe built against it
-  rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$esc_dir/lib$2.rlib" "$1" > /dev/null 2>&1 \
+  probe_rustc --edition 2021 --crate-type rlib --crate-name burrow_fuzz -o "$esc_dir/lib$2.rlib" "$1" \
     && esc_run "$esc_dir/lib$2.rlib" || echo BUILD-FAILED > "$esc_dir/stderr.txt"
   esc_check "$esc_dir/stderr.txt"
 }
