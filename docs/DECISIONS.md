@@ -278,7 +278,7 @@ one is decided in an issue, with the same three parts.
     list in ADR 0031 §4 (*What it leaves undetectable*), kept current by that record's revisions
     while it is Proposed and by its dated amendments once it is Accepted, and each needs an
     independent reading before S9. On 2026-10-27, after rounds 1 and 2 (owner decisions 61, 66, 68
-    and 69), that list is: the set of objects the page used that the output keeps, which one walk
+    and 70), that list is: the set of objects the page used that the output keeps, which one walk
     both decides and checks; page identity across the two engines, which rests on refusals that read
     qpdf's page tree; the two engines reading the redacted page's content differently; the
     region-to-pixel arithmetic, only where the display frame that PDFium's transform (which paints)
