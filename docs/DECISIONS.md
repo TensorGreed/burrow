@@ -280,11 +280,9 @@ one is decided in an issue, with the same three parts.
     independent reading before S9. On 2026-10-27, after rounds 1 and 2 (owner decisions 61, 66, 68
     and 70), that list is: the set of objects the page used that the output keeps, which one walk
     both decides and checks; page identity across the two engines, which rests on refusals that read
-    qpdf's page tree; the two engines reading the redacted page's content differently; the
+    qpdf's page tree; the two engines reading the redacted page's content differently; and the
     region-to-pixel arithmetic, only where the display frame that PDFium's transform (which paints)
-    and burrow's arithmetic (which checks) both start from is wrong in the same way; and a
-    destination into the redacted page at a site ADR 0031 §3 does not list, which the check does not
-    hold because it reads by the same list. On 2026-10-28 (owner decision 74, which accepted ADR 0031)
+    and burrow's arithmetic (which checks) both start from is wrong in the same way. On 2026-10-28 the owner dropped the fifth item, a destination into the redacted page at a site ADR 0031 §3 does not list (decision 76), so the list is four. Also on 2026-10-28 (owner decision 74, which accepted ADR 0031)
     v1 keeps every destination unchanged; the translation of destinations into the redacted page that
     decisions 68 and 70 had added is post-launch. If ADR 0031 is rejected,
     there is no v1 list, and this rule's instances are v2's alone. *Decided:* owner, 2026-10-21
