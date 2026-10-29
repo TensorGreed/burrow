@@ -392,9 +392,16 @@ those at full candour is working and is not what "summarise" is asking you to sh
   `gh run view <id> --json conclusion,jobs,headSha`, and check that `headSha` is the PR's head.
   The queue enforces a required check-run rather than the run-level conclusion. The ruleset
   requires `ci-ok` (since 2026-10-16), which needs every job and fails on any result but
-  `success`, so a skipped job can no longer pass; a run-level failure with every job green still
-  can, so after a queued merge `main`'s post-merge push run is read as DECISIONS rule 11's
-  amendment says.
+  `success`, so a skipped job can no longer pass -- except the three skips `tools/check-ci-ok.py`
+  allows by rule (owner (82)/(83), 2026-10-29): `fuzz` on a PR or merge group whose diff touches
+  none of `core/`, `bindings/`, `fuzz/`, `engines/`, `.github/workflows/`, `tools/`, a
+  `Cargo.toml`, `Cargo.lock` or `rust-toolchain.toml` (any doubt about the diff runs it), and
+  `web-firefox`/`web-webkit` on a PR or merge group, which run **Chromium only**. Firefox and
+  WebKit run on push to `main` and nightly in `fuzz-nightly.yml`, where a failure is read per
+  job under rule 11. A run-level failure with every job green still passes `ci-ok`, so after a
+  queued merge `main`'s post-merge push run is read as DECISIONS rule 11's amendment says.
+  The web jobs no longer wait for `test`: a short `native-record` job builds the two files the
+  browser differential compares against, and only the browser steps wait for it.
   That is two changes from "run everything before every push".
 
   **The first, in M2: the pre-push gate became `--changed`.** The old rule had stopped being
@@ -425,7 +432,8 @@ those at full candour is working and is not what "summarise" is asking you to sh
   **The fuzz jobs are off the pre-push path entirely.** A fuzz target is a *search*, and sixty
   seconds of it proves nothing about a change that did not touch the parser it fuzzes, while
   costing more than every other job combined. Searching belongs in `fuzz-nightly.yml`, which is
-  seeded and given hours. The one exception is derived rather than declared: an edit **under
+  seeded and given hours. (CI's own `fuzz smoke` is narrowed the same way since 2026-10-29: on a
+  PR or merge group it runs only when the diff touches its inputs.) The one exception is derived rather than declared: an edit **under
   `fuzz/`** puts them back, because `fuzz/` is its own cargo workspace and nothing else compiles
   a fuzz target — measured in M2, when a seam change broke `pdfsyntax_geometry` and every Rust
   gate run by hand stayed green.

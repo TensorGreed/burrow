@@ -12,6 +12,13 @@ name: fuzz (nightly)
 # ENCRYPTED" at the end), and reproducing means decrypting that or re-running the target locally
 # against a seeded corpus. That is deliberate --
 # this repository is public and #62's defects are unpatched upstream.
+#
+# AND FIREFOX AND WEBKIT (owner (82)(3), 2026-10-29). CI runs the browser tests in Chromium alone on
+# a pull request and in the merge queue; the other two run on push to main and here, every night.
+# A nightly failure of either is read per job under DECISIONS rule 11, like a fuzz job's. The three
+# jobs at the end are that: `native-record` builds the two native files the browser differential
+# compares against -- with the native engines, as ci.yml's job of the same name does -- and
+# `web-firefox` / `web-webkit` wait for it with `needs:`, since nothing here is in a hurry.
 
 on:
   schedule:
@@ -286,3 +293,111 @@ jobs:
           path: ${{ runner.temp }}/sealed/${{ matrix.target }}.age
           retention-days: 7
           if-no-files-found: error
+
+  # THE NATIVE HALF OF THE BROWSER DIFFERENTIAL, for the two browsers below. The same script and
+  # the same engine cache as ci.yml's `native-record`: the record links the native engines and the
+  # generators use the vendored `cjpeg` and `qpdf`, so this job must have `engines/vendor`.
+  native-record:
+    name: native conformance record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+      - name: Build the conformance record and the generated redaction corpus
+        env:
+          RUSTFLAGS: -D warnings
+        run: tools/build-native-handover.sh
+      - name: Upload the native conformance record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-conformance-record
+          path: tests/conformance/native-outcomes.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the generated redaction corpus
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+          if-no-files-found: error
+          retention-days: 1
+
+  web-firefox:
+    name: web (firefox)
+    needs: native-record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
+      - name: Download the generated redaction corpus
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+      - uses: ./.github/actions/build-web-payload
+      - name: Install the browser
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps firefox
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test --project=firefox
+      - name: Every case in this browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh --projects firefox
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-firefox
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+  web-webkit:
+    name: web (webkit)
+    needs: native-record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
+      - name: Download the generated redaction corpus
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+      - uses: ./.github/actions/build-web-payload
+      - name: Install the browser
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps webkit
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test --project=webkit
+      - name: Every case in this browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh --projects webkit
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-webkit
+          path: apps/web/playwright-report/
+          retention-days: 7
