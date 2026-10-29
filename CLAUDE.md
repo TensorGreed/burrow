@@ -433,9 +433,9 @@ those at full candour is working and is not what "summarise" is asking you to sh
   seconds of it proves nothing about a change that did not touch the parser it fuzzes, while
   costing more than every other job combined. Searching belongs in `fuzz-nightly.yml`, which is
   seeded and given hours. (CI's own `fuzz smoke` is narrowed the same way since 2026-10-29: on a
-  PR or merge group it runs only when the diff touches its inputs.) The one exception is derived rather than declared: an edit **under
-  `fuzz/`** puts them back, because `fuzz/` is its own cargo workspace and nothing else compiles
-  a fuzz target — measured in M2, when a seam change broke `pdfsyntax_geometry` and every Rust
+  PR or merge group it runs only when the diff touches its inputs.) The one exception is derived
+  rather than declared: an edit **under `fuzz/`** puts them back, because `fuzz/` is its own cargo
+  workspace and nothing else compiles a fuzz target — measured in M2, when a seam change broke `pdfsyntax_geometry` and every Rust
   gate run by hand stayed green.
 
   It exists because the rule that used to sit here did not work. That rule said *"replicating
