@@ -206,16 +206,20 @@ def decide_scope(event: str, base: str, head: str) -> tuple[bool, str, list[str]
         done = subprocess.run(
             # In the CURRENT directory, which in CI is the checkout: the self-test runs this
             # from repositories it builds, so no path into this one is assumed.
-            ["git", "diff", "--name-only", "--no-renames", spec],
+            # `-z` and `core.quotepath=false`: by default git QUOTES a path holding a non-ASCII
+            # byte, a tab or a quote (`"core/\303\274.rs"`), and a quoted path does not start with
+            # `core/`, so the scope would have answered fuzz=false on a change to core/. NUL-
+            # separated output is never quoted.
+            ["git", "-c", "core.quotepath=false", "diff", "--name-only", "--no-renames", "-z", spec],
             capture_output=True,
-            text=True,
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as error:
         return True, f"git diff {spec} could not run ({error})", []
     if done.returncode != 0:
-        return True, f"git diff {spec} failed ({done.stderr.strip() or done.returncode})", []
-    paths = [line for line in done.stdout.splitlines() if line.strip()]
+        stderr = done.stderr.decode("utf-8", "replace").strip()
+        return True, f"git diff {spec} failed ({stderr or done.returncode})", []
+    paths = [p.decode("utf-8", "replace") for p in done.stdout.split(b"\0") if p.strip()]
     if not paths:
         # A diff that names nothing cannot be told from one that silently read nothing.
         return True, f"git diff {spec} named no files, which cannot be told from a broken diff", []

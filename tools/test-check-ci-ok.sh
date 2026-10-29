@@ -25,7 +25,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"; rm -f "$copy"' EXIT
 pass=0
 fail=0
-expected=80
+expected=86
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
@@ -150,6 +150,19 @@ commit_touching() {
   git -C "$scope_repo" rev-parse HEAD
 }
 
+# commit_touching_many <path>...: a commit on top of base touching exactly these paths; prints its SHA.
+commit_touching_many() {
+  git -C "$scope_repo" checkout -q --detach "$base_sha"
+  local f
+  for f in "$@"; do
+    mkdir -p "$scope_repo/$(dirname "$f")"
+    echo "$f" > "$scope_repo/$f"
+    git -C "$scope_repo" add -- "$f"
+  done
+  git -C "$scope_repo" -c user.name=t -c user.email=t@t commit -q -m "touch $*"
+  git -C "$scope_repo" rev-parse HEAD
+}
+
 # scope_says <label> <event> <base> <head> <want fuzz> [<dir>]
 scope_says() {
   local dir="${6:-$scope_repo}" status=0 out
@@ -186,6 +199,25 @@ while read -r kind rule; do
 done <<<"$rules"
 if [ "$probed" -eq 9 ]; then ok "all 9 of the checker's 9 path rules were probed (owner (83)(2)'s list)"
 else bad "probed $probed path rules; owner (83)(2) names 9 -- the checker's table and the owner's list disagree"; fi
+
+# B1 (round 1): git QUOTES a path holding a non-ASCII byte, a tab or a quote unless asked not to
+# (`"core/\303\274.rs"`), and a quoted path does not start with `core/`. Each is under core/, so each
+# must run fuzz. (Without -z, a tab or a quote is quoted whatever core.quotepath says.)
+sha="$(commit_touching "core/ü-probe.rs")"
+scope_says "a non-ASCII path under core/ runs fuzz (git would quote it)" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching "$(printf 'core/tab\there.rs')")"
+scope_says "a path with a tab under core/ runs fuzz (git would quote it)" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching 'core/quote"here.rs')"
+scope_says "a path with a quote under core/ runs fuzz (git would quote it)" pull_request "$base_sha" "$sha" true
+
+# S2 (round 1): the decision must read EVERY changed path, not the first or the last. git lists
+# paths sorted, so `docs/` follows `core/` and `a/` precedes it.
+sha="$(commit_touching_many docs/x.md core/x.rs)"
+scope_says "docs and core/ together, the fuzz path listed first, runs fuzz" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching_many a/x.md core/x.rs)"
+scope_says "docs-like and core/ together, the fuzz path listed last, runs fuzz" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching_many a/x.md core/x.rs z/x.md)"
+scope_says "a fuzz path in the middle of three runs fuzz" pull_request "$base_sha" "$sha" true
 
 docs_sha="$(commit_touching docs/only.md)"
 core_sha="$(commit_touching core/burrow-ops/src/lib.rs)"
@@ -327,23 +359,29 @@ if [ -z "${BURROW_CI_OK_MUTANT:-}" ]; then
   mutant="$here/.check-ci-ok.mutant.py"
   trap 'rm -rf "$work"; rm -f "$copy" "$mutant"' EXIT
   mutants=0
-  # plant <label> <old> <new> <the FAIL line the nested run must print>
+  # plant <label> <old> <new> [<old> <new>]... <the FAIL line the nested run must print>
   plant() {
     mutants=$((mutants + 1))
+    local label="$1" want="${*: -1}"
+    shift
+    set -- "${@:1:$#-1}"
     rm -f "$mutant"
-    if ! python3 - "$here/check-ci-ok.py" "$mutant" "$2" "$3" <<'PY'
+    if ! python3 - "$here/check-ci-ok.py" "$mutant" "$@" <<'PY'
 import pathlib, sys
-src, dst, old, new = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+pairs = sys.argv[3:]
 text = src.read_text()
-assert text.count(old) == 1, f"MUTATION DID NOT APPLY: {old!r} occurs {text.count(old)} times"
-dst.write_text(text.replace(old, new, 1))
+for old, new in zip(pairs[::2], pairs[1::2]):
+    assert text.count(old) == 1, f"MUTATION DID NOT APPLY: {old!r} occurs {text.count(old)} times"
+    text = text.replace(old, new, 1)
+dst.write_text(text)
 PY
-    then bad "mutant '$1': the mutation did not apply"; return; fi
-    if cmp -s "$here/check-ci-ok.py" "$mutant"; then bad "mutant '$1': identical copy"; return; fi
+    then bad "mutant '$label': the mutation did not apply"; return; fi
+    if cmp -s "$here/check-ci-ok.py" "$mutant"; then bad "mutant '$label': identical copy"; return; fi
     local status=0 out
     out="$(BURROW_CI_OK_MUTANT=1 BURROW_CI_OK_CHECK="$mutant" "$here/test-check-ci-ok.sh" 2>&1)" || status=$?
-    if [ "$status" -ne 0 ] && grep -qF -- "FAIL $4" <<<"$out"; then ok "mutant '$1' is caught: FAIL $4"
-    else bad "mutant '$1' survived (status $status; no 'FAIL $4')"; fi
+    if [ "$status" -ne 0 ] && grep -qF -- "FAIL $want" <<<"$out"; then ok "mutant '$label' is caught: FAIL $want"
+    else bad "mutant '$label' survived (status $status; no 'FAIL $want')"; fi
   }
   plant "fuzz's skip ignores what changes said" '        if said != "false":' '        if False:' \
     "fuzz skipped while core/ changed (changes said true) is refused, named"
@@ -358,7 +396,18 @@ PY
     "web-firefox skipped on push is refused, named"
   plant "a gated job's if: no longer compared" '        elif str(expression).strip() != GATED[name]:' '        elif False:' \
     "fuzz's if: without !cancelled() is refused"
-  if [ "$mutants" -eq 6 ]; then ok "6 of 6 checker mutants were planted"; else bad "planted $mutants of 6 mutants"; fi
+  plant "the old quoting behaviour (no -z, default quotepath, split on newline)" \
+    '["git", "-c", "core.quotepath=false", "diff", "--name-only", "--no-renames", "-z", spec],' \
+    '["git", "diff", "--name-only", "--no-renames", spec],' \
+    'done.stdout.split(b"\0")' 'done.stdout.split(b"\n")' \
+    "a non-ASCII path under core/ runs fuzz (git would quote it)"
+  plant "git diff without -z (a tab or a quote is quoted again)" '"--no-renames", "-z", spec]' '"--no-renames", spec]' \
+    "a path with a tab under core/ runs fuzz (git would quote it)"
+  plant "only the first changed path examined" 'hits = [p for p in paths if touches_fuzz(p)]' 'hits = [p for p in paths[:1] if touches_fuzz(p)]' \
+    "docs-like and core/ together, the fuzz path listed last, runs fuzz"
+  plant "only the last changed path examined" 'hits = [p for p in paths if touches_fuzz(p)]' 'hits = [p for p in paths[-1:] if touches_fuzz(p)]' \
+    "docs and core/ together, the fuzz path listed first, runs fuzz"
+  if [ "$mutants" -eq 10 ]; then ok "10 of 10 checker mutants were planted"; else bad "planted $mutants of 10 mutants"; fi
   expected=$((expected + mutants + 1))
 fi
 
