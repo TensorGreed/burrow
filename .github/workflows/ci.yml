@@ -1124,6 +1124,20 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: pnpm build
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. Here, right after
+      # the production `pnpm build` and before Playwright's global setup rebuilds `dist/` as the
+      # harness site.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-chromium
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
       # Reports the first-load payload against its budget on every PR, as a step summary.
       #
       # A step summary and not a PR comment: this workflow runs with `permissions:
@@ -1293,6 +1307,19 @@ jobs:
         run: pnpm exec playwright test --project=firefox
       - name: Every case in this browser was compared and agreed, or is declared skipped
         run: tools/check-redaction-differential-ledger.sh --projects firefox
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. This job runs no
+      # production build: what it uploads is the HARNESS build Playwright's global setup made.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-firefox
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1338,6 +1365,19 @@ jobs:
         run: pnpm exec playwright test --project=webkit
       - name: Every case in this browser was compared and agreed, or is declared skipped
         run: tools/check-redaction-differential-ledger.sh --projects webkit
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. This job runs no
+      # production build: what it uploads is the HARNESS build Playwright's global setup made.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-webkit
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
