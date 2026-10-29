@@ -335,14 +335,20 @@ those at full candour is working and is not what "summarise" is asking you to sh
   Residual, stated rather than implied: a force-push to a branch someone else is working on is
   now permitted without a prompt. The lease catches the case where they have pushed; it does
   not catch the case where they have not pushed yet.
-- **A CI monitor watches one run ID, and is stopped on every push.** Use
-  `gh run watch <id> --exit-status`, never `gh pr checks <pr>`: the latter reports whichever
+- **A CI monitor watches one run ID, and is stopped on every push.** Watch a queued PR with
+  `~/burrow-census/bin/merge-watch <pr>`, never `gh pr checks <pr>`: the latter reports whichever
   run is *current*, so a monitor started for one commit silently begins reporting on another.
+  `merge-watch` decides only from state read back and prints one verdict: `merged`, `removed`,
+  `failed`, `timeout` or `unknown`. `merged` means state MERGED, a non-null `mergedAt` and a
+  merge commit reachable from origin/main, all three; a failed or malformed read is `unknown`,
+  never a terminal outcome. It never uses `gh run watch`, and after a merge it reads main's push
+  CI and Deploy runs on the merge commit. One watcher per PR, stopped when its work ends. It
+  lives on the owner's machine, outside the repo (self-test `~/burrow-census/bin/test-merge-watch`).
   Four of them accumulated across one PR, all polling the same endpoint — a green from any
   would have read as confirmation while saying nothing about the commit it was started for.
   Stop the previous monitor before starting the next.
-- **An exit code is not an outcome. Read the state back.** This has now been measured three
-  times, in three different tools, and each one reported success for something that had not
+- **An exit code is not an outcome. Read the state back.** This has now been measured four
+  times, and each one reported success for something that had not
   happened:
 
   | | exit code | what was actually true |
@@ -350,6 +356,7 @@ those at full candour is working and is not what "summarise" is asking you to sh
   | `gh run watch --exit-status` (M1 PR 4c) | **0** | the run's conclusion was `failure` |
   | `gh pr edit --base main` (M1, #76) | **0**, with a warning | the base was unchanged; it had failed on an unrelated GraphQL projects-deprecation error |
   | `grep -c` in an `&&` chain | **1** on a count of zero | the chain stopped; a successful restore read as a failed one |
+  | `gh run watch --exit-status` and an `until state != OPEN` loop (#426, 2026-10-28) | **1** while the merge-group run was still in progress (it later succeeded); **0** on one transient read | the PR had in fact been removed from the queue (checks_timed_out) |
 
   A fourth, adjacent: piping a runner through `tail` makes the *pipeline's* status `tail`'s,
   so `tools/ci-local.py … | tail -80` exited **0** over three failing jobs. Capture the status
@@ -361,7 +368,7 @@ those at full candour is working and is not what "summarise" is asking you to sh
     rerun` — read the state back and assert it.** `gh pr view <n> --json baseRefName,state`,
     `gh run view <id> --json conclusion`. `gh` prints deprecation and partial-failure
     warnings on stdout and still exits 0.
-  - **`gh run watch --exit-status` is not the verdict.** Confirm with
+  - **A watcher's exit status is not the verdict.** Confirm with
     `gh run view <id> --json conclusion`, and read `--json jobs` when you need to know *which*
     job failed and whether it is yours.
   - Never put a command whose status you need on the left of a pipe.

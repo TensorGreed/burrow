@@ -449,3 +449,4 @@ comparison is what would catch it.
 | Tool | License | Version | Used by | Notes |
 |---|---|---|---|---|
 | `age` | BSD-3-Clause | v1.3.2 | `tools/fuzz-seal-finding.sh`, `.github/workflows/fuzz-nightly.yml` | Encrypts fuzz findings to a public key the owner holds (owner decision (62)(1)). Downloaded in CI and pinned by version and sha256 in `tools/install-age.sh`. Not linked into, bundled with or shipped in any burrow artefact; listed for completeness |
+| `cosign` | Apache-2.0 | v3.0.6 | `tools/cosign-blob.sh`, `.github/workflows/deploy.yml` | Signs and rehearses release blobs. Installed by `sigstore/cosign-installer` (SHA-pinned, v4.1.2) and pinned by version and sha256 (`COSIGN_VERSION`, `COSIGN_SHA256_AMD64`) in `deploy.yml`, verified in the job. Not linked into, bundled with or shipped in any burrow artefact; listed for completeness |
