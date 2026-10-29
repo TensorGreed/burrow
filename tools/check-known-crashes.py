@@ -80,9 +80,12 @@ SYMBOL = re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+in\s+([A-Za-z_][A-Za-z0-9_:~]*)",
 #: an entry is keyed on the panic instead: the target FILE (the line number moves with every edit
 #: to the target) and the EXACT message line. Adjacency is part of the key: a message line that
 #: does not directly follow a `panicked at` line for that file is not this panic, so a target
-#: printing the same words anywhere else in its log matches nothing. The residual: a target whose
-#: panic message prints input with a RAW newline (Display, not Debug) could forge the pair; the
-#: same residual as the banner's above, and no target does that today.
+#: printing the same words anywhere else in its log matches nothing. `burrow_fuzz::internal_error`
+#: escapes the message (`escape_debug`) in its panic line as well as its marker, so a message that
+#: reaches the log through it is one line and the ledger's `panic` text is the ESCAPED form. The
+#: residual: a target that panics with input in a message by another route, with a RAW newline
+#: (Display, not Debug), could still forge the pair; the same residual as the banner's above, and
+#: no target does that today.
 #: THE THREAD ID IS OPTIONAL, AND THAT WAS MEASURED: current Rust prints
 #: `thread '<unnamed>' (539272) panicked at …` -- the nightly's own report of #285 -- where older
 #: releases print no id. A pattern written from memory without it matched nothing, and the probes

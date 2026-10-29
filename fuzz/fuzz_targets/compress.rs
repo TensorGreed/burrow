@@ -176,7 +176,7 @@ fuzz_target!(|data: &[u8]| {
         // means an invariant inside burrow did not hold, which is a finding rather than a
         // refusal.
         Err(Error::Internal(message)) => {
-            panic!("compress reported an internal error: {message}");
+            burrow_fuzz::internal_error("compress", &message);
         }
         Err(_) => {}
     }

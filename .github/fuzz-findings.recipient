@@ -1,0 +1,9 @@
+# The age PUBLIC key that fuzz-nightly.yml encrypts every finding to (owner decision (62)(1),
+# key installed by decision (66)(4), 2026-10-27). The private key is held by the owner and is never
+# in this repository or in CI. This file must hold exactly one key line: a missing, empty,
+# placeholder or malformed recipient FAILS the seal step (tools/fuzz-seal-finding.sh), so the job
+# goes red rather than silently keeping nothing.
+#
+# Decrypt a downloaded artifact with
+#   age -d -i ~/burrow-security/fuzz-crash.key <target>.age | tar -x
+age1s0lqn7rhe69uhf378cwem65ddrpc0jfkqgfxjvw4h8rje6sy94sqefdma2

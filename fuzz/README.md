@@ -68,7 +68,7 @@ them. While #62 is open, **no seeded target can gate a pull request.**
 | job | corpus | a crash is |
 |---|---|---|
 | `ci.yml` fuzz smoke, 60 s each | **unseeded** (the corpus directory is cleared first) | a blocked merge |
-| `fuzz-nightly.yml`, 10 min each | **seeded** | a report, with the input uploaded |
+| `fuzz-nightly.yml`, 10 min each | **seeded** | a report; the input and unredacted log of every crash (ledger-matched or not) are kept only as an `age`-encrypted artifact (`tools/fuzz-seal-finding.sh`, key owner-held); a missing or placeholder recipient fails the step |
 
 That is not a retreat to where things were: the seeder, its five adversarial cases and the
 nightly matrix are all still here and still ran. What changed is which job gates on them.
