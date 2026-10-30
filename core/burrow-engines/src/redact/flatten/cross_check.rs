@@ -404,8 +404,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Step 6's size and length: W+1, H+1, one byte short, one long; twin exact. KILLS: trusting
-    /// the reported size.
+    /// Step 6's size and length: W+1, H+1, one byte short, one long, and the size alone wrong over
+    /// a buffer of the right length; twin exact. KILLS: trusting the reported size.
     #[test]
     fn a_picture_of_the_wrong_size_or_length_is_refused() {
         let frame = letter(0);
@@ -430,6 +430,12 @@ mod tests {
         let mut long = rgb.clone();
         long.push(0);
         assert!(matches!(check(1275, 1650, &long), Err(Error::Internal(_))));
+        // THE SIZE ON ITS OWN, with the buffer the frame's length, so the length check cannot
+        // stand in for it: the dimensions swapped (a quarter turn reported the other way), and a
+        // width one more with a height to match the product's neighbourhood. Without these the
+        // size check could be deleted and every case above would still refuse, by length.
+        assert!(matches!(check(1650, 1275, &rgb), Err(Error::Internal(_))));
+        assert!(matches!(check(1276, 1650, &rgb), Err(Error::Internal(_))));
     }
 
     /// Rule 6 on the check side: re-checked, whatever the render did.
