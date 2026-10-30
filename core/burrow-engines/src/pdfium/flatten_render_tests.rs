@@ -596,3 +596,72 @@ fn a_region_over_the_bottom_right_corner_paints_the_last_row_and_column() {
         [255, 0, 0]
     );
 }
+
+/// Rule 9 on a page that draws text: black Helvetica on white, rendered for the flatten and
+/// compared, pixel by pixel outside the paint, with the selection picture's plain render at the
+/// same size, and every ink pixel held grey (red = green = blue), as LCD text's coloured
+/// sub-pixel fringes would not be.
+///
+/// Measured on the pinned PDFium 2026-10-30 (aarch64): about 10,400 ink pixels outside the paint,
+/// every one grey, none differing from the plain render.
+///
+/// **This does not kill `FPDF_LCD_TEXT` (0x02) added to the flags**, and no picture can: on the
+/// pinned build that flag changes no pixel here, with the alpha bitmap or a BGRx one (both
+/// planted, both green, 2026-10-30). `the_render_flags_are_fpdf_annot_alone` holds it instead.
+/// What this holds is that the flatten's text is the selection picture's (rule 7's one route),
+/// and it is the fixture that would see LCD text if a later PDFium made the flag effective.
+///
+/// KILLS: any flag that changes how text is drawn on the pinned build (`FPDF_ANNOT` removed is
+/// held by rule 9's annotation test).
+#[test]
+fn text_renders_as_the_selection_picture_does_with_no_lcd_fringes() {
+    let font =
+        "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
+    let bytes = document(
+        &format!("/MediaBox [0 0 300 200] {font}"),
+        "BT /F1 36 Tf 20 120 Td (Hamburgefonts) Tj ET",
+        &[],
+        "",
+    );
+    let region = Region {
+        left: 250.0,
+        top: 170.0,
+        width: 10.0,
+        height: 10.0,
+    };
+    let painted = honest(&bytes, &region);
+    let size = (painted.width, painted.height);
+    let unpainted = plain(&bytes, size);
+    let (mut ink, mut antialiased) = (0_u32, 0_u32);
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            if painted.painted.contains(x, y) {
+                continue;
+            }
+            let got = pixel(&painted.rgb, size.0, x, y);
+            assert_eq!(got, pixel(&unpainted, size.0, x, y), "({x}, {y})");
+            if got != [255, 255, 255] {
+                assert!(
+                    got[0] == got[1] && got[1] == got[2],
+                    "({x}, {y}) {got:?}: text ink that is not grey"
+                );
+                ink += 1;
+                if got != [0, 0, 0] {
+                    antialiased += 1;
+                }
+            }
+        }
+    }
+    // The fixture draws text, and smooths it: a page with no glyphs could not tell the flags apart.
+    assert!(ink > 5_000, "{ink} ink pixels");
+    assert!(antialiased > 500, "{antialiased} smoothed pixels");
+}
+
+/// Rule 9's flags by value: `FPDF_ANNOT` (0x01, `fpdfview.h:820`) and no other bit. The pin exists
+/// for the bits no picture can see on the pinned build, `FPDF_LCD_TEXT` (0x02) first among them.
+///
+/// KILLS: `FPDF_LCD_TEXT`, or any other bit, added to the flatten render's flags.
+#[test]
+fn the_render_flags_are_fpdf_annot_alone() {
+    assert_eq!(super::FLAGS, 0x01);
+}

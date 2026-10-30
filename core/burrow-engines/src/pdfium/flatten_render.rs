@@ -56,6 +56,14 @@ use crate::redact::flatten::paint::{
 use crate::redact::flatten::{Picture, pixels_for};
 use crate::{Annotations, OpenOptions};
 
+/// The flatten render's flags: **`FPDF_ANNOT` (0x01) and nothing else** (§2 rule 9). Pinned by
+/// value in a test, because no picture can hold the absence of `FPDF_LCD_TEXT` (0x02): on the
+/// pinned PDFium it changes no pixel of this render, with an alpha bitmap or without (measured
+/// 2026-10-30). A flag with no visible effect today is still one rule 9 says is not set. The pin
+/// holds this constant, and the render passes it as it is; a bit or-ed in at the call site is
+/// past the pin, as it is past every picture.
+pub(super) const FLAGS: c_int = Annotations::Drawn.render_flags();
+
 // THE TWO DECLARATIONS THIS SLICE ADDS, checked against the pinned
 // `engines/vendor/native-*/include/pdfium/fpdfview.h` (the copy the build includes, not `.orig`).
 // Same precondition as every declaration in `ffi.rs`: engine thread only.
@@ -244,7 +252,6 @@ fn render_painted_through(
 
     let page_index = page_index(index, source.pages_at_open)?;
     let (w, h) = (raster_dimension(wide)?, raster_dimension(high)?);
-    let flags: c_int = Annotations::Drawn.render_flags();
     let id = source.id;
     let limits = options.limits;
     let deadline_in = *deadline;
@@ -282,7 +289,7 @@ fn render_painted_through(
                     page,
                     w,
                     h,
-                    flags,
+                    FLAGS,
                     &deadline_in,
                     clock_in.as_ref(),
                     &limits,
