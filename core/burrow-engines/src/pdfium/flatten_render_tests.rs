@@ -665,3 +665,162 @@ fn text_renders_as_the_selection_picture_does_with_no_lcd_fringes() {
 fn the_render_flags_are_fpdf_annot_alone() {
     assert_eq!(super::FLAGS, 0x01);
 }
+
+/// Rule 9's "which subtypes get a generated appearance, and how far it reaches", **measured on the
+/// pinned build** (2026-10-30, aarch64; ADR 0031 §2): one annotation with **no `/AP`** per page,
+/// `/F 4`, `/Rect [100 40 200 160]`, drawn with `FPDF_ANNOT` alone and no form-fill handle.
+///
+/// PDFium generates an appearance, and the picture shows it, for `/Square` and `/Circle` (border
+/// `/C`, interior `/IC` at the centre), `/Highlight` (`/C` over the quadrilateral), `/Underline`,
+/// `/StrikeOut` and `/Squiggly` (a `/C` line), `/Ink` (the `/InkList` stroke in `/C`), `/Text`
+/// (the note icon, yellow and black whatever `/C` says) and `/FreeText` (its `/DA` text and
+/// border). Twins, which it does not generate for and which draw **nothing**: `/Line`, `/Polygon`
+/// and `/Stamp`. **How far it reaches**: within a pixel of `/Rect` for all of them but `/Ink`,
+/// whose stroke runs past `/Rect` by up to half its `/BS /W` (1.6 pt measured, of 2).
+///
+/// KILLS: `FPDF_ANNOT` removed from the flags (every generated appearance vanishes).
+#[test]
+fn annotations_without_an_appearance_draw_as_measured_on_the_pinned_pdfium() {
+    const WHITE: [u8; 3] = [255, 255, 255];
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    const YELLOW: [u8; 3] = [255, 255, 0];
+    const QUAD: &str = "/QuadPoints [100 160 200 160 100 40 200 40]";
+    /// A colour that must appear, and at least how many of its pixels.
+    type Present = Option<([u8; 3], u32)>;
+    // (subtype, entries, the colour at the rectangle's centre, what must appear; None for a
+    // subtype that draws nothing).
+    let cases: &[(&str, String, [u8; 3], Present)] = &[
+        (
+            "Square",
+            "/C [1 0 0] /IC [0 0 1]".into(),
+            BLUE,
+            Some((RED, 400)),
+        ),
+        (
+            "Circle",
+            "/C [1 0 0] /IC [0 0 1]".into(),
+            BLUE,
+            Some((RED, 300)),
+        ),
+        (
+            "Highlight",
+            format!("/C [1 1 0] {QUAD}"),
+            YELLOW,
+            Some((YELLOW, 25_000)),
+        ),
+        (
+            "Underline",
+            format!("/C [1 0 0] {QUAD}"),
+            WHITE,
+            Some((RED, 100)),
+        ),
+        (
+            "StrikeOut",
+            format!("/C [1 0 0] {QUAD}"),
+            RED,
+            Some((RED, 100)),
+        ),
+        (
+            "Squiggly",
+            format!("/C [1 0 0] {QUAD}"),
+            WHITE,
+            Some((RED, 100)),
+        ),
+        (
+            "Ink",
+            "/C [1 0 0] /InkList [[100 40 200 160]] /BS << /W 4 >>".into(),
+            RED,
+            Some((RED, 1_000)),
+        ),
+        ("Text", "/C [1 0 0]".into(), WHITE, Some((YELLOW, 300))),
+        (
+            "FreeText",
+            "/DA (/Helv 12 Tf 1 0 0 rg) /Contents (Hello)".into(),
+            WHITE,
+            Some((RED, 400)),
+        ),
+        (
+            "Line",
+            "/C [1 0 0] /L [100 40 200 160] /BS << /W 4 >>".into(),
+            WHITE,
+            None,
+        ),
+        (
+            "Polygon",
+            "/C [1 0 0] /Vertices [100 40 200 40 150 160]".into(),
+            WHITE,
+            None,
+        ),
+        ("Stamp", "/C [1 0 0] /Name /Approved".into(), WHITE, None),
+    ];
+    let region = Region {
+        left: 250.0,
+        top: 170.0,
+        width: 10.0,
+        height: 10.0,
+    };
+    let scale = 150.0 / 72.0;
+    let mut examined = 0;
+    for (subtype, entries, centre, present) in cases {
+        let annot =
+            format!("<< /Type /Annot /Subtype /{subtype} /Rect [100 40 200 160] /F 4 {entries} >>");
+        assert!(
+            !annot.contains("/AP"),
+            "{subtype}: the fixture has no appearance"
+        );
+        let bytes = document("/MediaBox [0 0 300 200] /Annots [5 0 R]", "", &[annot], "");
+        let painted = honest(&bytes, &region);
+        let (width, height) = (painted.width, painted.height);
+        let (mut drawn, mut named) = (0_u32, 0_u32);
+        let mut reach = 0.0_f64;
+        for y in 0..height {
+            for x in 0..width {
+                if painted.painted.contains(x, y) {
+                    continue;
+                }
+                let got = pixel(&painted.rgb, width, x, y);
+                if got == WHITE {
+                    continue;
+                }
+                drawn += 1;
+                if present.is_some_and(|(colour, _)| colour == got) {
+                    named += 1;
+                }
+                // How far past `/Rect` this pixel's top-left corner lies, in points.
+                let (ux, uy) = (f64::from(x) / scale, 200.0 - f64::from(y) / scale);
+                let beyond = (100.0 - ux)
+                    .max(ux - 200.0)
+                    .max(40.0 - uy)
+                    .max(uy - 160.0)
+                    .max(0.0);
+                reach = reach.max(beyond);
+            }
+        }
+        let at = pixel(
+            &painted.rgb,
+            width,
+            (150.0 * scale) as u32,
+            (100.0 * scale) as u32,
+        );
+        assert_eq!(at, *centre, "{subtype}: the centre");
+        match present {
+            Some((colour, at_least)) => {
+                assert!(
+                    named >= *at_least,
+                    "{subtype}: {named} pixels of {colour:?}"
+                );
+            }
+            None => assert_eq!(drawn, 0, "{subtype}: no generated appearance"),
+        }
+        // Within one pixel (0.48 pt) of `/Rect`, except `/Ink`, whose stroke reaches past it
+        // by up to half its `/BS /W` (measured: 1.6 pt of 2).
+        if *subtype == "Ink" {
+            assert!(reach > 1.0 && reach <= 2.0, "{subtype}: reach {reach} pt");
+        } else {
+            assert!(reach <= 0.5, "{subtype}: reach {reach} pt past /Rect");
+        }
+        examined += 1;
+    }
+    assert_eq!(examined, 12);
+}
