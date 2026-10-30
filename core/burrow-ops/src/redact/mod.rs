@@ -176,5 +176,8 @@ pub fn page_frames<E: PageFrameReader>(
     Ok(readings)
 }
 
+// Redaction v1: page N replaced by a picture of itself (ADR 0031). Reachable from nothing yet.
+pub mod flatten;
+
 #[cfg(test)]
 mod tests;

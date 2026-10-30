@@ -186,3 +186,12 @@ path = "fuzz_targets/redact_page_frames.rs"
 test = false
 doc = false
 bench = false
+
+# ADR 0031's page replacement, through the operation; links qpdf and, for an inherited
+# /MediaBox, PDFium. Whole fixtures seed it.
+[[bin]]
+name = "redact_flatten"
+path = "fuzz_targets/redact_flatten.rs"
+test = false
+doc = false
+bench = false

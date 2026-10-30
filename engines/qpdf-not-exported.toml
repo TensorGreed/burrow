@@ -233,3 +233,49 @@ Fuzz builds only, and never to the web: qpdf's error text quotes the file (objec
 offsets), and rule 3 of `codes/qpdf.rs` keeps it uncallable in every shipped build. Declared \
 natively behind the `fuzzing` feature for the nightly's #285 classification; exporting it from \
 qpdf.wasm would put the text one JavaScript call from a worker that serves a person's file."""
+
+# ---------------------------------------------------------------------------------
+# ADR 0031's flatten write (redaction v1). Native only: the web's flatten write is a later
+# slice of the same build, which exports these and removes these entries in the same change.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_make_indirect_object"
+reason = """\
+The flatten write's forced resolution at open (ADR 0031 §1). No web flatten implementation \
+exists yet (no `WebQpdf` flatten), so exporting it would widen the worker's surface with no \
+caller."""
+
+[[function]]
+name = "qpdf_oh_new_stream"
+reason = """\
+The flatten write's image and content streams (ADR 0031 §1 step 7). Native only until the \
+web flatten write; untrapped, and its argument rests on the forced resolution, which the web \
+does not have yet either."""
+
+[[function]]
+name = "qpdf_oh_new_dictionary"
+reason = """\
+The flatten write's `/Resources` (ADR 0031 §1 step 7). Native only until the web flatten \
+write."""
+
+[[function]]
+name = "qpdf_oh_new_name"
+reason = """\
+The flatten write's names (ADR 0031 §1 step 7). Native only until the web flatten write."""
+
+[[function]]
+name = "qpdf_oh_new_array"
+reason = """\
+The flatten write's `/MediaBox` and `/CropBox` (ADR 0031 §3). Native only until the web \
+flatten write."""
+
+[[function]]
+name = "qpdf_oh_new_real_from_string"
+reason = """\
+The flatten write's frame sides (ADR 0031 §3). Native only until the web flatten write."""
+
+[[function]]
+name = "qpdf_oh_append_item"
+reason = """\
+The flatten write's box arrays (ADR 0031 §3). Native only until the web flatten write."""
