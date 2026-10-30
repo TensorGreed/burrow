@@ -109,6 +109,9 @@ pub fn pixels_for(points: f64) -> Result<u32> {
     Ok(low)
 }
 
+pub(crate) mod cross_check;
+pub(crate) mod paint;
+
 // THE WRITE ITSELF, native only until the web's constructors are exported (a later slice of ADR
 // 0031's build): `BuildsObjects` has no web implementation yet, so the policy has nothing to run
 // on there.
