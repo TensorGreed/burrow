@@ -868,7 +868,6 @@ jobs:
           python3 tools/check-ci-ok.py needs
           tools/test-check-ci-ok.sh
           tools/test-wait-for-ci-job.sh
-          tools/test-wait-for-ci-job.sh
 
       # THE DEPLOY WORKFLOW'S TRIGGERS ARE A SECURITY BOUNDARY, and a trigger is one line.
       # `deploy.yml` holds a credential that can write to the live site; adding

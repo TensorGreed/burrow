@@ -25,7 +25,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"; rm -f "$copy"' EXIT
 pass=0
 fail=0
-expected=86
+expected=94
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
@@ -197,8 +197,19 @@ while read -r kind rule; do
   scope_says "rule $kind '$rule': its near-miss $near does not" pull_request "$base_sha" "$sha" false
   probed=$((probed + 1))
 done <<<"$rules"
-if [ "$probed" -eq 9 ]; then ok "all 9 of the checker's 9 path rules were probed (owner (83)(2)'s list)"
-else bad "probed $probed path rules; owner (83)(2) names 9 -- the checker's table and the owner's list disagree"; fi
+if [ "$probed" -eq 11 ]; then ok "all 11 of the checker's 11 path rules were probed (owner (83)(2)'s list plus (86)(2)'s tests/ and .cargo/)"
+else bad "probed $probed path rules; owners (83)(2) and (86)(2) name 11 -- the checker's table and the owners' list disagree"; fi
+
+# (86)(2): the two added prefixes, named, with near-misses that prove the match is anchored at the
+# repository root (the generic loop above only proves `docs/<prefix>`).
+sha="$(commit_touching tests/conformance/x.pdf)"
+scope_says "tests/conformance/x.pdf (a fixture) runs fuzz" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching .cargo/config.toml)"
+scope_says ".cargo/config.toml runs fuzz" pull_request "$base_sha" "$sha" true
+sha="$(commit_touching docs/tests/x.md)"
+scope_says "near-miss docs/tests/x.md does not run fuzz (tests/ is anchored at the root)" pull_request "$base_sha" "$sha" false
+sha="$(commit_touching apps/web/.cargo-notes)"
+scope_says "near-miss apps/web/.cargo-notes does not run fuzz" pull_request "$base_sha" "$sha" false
 
 # B1 (round 1): git QUOTES a path holding a non-ASCII byte, a tab or a quote unless asked not to
 # (`"core/\303\274.rs"`), and a quoted path does not start with `core/`. Each is under core/, so each
@@ -389,8 +400,10 @@ PY
     "cannot compute: an empty diff runs fuzz"
   plant "a git error skips fuzz" 'return True, f"git diff {spec} failed' 'return False, f"git diff {spec} failed' \
     "cannot compute: a SHA the clone lacks (fetch failed) runs fuzz"
-  plant "tools/ dropped from the fuzz paths" '".github/workflows/", "tools/")' '".github/workflows/")' \
-    "probed 8 path rules"
+  plant "tools/ dropped from the fuzz paths" '".github/workflows/", "tools/",' '".github/workflows/",' \
+    "probed 10 path rules"
+  plant "tests/ dropped from the fuzz paths (owner (86)(2))" '"engines/", "tests/", ".cargo/",' '"engines/", ".cargo/",' \
+    "tests/conformance/x.pdf (a fixture) runs fuzz"
   plant "push counted as a narrowed event" 'NARROWED_EVENTS = ("pull_request", "merge_group")' \
     'NARROWED_EVENTS = ("pull_request", "merge_group", "push")' \
     "web-firefox skipped on push is refused, named"
@@ -407,7 +420,7 @@ PY
     "docs-like and core/ together, the fuzz path listed last, runs fuzz"
   plant "only the last changed path examined" 'hits = [p for p in paths if touches_fuzz(p)]' 'hits = [p for p in paths[-1:] if touches_fuzz(p)]' \
     "docs and core/ together, the fuzz path listed first, runs fuzz"
-  if [ "$mutants" -eq 10 ]; then ok "10 of 10 checker mutants were planted"; else bad "planted $mutants of 10 mutants"; fi
+  if [ "$mutants" -eq 11 ]; then ok "11 of 11 checker mutants were planted"; else bad "planted $mutants of 11 mutants"; fi
   expected=$((expected + mutants + 1))
 fi
 

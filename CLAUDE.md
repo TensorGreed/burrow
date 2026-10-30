@@ -394,7 +394,7 @@ those at full candour is working and is not what "summarise" is asking you to sh
   requires `ci-ok` (since 2026-10-16), which needs every job and fails on any result but
   `success`, so a skipped job can no longer pass -- except the three skips `tools/check-ci-ok.py`
   allows by rule (owner (82)/(83), 2026-10-29): `fuzz` on a PR or merge group whose diff touches
-  none of `core/`, `bindings/`, `fuzz/`, `engines/`, `.github/workflows/`, `tools/`, a
+  none of `core/`, `bindings/`, `fuzz/`, `engines/`, `tests/`, `.cargo/`, `.github/workflows/`, `tools/`, a
   `Cargo.toml`, `Cargo.lock` or `rust-toolchain.toml` (any doubt about the diff runs it), and
   `web-firefox`/`web-webkit` on a PR or merge group, which run **Chromium only**. Firefox and
   WebKit run on push to `main` and nightly in `fuzz-nightly.yml`, where a failure is read per
@@ -435,8 +435,8 @@ those at full candour is working and is not what "summarise" is asking you to sh
   seeded and given hours. (CI's own `fuzz smoke` is narrowed the same way since 2026-10-29: on a
   PR or merge group it runs only when the diff touches its inputs.) The one exception is derived
   rather than declared: an edit **under `fuzz/`** puts them back, because `fuzz/` is its own cargo
-  workspace and nothing else compiles a fuzz target — measured in M2, when a seam change broke `pdfsyntax_geometry` and every Rust
-  gate run by hand stayed green.
+  workspace and nothing else compiles a fuzz target — measured in M2, when a seam change broke
+  `pdfsyntax_geometry` and every Rust gate run by hand stayed green.
 
   It exists because the rule that used to sit here did not work. That rule said *"replicating
   CI locally means every job, and `cargo audit` is the one that gets skipped"*, written after

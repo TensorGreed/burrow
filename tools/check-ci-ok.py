@@ -69,9 +69,11 @@ FUZZ = "fuzz"
 #: workflow_dispatch, anything added later) runs everything.
 NARROWED_EVENTS = ("pull_request", "merge_group")
 
-#: owner (83)(2): fuzz smoke runs on a PR or merge group when the diff touches one of these.
+#: owner (83)(2), plus tests/ and .cargo/ from (86)(2): fuzz smoke runs on a PR or merge group when the diff touches one of these.
 #: Prefixes are directories from the repository root; NAMES match a file of that name at any depth.
-FUZZ_PREFIXES = ("core/", "bindings/", "fuzz/", "engines/", ".github/workflows/", "tools/")
+FUZZ_PREFIXES = (
+    "core/", "bindings/", "fuzz/", "engines/", "tests/", ".cargo/", ".github/workflows/", "tools/",
+)
 FUZZ_NAMES = ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml")
 
 #: Every job ci.yml may gate with an `if:`, and the exact expression it must carry. A job with an
