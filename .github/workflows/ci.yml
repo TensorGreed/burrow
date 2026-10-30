@@ -1243,12 +1243,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: tools/wait-for-ci-job.sh "native conformance record"
       - name: Download the native conformance record
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-conformance-record
           path: tests/conformance/
       - name: Download the generated redaction corpus
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: redaction-generated-corpus
           path: tests/redaction/generated/
@@ -1303,12 +1303,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: tools/wait-for-ci-job.sh "native conformance record"
       - name: Download the native conformance record
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-conformance-record
           path: tests/conformance/
       - name: Download the generated redaction corpus
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: redaction-generated-corpus
           path: tests/redaction/generated/
@@ -1361,12 +1361,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: tools/wait-for-ci-job.sh "native conformance record"
       - name: Download the native conformance record
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-conformance-record
           path: tests/conformance/
       - name: Download the generated redaction corpus
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: redaction-generated-corpus
           path: tests/redaction/generated/
