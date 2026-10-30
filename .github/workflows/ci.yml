@@ -169,7 +169,7 @@ jobs:
       # byte-identical -- the PR that split them did, from its own run -- and so any later run can
       # be checked the same way. Nothing downloads it in CI.
       - name: Upload this job's generated redaction corpus, for comparison
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: redaction-generated-corpus-test
           path: tests/redaction/generated/
@@ -200,7 +200,7 @@ jobs:
       # THIS JOB'S COPY OF THE NATIVE CONFORMANCE RECORD, for comparison only, as above: the
       # web jobs take `native-record`'s. Written by `tests/conformance.rs` during the run above.
       - name: Upload this job's native conformance record, for comparison
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-conformance-record-test
           path: tests/conformance/native-outcomes.json
@@ -503,14 +503,14 @@ jobs:
       - name: Build the conformance record and the generated redaction corpus
         run: tools/build-native-handover.sh
       - name: Upload the native conformance record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-conformance-record
           path: tests/conformance/native-outcomes.json
           if-no-files-found: error
           retention-days: 1
       - name: Upload the generated redaction corpus
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: redaction-generated-corpus
           path: tests/redaction/generated/
@@ -1140,7 +1140,7 @@ jobs:
       # the production `pnpm build` and before Playwright's global setup rebuilds `dist/` as the
       # harness site.
       - name: Upload the built wasm and JS bundles
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-bundles-chromium
           path: |
@@ -1274,7 +1274,7 @@ jobs:
         run: tools/test-redaction-differential-ledger.sh
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report-chromium
           path: apps/web/playwright-report/
@@ -1322,7 +1322,7 @@ jobs:
       # one that ships -- rather than from a local build on another architecture. This job runs no
       # production build: what it uploads is the HARNESS build Playwright's global setup made.
       - name: Upload the built wasm and JS bundles
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-bundles-firefox
           path: |
@@ -1332,7 +1332,7 @@ jobs:
           retention-days: 30
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report-firefox
           path: apps/web/playwright-report/
@@ -1380,7 +1380,7 @@ jobs:
       # one that ships -- rather than from a local build on another architecture. This job runs no
       # production build: what it uploads is the HARNESS build Playwright's global setup made.
       - name: Upload the built wasm and JS bundles
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-bundles-webkit
           path: |
@@ -1390,7 +1390,7 @@ jobs:
           retention-days: 30
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report-webkit
           path: apps/web/playwright-report/
