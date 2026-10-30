@@ -16,8 +16,9 @@
 //!    size and rotation, widened by one pixel for that call's rounding and one for rule 8
 //!    (`redact::flatten::paint`), and filled opaque black by `FPDFBitmap_FillRect` -- **in
 //!    PDFium's heap, before any pixel is copied out**. The unpainted pixels never leave it.
-//! 4. **One copy out**, to the canonical RGB form, three bytes a pixel, rows top to bottom; then
-//!    the bitmap is destroyed and the page closed, and the resident set read.
+//! 4. **One copy out**, to the canonical RGB form, three bytes a pixel, rows top to bottom. The
+//!    resident set is read there, while the bitmap and the copy are both live (the peak, seven
+//!    bytes a pixel); then the bitmap is destroyed and the page closed, and it is read again.
 //!
 //! The picture is **not** trusted by what follows: `redact::flatten::cross_check` holds its size,
 //! length and paint to qpdf's frame and burrow's own arithmetic, and the write's read-back holds
@@ -34,7 +35,8 @@
 //! `max_pixels` is exact, before `FPDFBitmap_Create`. `max_duration_ms` is checkpointed between
 //! the render's slices and between the steps; the page load is one uninterruptible call, as for
 //! every render. `max_memory_bytes` is **detected, not bounded**: guarded before the load, read
-//! between slices and after the render. What PDFium's rasteriser allocates for itself is bounded
+//! between slices, after the copy out with both buffers live, and after the destroy. Each
+//! reading sees an overrun that has already happened. What PDFium's rasteriser allocates for itself is bounded
 //! by nothing (ADR 0027).
 
 #![allow(
@@ -331,7 +333,16 @@ fn render_painted_through(
                         "pdfium did not paint the region it was asked to".to_owned(),
                     ));
                 }
-                copy_out(bitmap, wide, high).map(|rgb| (rgb, rect))
+                let rgb = copy_out(bitmap, wide, high)?;
+                // THE PEAK: PDFium's BGRA bitmap and the RGB copy are both live here, 7 bytes a
+                // pixel. Read now as well as after the destroy, which sees only the copy.
+                // Detected, not bounded: both buffers already exist.
+                crate::estimate::check_measured_memory(
+                    before,
+                    crate::rss::resident_bytes(),
+                    &limits,
+                )?;
+                Ok((rgb, rect))
             })();
 
             // SAFETY: `bitmap` is live, this is its only destroy, and `copy_out` owns its bytes.
