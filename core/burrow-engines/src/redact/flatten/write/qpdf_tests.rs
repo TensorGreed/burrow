@@ -642,13 +642,51 @@ fn a_repair_at_the_open_s_resolution_is_refused() {
 /// One letter page plus object 5, which nothing references; `broken` points its cross-reference
 /// entry 4 bytes into the object rather than at it.
 fn with_unreferenced_object(broken: bool) -> Vec<u8> {
+    resolution_fixture(Repair::OffsetInside, broken)
+}
+
+/// The ways an object nothing references can be repaired when qpdf's whole-file resolution reaches
+/// it, one per path through qpdf's object read (12.4.1, `QPDF_objects.cc`). Each is reached only by
+/// the resolution: no page, no frame and no trailer key leads to object 5, so the open alone reads
+/// none of them (`each_resolution_fixture_repairs_only_at_the_forced_resolution`).
+#[derive(Debug, Clone, Copy)]
+enum Repair {
+    /// The cross-reference offset lands 4 bytes inside the object: qpdf **reconstructs the
+    /// cross-reference table**, which also resets `fixed_dangling_refs` mid-resolution
+    /// (`reconstruct_xref`, `QPDF_objects.cc:332`) -- the path where the flag is cleared and set
+    /// again inside one forced resolution.
+    OffsetInside,
+    /// The cross-reference offset is 0: qpdf warns "object has offset 0" and reads the object as
+    /// null, with no reconstruction (`readObjectAtOffset`).
+    OffsetZero,
+    /// Object 5 is a stream whose `/Length` runs past its data: qpdf warns and recovers the length
+    /// while parsing it, with no reconstruction.
+    StreamLength,
+}
+
+impl Repair {
+    const ALL: [Self; 3] = [Self::OffsetInside, Self::OffsetZero, Self::StreamLength];
+}
+
+/// One letter page plus object 5, which nothing references, repaired as `repair` says when
+/// `broken`. The twin (`broken` false) is the same file well formed: every byte but the one fault
+/// is the same.
+fn resolution_fixture(repair: Repair, broken: bool) -> Vec<u8> {
+    let unreferenced = match repair {
+        Repair::OffsetInside | Repair::OffsetZero => "<< /BurrowUnreferenced 1 >>".to_owned(),
+        // `BurrowUnreferenced\n` is 19 bytes; 99 runs past `endstream`.
+        Repair::StreamLength => format!(
+            "<< /Length {} >>\nstream\nBurrowUnreferenced\nendstream",
+            if broken { 99 } else { 19 }
+        ),
+    };
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R >>"
             .to_owned(),
         "<< /Length 16 >>\nstream\n0 0 m 10 10 l S\nendstream".to_owned(),
-        "<< /BurrowUnreferenced 1 >>".to_owned(),
+        unreferenced,
     ];
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
@@ -656,8 +694,10 @@ fn with_unreferenced_object(broken: bool) -> Vec<u8> {
         offsets.push(out.len());
         out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
     }
-    if broken {
-        offsets[4] += 4;
+    match (repair, broken) {
+        (Repair::OffsetInside, true) => offsets[4] += 4,
+        (Repair::OffsetZero, true) => offsets[4] = 0,
+        _ => {}
     }
     let xref = out.len();
     out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
@@ -668,6 +708,46 @@ fn with_unreferenced_object(broken: bool) -> Vec<u8> {
         format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
     );
     out
+}
+
+/// What makes the resolution fixtures fixtures for §1's resolution at open (slice 2's row): for
+/// each [`Repair`], the redaction's open **alone** reports no repair, the forced resolution S1
+/// routes through `qpdf_make_indirect_object` reports one on the broken file and none on its twin,
+/// and the flatten refuses the one and returns the other. A fixture the open already repaired would
+/// be refused before the resolution ran, and could not tell a skipped resolution from a run one.
+#[test]
+fn each_resolution_fixture_repairs_only_at_the_forced_resolution() {
+    use crate::redact::graph::BuildsObjects;
+
+    for repair in Repair::ALL {
+        for broken in [true, false] {
+            let bytes = resolution_fixture(repair, broken);
+            let (document, _) = Qpdf
+                .open_for_redaction(&bytes, &options(Limits::DEFAULT))
+                .unwrap_or_else(|error| panic!("{repair:?}/{broken}: the open refused: {error}"));
+            assert!(
+                !document.repaired(),
+                "{repair:?}/{broken}: the open alone must not reach object 5"
+            );
+            let trailer = document.trailer().unwrap();
+            let _resolved = trailer.null_beside().made_indirect().unwrap();
+            assert_eq!(
+                document.repaired(),
+                broken,
+                "{repair:?}/{broken}: the forced resolution's repair"
+            );
+            drop((_resolved, trailer));
+            drop(document);
+            match flatten(&bytes, 0) {
+                Ok(_) if !broken => {}
+                Err(error) if broken => assert!(
+                    error.to_string().contains("[engine-repaired-input]"),
+                    "{repair:?}: expected the repair refusal, got {error}"
+                ),
+                other => panic!("{repair:?}/{broken}: {:?}", other.map(|bytes| bytes.len())),
+            }
+        }
+    }
 }
 
 proptest::proptest! {
