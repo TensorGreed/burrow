@@ -173,6 +173,11 @@ EXEMPT: dict[str, str] = {
         "this file. CI runs the parity check to keep this table honest; running it as a local "
         "job of itself would be circular. It is covered by being the thing you are running."
     ),
+    "tools/wait-for-ci-job.sh": (
+        "waits, through the Actions API, for another job of the same CI run (`native-record`) "
+        "before the browsers run. Locally there is no other run to wait for: this table's jobs run "
+        "in order, and `native-handover` and `test` have written both files before `web-e2e`."
+    ),
 }
 
 # --- the local counterparts -------------------------------------------------------------
@@ -233,6 +238,17 @@ JOBS: list[dict] = [
         "run": "cargo test --workspace --all-features",
         "covers": ["cargo:test"],
         "needs_qpdf_cli": True,
+    },
+    {
+        # CI's `native-record` job (owner (83)(1), 2026-10-29): the two files the browser
+        # differential takes from the native side, built on their own so the web jobs need not
+        # wait for `test`. Here AFTER `test`, which writes the same two files, and BEFORE
+        # `web-e2e`, which reads them -- so locally the browsers read this job's copies, as CI's
+        # do. Not narrowed: it runs the corpus generators, whose inputs are `tools/` scripts.
+        "name": "native-handover",
+        "run": "tools/build-native-handover.sh",
+        "covers": ["tools/build-native-handover.sh"],
+        "why": "the conformance record and the generated corpus, as CI's native-record job builds them",
     },
     {
         "name": "annots-rss",
@@ -410,6 +426,7 @@ JOBS: list[dict] = [
                 "tools/test-check-live-routes.sh",
                 "python3 tools/check-ci-ok.py needs",
                 "tools/test-check-ci-ok.sh",
+                "tools/test-wait-for-ci-job.sh",
                 "python3 tools/check-no-published-reproducers.py",
                 "tools/test-check-no-published-reproducers.sh",
                 "python3 tools/redact-fuzz-log.py --probe",
@@ -459,6 +476,8 @@ JOBS: list[dict] = [
             "tools/test-check-live-routes.sh",
             "tools/check-ci-ok.py",
             "tools/test-check-ci-ok.sh",
+            "tools/wait-for-ci-job.sh",
+            "tools/test-wait-for-ci-job.sh",
             "tools/check-no-published-reproducers.py",
             "tools/test-check-no-published-reproducers.sh",
             "tools/redact-fuzz-log.py",
@@ -646,6 +665,14 @@ JOBS: list[dict] = [
         # THE RUN AND THE CHECK THAT READS IT, as one job, because CI runs them as consecutive
         # steps of one. As two jobs `--changed` could select the checker without the run and it
         # judged a stale `test-results/` (#137). `paths_as` narrows it as `pnpm e2e` alone was.
+        #
+        # EVERY CONFIGURED BROWSER, which is MORE than a pull request's CI runs. Since owner (82)
+        # (2026-10-29) CI's `web-chromium` runs Chromium alone on a PR and in the merge queue, and
+        # `web-firefox`/`web-webkit` run on push to main and nightly. Locally `pnpm e2e` runs all
+        # three of playwright.config.ts's projects and the ledger checker judges all three, so
+        # this job covers the three CI jobs' browser steps at once -- on a machine that can launch
+        # WebKit, which needs system libraries a developer machine may lack; there it fails, by
+        # name, rather than passing over a browser it never ran.
         "name": "web-e2e",
         "run": "tools/run-web-e2e.sh",
         "covers": ["pnpm:e2e", "tools/check-redaction-differential-ledger.sh"],

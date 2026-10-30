@@ -1,7 +1,7 @@
 name: Build the web payload
 description: >-
-  Everything from the vendored wasm engines to an installed apps/web, shared by CI's `web`
-  job and by the deploy. One definition, because two copies drifted on day one.
+  Everything from the vendored wasm engines to an installed apps/web, shared by CI's `web-*`
+  jobs and by the deploy. One definition, because two copies drifted on day one.
 
 # WHY THIS IS AN ACTION AND NOT SIXTY DUPLICATED LINES.
 #
@@ -23,7 +23,8 @@ description: >-
 # it. So the answer is not a comparison, it is one definition -- the workflow analogue of
 # `CLAUDE.md`'s rule that a gate belongs in a script both callers can invoke.
 #
-# ci.yml's `web` job and deploy.yml's `build` job BOTH use this. A gate added here is added to
+# ci.yml's `web-chromium`, `web-firefox` and `web-webkit` jobs and deploy.yml's `build` job ALL use
+# this. A gate added here is added to
 # the shipping build and to CI at once, which is the property that was missing.
 
 # NO INPUTS, AND THE ORIGIN IS THE REASON THERE ARE NONE. This action stops at an installed

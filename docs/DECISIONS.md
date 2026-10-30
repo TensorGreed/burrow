@@ -100,6 +100,14 @@ one is decided in an issue, with the same three parts.
     before the setting is enabled, when a `success` run on the PR's exact head stays the gate as
     written above; and whether the post-merge residual is acceptable, which is with the owner.
 
+    **Amended 2026-10-29: the nightly browsers.** Since owner (82)(3) a PR and the merge queue run
+    the browser tests in Chromium only; Firefox and WebKit run on push to `main` and nightly in
+    `fuzz-nightly.yml`, which `ci-ok` does not see, so a nightly `web (firefox)` or `web (webkit)`
+    failure is read per job, by this rule, as a red on `main`. `ci-ok` now also passes three skips
+    by rule -- those two browsers on a PR or merge group, and `fuzz` there when the diff touches
+    none of its inputs -- and still fails any other skip (`tools/check-ci-ok.py`). *Decided:* owner
+    (82)(3), 2026-10-29.
+
 12. **Never hand-merge `tests/redaction/outcomes.tsv`; regenerate it from the merged tree.** It is
     the golden the native and web differentials replay, and the only file #125 and #137 both
     touch. On every rebase onto `main`, regenerate it from the merged tree

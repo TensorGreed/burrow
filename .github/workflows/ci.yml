@@ -13,8 +13,12 @@ on:
     branches: [main]
   # THE MERGE QUEUE (owner, 2026-10-16). With "Require merge queue" on `main`, the queue merges
   # a PR only once the required `ci-ok` check-run passes on the queue's merge commit, so every check
-  # that feeds it must run on this event too. Every job here does: none is gated on the event, on
-  # `github.head_ref` or on a path filter, the `ci-ok` job runs under `always()`, and the
+  # that feeds it must run on this event too, or be skipped by a rule `ci-ok` knows. Three jobs are
+  # gated, and only these (owner (82)/(83), 2026-10-29): `fuzz` runs on a PR or merge group only
+  # when the `changes` job says the diff touches its inputs, and `web-firefox` / `web-webkit` do not
+  # run on a PR or merge group at all (they run on push to main and nightly). `tools/check-ci-ok.py`
+  # holds each `if:` to the rule its `results` mode judges a skip by. No workflow-level `paths:`
+  # filter: it does not apply to `merge_group`. The `ci-ok` job runs under `always()`, and the
   # concurrency group below keys on `github.ref`, which is unique per merge group. Not added to
   # `deploy.yml`, whose triggers `tools/check-deploy-workflow.py` holds to exactly `push` and
   # `workflow_dispatch`.
@@ -159,19 +163,15 @@ jobs:
           tools/check-redaction-corpus.sh
           tools/test-check-redaction-corpus.sh
 
-      # THE GENERATED CORPUS, FOR THE BROWSER DIFFERENTIAL (#137). `web` holds every case in
-      # `tests/redaction/outcomes.tsv` to the web engines, and 79 of its 107 documents are built
-      # above with the vendored `qpdf` and `cjpeg` -- which `web` does not have. The same
-      # hand-over as `native-conformance-record` below, for the same reason: one job builds with
-      # the native tools, the other measures with the wasm ones, and neither builds twice.
-      #
-      # `if-no-files-found: error`, and the differential still checks every document against the
-      # digest the golden file recorded: a missing or different fixture fails there by name, never
-      # as "nothing to compare".
-      - name: Upload the generated redaction corpus
+      # THIS JOB'S COPY OF THE GENERATED CORPUS, for comparison only. The copy the web jobs use
+      # comes from `native-record`, which builds the same two files without waiting for this job
+      # (owner (83)(1)). This one is uploaded under its own name so a run can show the two are
+      # byte-identical -- the PR that split them did, from its own run -- and so any later run can
+      # be checked the same way. Nothing downloads it in CI.
+      - name: Upload this job's generated redaction corpus, for comparison
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: redaction-generated-corpus
+          name: redaction-generated-corpus-test
           path: tests/redaction/generated/
           if-no-files-found: error
           retention-days: 1
@@ -197,21 +197,12 @@ jobs:
         run: |
           cargo test -p burrow-engines --all-features --lib -- --ignored --exact qpdf::sharing_tests::an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each --test-threads=1
 
-      # The native half of the differential conformance harness (ROADMAP item 12). Written by
-      # `tests/conformance.rs` during the run above; the `web` job downloads it and diffs it
-      # against what the browsers produced for the same corpus.
-      #
-      # An artifact rather than recomputing it in the `web` job, because the native side needs
-      # the NATIVE engines and the web job has only the wasm ones. Both engine sets stay on
-      # their existing caches; neither is built twice.
-      #
-      # `if-no-files-found: error` matters more than it looks: a missing record would otherwise
-      # reach the web job as "nothing to compare", which is exactly the shape of a differential
-      # harness that has stopped comparing.
-      - name: Upload the native conformance record
+      # THIS JOB'S COPY OF THE NATIVE CONFORMANCE RECORD, for comparison only, as above: the
+      # web jobs take `native-record`'s. Written by `tests/conformance.rs` during the run above.
+      - name: Upload this job's native conformance record, for comparison
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: native-conformance-record
+          name: native-conformance-record-test
           path: tests/conformance/native-outcomes.json
           if-no-files-found: error
           retention-days: 1
@@ -464,9 +455,104 @@ jobs:
           tools/check-rustdoc.sh
           tools/test-check-rustdoc.sh
 
+  # THE TWO FILES THE BROWSER DIFFERENTIAL TAKES FROM THE NATIVE SIDE, AND NOTHING ELSE (owner
+  # (83)(1), 2026-10-29). The web jobs used to `needs: [test]` for them, which started every
+  # browser after the longest job in the workflow. This builds them on its own -- the conformance
+  # record and the generated redaction corpus -- and the web jobs start with it, waiting for it
+  # only just before the browsers run (`tools/wait-for-ci-job.sh`).
+  #
+  # It needs `engines/vendor`, the same cache as `test`: the record links the native engines and
+  # the generators use the vendored `cjpeg` and `qpdf`. A job without them would fail to build
+  # rather than silently hand over fewer fixtures, which is CLAUDE.md's rule about where a check
+  # lives. `test` still builds both itself, because its own suites read them, and uploads its
+  # copies under `-test` names so a run can show the two are byte-identical.
+  #
+  # `if-no-files-found: error` matters more than it looks: a missing record would otherwise reach
+  # the web jobs as "nothing to compare", which is the shape of a differential that has stopped
+  # comparing. And the differential checks every generated document against the digest the golden
+  # file recorded, so a missing or different fixture fails there by name.
+  native-record:
+    name: native conformance record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+      # The `qpdf` CLI, for the generators (`qpdf_cli()` falls back to PATH: `build-native.sh`
+      # builds libqpdf only). Same step as `test`'s, see its comment there; both jobs must use
+      # the same qpdf or the two generated corpora are not byte-identical.
+      - name: Install the qpdf CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf
+          command -v qpdf || { echo "::error::qpdf is not on PATH after install" >&2; exit 1; }
+          echo "qpdf: $(qpdf --version | head -1)"
+      - name: Build the conformance record and the generated redaction corpus
+        run: tools/build-native-handover.sh
+      - name: Upload the native conformance record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-conformance-record
+          path: tests/conformance/native-outcomes.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the generated redaction corpus
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+          if-no-files-found: error
+          retention-days: 1
+
+  # WHAT THE CHANGE TOUCHES, so `fuzz` can be skipped on a pull request or merge group that touches
+  # none of its inputs (owner (82)(4), (83)(2)). A `git diff` here, not a third-party action and
+  # not a workflow-level `paths:` filter, which does not apply to `merge_group`. The path list and
+  # the decision are `tools/check-ci-ok.py scope`; the same file's `results` mode is what lets
+  # `ci-ok` pass the skip, and only when this job SUCCEEDED and said `fuzz=false`.
+  #
+  # FAILS TOWARDS RUNNING. If the diff cannot be computed for any reason -- the fetch fails, a SHA
+  # is empty, git errors, the list is empty -- the answer is `fuzz=true`. On push to main and on
+  # dispatch the answer is always `fuzz=true`. Full history (`fetch-depth: 0`), because a pull
+  # request's diff is from the merge base, which a shallow clone may not have.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      fuzz: ${{ steps.scope.outputs.fuzz }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Decide whether fuzz smoke runs
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: python3 tools/check-ci-ok.py scope
+
   fuzz:
     name: fuzz smoke
     runs-on: ubuntu-latest
+    # ON A PR OR MERGE GROUP ONLY WHEN THE DIFF TOUCHES ITS INPUTS; always on push and dispatch, and
+    # whenever `changes` failed to answer (an empty output is not `'false'`). `!cancelled()` rather
+    # than the default, so a failed `changes` job runs fuzz instead of skipping it. The expression
+    # is held byte for byte by `tools/check-ci-ok.py needs`.
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.fuzz != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Nightly, because cargo-fuzz requires it. Pinned toolchain files do not apply:
@@ -645,7 +731,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The web app's whole payload rides on this target building.
       #
-      # The size budget this comment used to ask for is in the `web` job, not here, and that
+      # The size budget this comment used to ask for is in the `web-chromium` job, not here, and that
       # is the right place: this job builds one .wasm and a user pays for six artifacts. A
       # budget on the Rust module alone would have passed every regression that mattered --
       # it is 0.7% of the payload. See apps/web/size-budget.json.
@@ -775,7 +861,7 @@ jobs:
       # records -- a narrower key would restore a stamp for a tree that has since moved.
       #
       # In `deny`, which fetches nothing: the probes and the self-test's verdicts read only
-      # committed files. The stamps themselves are written and checked in the `web` job, where
+      # committed files. The stamps themselves are written and checked in the web jobs, where
       # the artifacts are.
       - name: Build stamps still refuse a stale artifact, and the cache key agrees with them
         run: |
@@ -790,6 +876,7 @@ jobs:
         run: |
           python3 tools/check-ci-ok.py needs
           tools/test-check-ci-ok.sh
+          tools/test-wait-for-ci-job.sh
 
       # THE DEPLOY WORKFLOW'S TRIGGERS ARE A SECURITY BOUNDARY, and a trigger is one line.
       # `deploy.yml` holds a credential that can write to the live site; adding
@@ -992,29 +1079,31 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  web:
-    name: web
+  # THE WEB JOBS, ONE PER BROWSER (owner (82)(1)-(3), 2026-10-29). They used to be one `web` job
+  # with `needs: [test]`. Now:
+  #
+  #   web-chromium   every event. Every NON-browser web check lives here and only here: lint, type
+  #                  check, the build, the size budget, the build-output tests, the PDFium and
+  #                  redaction payload checks, the error-text check, the deploy-gate self-test, and
+  #                  the differential ledger's self-test. Not tripled.
+  #   web-firefox    push to main and dispatch, plus the nightly (`fuzz-nightly.yml`). The browser
+  #   web-webkit     tests and that browser's ledger, nothing else. Skipped on pull_request and
+  #                  merge_group, which `ci-ok` passes by rule (`tools/check-ci-ok.py`).
+  #
+  # None of them `needs:` anything, so they start with `test`. The browser differential compares
+  # against `native-record`'s two files, so each job waits for that job just before its browsers
+  # run, and only then downloads them (`tools/wait-for-ci-job.sh`, which needs `actions: read`
+  # to read this run's job states). That wait is the only ordering left, and it buys the half of
+  # ROADMAP item 12 a shared expectations file cannot: a divergence in a field nobody thought to put
+  # in the schema.
+  web-chromium:
+    name: web (chromium)
     runs-on: ubuntu-latest
-    # The differential harness diffs the browsers against the native record, so that record
-    # has to exist first. It is the only ordering constraint between the two jobs, and it buys
-    # the half of ROADMAP item 12 that a shared expectations file cannot: a divergence in a
-    # field nobody thought to put in the schema. Since #137 it also takes `test`'s generated
-    # redaction corpus, which the browser differential holds to `tests/redaction/outcomes.tsv`.
-    needs: [test]
+    permissions:
+      contents: read
+      actions: read # tools/wait-for-ci-job.sh reads this run's job states; nothing else
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download the native conformance record
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: native-conformance-record
-          path: tests/conformance/
-
-      - name: Download the generated redaction corpus
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: redaction-generated-corpus
-          path: tests/redaction/generated/
 
       # ---- the wasm engines -------------------------------------------------------
       # New in M1 PR 4a-i. Until now CI never ran engines/build-wasm.sh at all, so the
@@ -1045,6 +1134,20 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: pnpm build
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. Here, right after
+      # the production `pnpm build` and before Playwright's global setup rebuilds `dist/` as the
+      # harness site.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-chromium
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
       # Reports the first-load payload against its budget on every PR, as a step summary.
       #
       # A step summary and not a PR comment: this workflow runs with `permissions:
@@ -1064,7 +1167,7 @@ jobs:
         working-directory: apps/web
         run: node ../../tools/report-size-budget.mjs dist
       # PDFIUM REACHES THE RENDER BUNDLE AND NO OTHER PART OF THE WEB BUILD (ADR 0026, which
-      # amends spike 0004's outright removal). In the `web` job because it
+      # amends spike 0004's outright removal). In `web-chromium` because it
       # reads `apps/web/dist`, which only this job has -- the rule CLAUDE.md states about
       # where a check lives: a check that silently examines nothing reads as coverage.
       #
@@ -1121,31 +1224,47 @@ jobs:
         working-directory: apps/web
         run: pnpm test
 
-      # ---- the browsers -----------------------------------------------------------
-      # ALL THREE, matching playwright.config.ts's projects.
-      #
-      # This installed `chromium` alone while the config already listed three projects, so
-      # `playwright test` would have failed launching Firefox and WebKit. Caught by reading
-      # the two against each other rather than by a run, because the job was failing earlier
-      # for an unrelated reason and never reached this step.
+      # ---- the browser ------------------------------------------------------------
+      # CHROMIUM ONLY IN THIS JOB, one project of playwright.config.ts's three. Firefox and WebKit
+      # are `web-firefox` and `web-webkit` below, each installing and running its own browser, so
+      # the three run in parallel where they run at all. `--project` is what keeps each job to its
+      # own: the config lists all three, and a bare `playwright test` here would try to launch two
+      # browsers this job never installed.
       #
       # `--with-deps` needs root, which the runner has and a developer machine generally does
-      # not -- WebKit in particular needs libgstreamer-plugins-bad and libavif, so it cannot
-      # be launched locally without installing them. CI is where WebKit actually runs.
-      - name: Install browsers
+      # not -- WebKit in particular needs libgstreamer-plugins-bad and libavif.
+      - name: Install the browser
         working-directory: apps/web
-        run: pnpm exec playwright install --with-deps chromium firefox webkit
+        run: pnpm exec playwright install --with-deps chromium
+      # THE ONLY WAIT. The two files the differential compares against come from `native-record`,
+      # which started with this job; this waits for it to succeed, then downloads them.
+      - name: Wait for the native conformance record job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/wait-for-ci-job.sh "native conformance record"
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
+      - name: Download the generated redaction corpus
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
       - name: Engine end-to-end tests
         working-directory: apps/web
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test --project=chromium
       # THE DIFFERENTIAL'S LEDGER, FROM OUTSIDE THE SPEC (#137). The step above records what the
       # web replied for every case in `tests/redaction/outcomes.tsv`, per browser, and its last test
       # judges it -- but a test inside the spec can be parked with `test.fail()`, and a parked
       # ledger test over a divergence is green. This judges the same records with the same
       # `reconcile`, whatever any test was marked. IMMEDIATELY AFTER the run, because it reads that
-      # run's `test-results/`; the self-test below writes its own runs elsewhere.
-      - name: Every case in every browser was compared and agreed, or is declared skipped
-        run: tools/check-redaction-differential-ledger.sh
+      # run's `test-results/`; the self-test below writes its own runs elsewhere. NARROWED to the
+      # browser this job ran, and the checker says so in its report; the other two browsers' jobs
+      # each run it for their own.
+      - name: Every case in this browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh --projects chromium
 
       # AND BOTH ARE SHOWN TO REFUSE. Copies of the spec with a silent drop in the test body, the
       # plan and the parser; a divergence the document tests park; the same with the ledger test
@@ -1157,13 +1276,132 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: playwright-report
+          name: playwright-report-chromium
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+  # FIREFOX: the browser tests and this browser's ledger, nothing else -- every other web check
+  # is `web-chromium`'s. Not on pull_request or merge_group (owner (82)(3)); on push to main and
+  # dispatch here, and every night in `fuzz-nightly.yml`, where a failure is read per job under
+  # DECISIONS rule 11. The `if:` is held byte for byte by `tools/check-ci-ok.py needs`, and `ci-ok`
+  # passes this job's skip only on those two events.
+  web-firefox:
+    name: web (firefox)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+    permissions:
+      contents: read
+      actions: read # tools/wait-for-ci-job.sh reads this run's job states; nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build-web-payload
+      - name: Install the browser
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps firefox
+      - name: Wait for the native conformance record job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/wait-for-ci-job.sh "native conformance record"
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
+      - name: Download the generated redaction corpus
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test --project=firefox
+      - name: Every case in this browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh --projects firefox
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. This job runs no
+      # production build: what it uploads is the HARNESS build Playwright's global setup made.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-firefox
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-firefox
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+  # WEBKIT: the browser tests and this browser's ledger, nothing else -- every other web check
+  # is `web-chromium`'s. Not on pull_request or merge_group (owner (82)(3)); on push to main and
+  # dispatch here, and every night in `fuzz-nightly.yml`, where a failure is read per job under
+  # DECISIONS rule 11. The `if:` is held byte for byte by `tools/check-ci-ok.py needs`, and `ci-ok`
+  # passes this job's skip only on those two events.
+  web-webkit:
+    name: web (webkit)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+    permissions:
+      contents: read
+      actions: read # tools/wait-for-ci-job.sh reads this run's job states; nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build-web-payload
+      - name: Install the browser
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps webkit
+      - name: Wait for the native conformance record job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/wait-for-ci-job.sh "native conformance record"
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
+      - name: Download the generated redaction corpus
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: redaction-generated-corpus
+          path: tests/redaction/generated/
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test --project=webkit
+      - name: Every case in this browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh --projects webkit
+      # THE BUNDLES THIS JOB BUILT, KEPT FOR 30 DAYS (owner (85)(2), 2026-10-29): every wasm and JS
+      # file under `apps/web/dist/`, so a size question can be answered from CI's x86 build -- the
+      # one that ships -- rather than from a local build on another architecture. This job runs no
+      # production build: what it uploads is the HARNESS build Playwright's global setup made.
+      - name: Upload the built wasm and JS bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundles-webkit
+          path: |
+            apps/web/dist/**/*.wasm
+            apps/web/dist/**/*.js
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-webkit
           path: apps/web/playwright-report/
           retention-days: 7
 
   # THE ONE REQUIRED CHECK (the ruleset names it; owner, 2026-10-16). It needs EVERY other job
   # directly -- `needs.*.result` lists only direct needs -- and fails on any result that is not
-  # `success`: `failure`, `cancelled` and `skipped` alike. It does not close #275's run-level
+  # `success`: `failure`, `cancelled` and `skipped` alike, except a skip of one of the three gated
+  # jobs that `tools/check-ci-ok.py`'s rules say was meant -- `fuzz` when `changes` succeeded and
+  # said `fuzz=false` on a PR or merge group, `web-firefox`/`web-webkit` on a PR or merge group.
+  # A skip anywhere else, or on any other event, fails it. It does not close #275's run-level
   # shape (a run `failure` with every job `success`), which still is read from `main`'s
   # post-merge push run, as DECISIONS rule 11's amendment says.
   # `tools/check-ci-ok.py needs`, in the `deny` job, fails if a job is ever added without being
@@ -1172,10 +1410,11 @@ jobs:
     name: ci-ok
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web]
+    needs: [fmt, clippy, test, native-record, changes, fuzz, wasm, mobile, deny, audit, web-chromium, web-firefox, web-webkit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Every job succeeded
+      - name: Every job that should have run succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
         run: python3 tools/check-ci-ok.py results
