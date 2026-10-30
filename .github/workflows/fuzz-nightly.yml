@@ -317,6 +317,15 @@ jobs:
           engines/build-native.sh
       - name: Re-verify engine checksums
         run: engines/fetch.sh
+      # The `qpdf` CLI, for the generators (`qpdf_cli()` falls back to PATH: `build-native.sh`
+      # builds libqpdf only). Same step as `test`'s, see its comment there; both jobs must use
+      # the same qpdf or the two generated corpora are not byte-identical.
+      - name: Install the qpdf CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf
+          command -v qpdf || { echo "::error::qpdf is not on PATH after install" >&2; exit 1; }
+          echo "qpdf: $(qpdf --version | head -1)"
       - name: Build the conformance record and the generated redaction corpus
         env:
           RUSTFLAGS: -D warnings
