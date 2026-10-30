@@ -11,6 +11,11 @@
 //! pixel off, or rounding that went the wrong way moves the paint and not this rectangle, so the
 //! check refuses.
 //!
+//! **It shares one step with the paint**: the outward rounding to whole pixels and the clamp into
+//! the bitmap ([`PixelRect::outward`]). A fault there moves both rectangles together and this
+//! check cannot see it; `paint`'s module docs say what catches it instead (tests at the bitmap's
+//! edge).
+//!
 //! **It takes no [`PageFrame`](crate::pdfsyntax::region::PageFrame)**: no box origin and no
 //! `/Rotate`, only the display size. That is what makes "compute the check through user space"
 //! inexpressible here rather than merely not done -- the signature is the defence, and it is the
@@ -23,6 +28,7 @@
 //! - **Who painted a black pixel.** A page whose own pixels are black where the paint belongs
 //!   passes. That is not a leak: the property held is that every pixel of the rectangle *is*
 //!   black in the picture written, whoever made it so.
+//! - **A fault in the shared rounding or clamp** ([`PixelRect::outward`]), above.
 //! - **A wrong display frame.** The size it is handed is qpdf's; page identity across the two
 //!   engines is §5's (S9b), not this check's.
 //!

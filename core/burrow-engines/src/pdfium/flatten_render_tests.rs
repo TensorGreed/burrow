@@ -42,7 +42,14 @@ fn document(page: &str, content: &str, objects: &[String], catalog: &str) -> Vec
     let mut bodies: Vec<String> = vec![
         format!("<< /Type /Catalog /Pages 2 0 R {catalog} >>"),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-        format!("<< /Type /Page /Parent 2 0 R {page} /Resources << >> /Contents 4 0 R >>"),
+        format!(
+            "<< /Type /Page /Parent 2 0 R {page} {} /Contents 4 0 R >>",
+            if page.contains("/Resources") {
+                ""
+            } else {
+                "/Resources << >>"
+            }
+        ),
         format!(
             "<< /Length {} >>\nstream\n{content}\nendstream",
             content.len() + 1
@@ -528,4 +535,64 @@ fn rule_9_annotations_draw_as_measured_on_the_pinned_pdfium() {
         examined += 1;
     }
     assert_eq!(examined, 15);
+}
+
+/// Rule 8 at the bitmap's own edge: a region overrunning the page's bottom-right corner. The
+/// cross-check cannot see this one by itself, because the paint and the check share
+/// `PixelRect::outward`'s outward rounding and its clamp into the bitmap; a clamp one pixel short
+/// moves both rectangles together and the check still passes. So the last row and the last
+/// column are held black here, pixel by pixel, after an `Ok` check.
+///
+/// KILLS: `outward` clamping right/bottom to `width - 1` / `height - 1` (both sides shrink, the
+/// check passes, the page's red shows in the last row and column); the paint told the bitmap is
+/// one row shorter than it is (the check refuses).
+#[test]
+fn a_region_over_the_bottom_right_corner_paints_the_last_row_and_column() {
+    let bytes = document(
+        "/MediaBox [0 0 612 792]",
+        "1 0 0 rg 0 0 612 792 re f",
+        &[],
+        "",
+    );
+    let region = Region {
+        left: 500.0,
+        top: 700.0,
+        width: 200.0,
+        height: 200.0,
+    };
+    let painted = honest(&bytes, &region);
+    let (width, height) = (painted.width, painted.height);
+    assert_eq!((width, height), (1275, 1650), "612 x 792 pt at 150 dpi");
+    check_paint(
+        (612.0, 792.0),
+        &painted.picture(),
+        &region,
+        &Limits::DEFAULT,
+    )
+    .unwrap();
+
+    // The region's first column and row, as burrow places them: 500 and 700 pt from the top-left.
+    let first_column = (500.0 * f64::from(width) / 612.0).floor() as u32;
+    let first_row = (700.0 * f64::from(height) / 792.0).floor() as u32;
+    let mut examined = 0_u32;
+    for y in first_row..height {
+        let got = pixel(&painted.rgb, width, width - 1, y);
+        assert_eq!(got, [0, 0, 0], "last column, row {y}");
+        examined += 1;
+    }
+    for x in first_column..width {
+        let got = pixel(&painted.rgb, width, x, height - 1);
+        assert_eq!(got, [0, 0, 0], "last row, column {x}");
+        examined += 1;
+    }
+    assert_eq!(examined, (height - first_row) + (width - first_column));
+    // Twin: outside the region the page is red, so black above is the paint and not the page.
+    assert_eq!(
+        pixel(&painted.rgb, width, width - 1, first_row - 4),
+        [255, 0, 0]
+    );
+    assert_eq!(
+        pixel(&painted.rgb, width, first_column - 4, height - 1),
+        [255, 0, 0]
+    );
 }

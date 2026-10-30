@@ -13,7 +13,19 @@
 //! This is one of **two sources** at run time (§1 step 6). The other is `cross_check`, which
 //! maps the same region by burrow's own display-space arithmetic, through neither the
 //! conversion nor the transform, and holds every pixel of *its* rectangle to be the paint.
-//! Nothing here is trusted by that check; it is written so that it can be wrong and be caught.
+//! The conversion and the transform are not trusted by that check; they are written so that
+//! they can be wrong and be caught.
+//!
+//! # What the two sides share, and what catches a fault in it
+//!
+//! **The outward rounding to whole pixels and the clamp into the bitmap are shared**: both
+//! sides call [`PixelRect::outward`], and both clamp to the same *W* x *H*. So the check is
+//! **not independent of them**. A clamp one pixel short at the right or bottom shrinks the paint
+//! and the check's rectangle together, the check passes, and the page's own pixels stay visible
+//! in the last column or row under a region that reaches the page's edge. Nothing at run time
+//! detects that. What does is a test: `outward`'s own unit pins at the bitmap's edge, and the
+//! render's edge fixture (a region over the bottom-right corner, every pixel of the last row and
+//! column held black after the check passes).
 //!
 //! # Rule 8: the edge is a pixel edge
 //!
@@ -89,7 +101,8 @@ impl PixelRect {
     /// `left` and `top` are floored and `right` and `bottom` ceiled **before** the margin, so the
     /// rectangle covers every pixel the real one touches. Shared by both sides because "outward to
     /// whole pixels, then clamp" is arithmetic with no transform in it; what each side feeds it is
-    /// what differs.
+    /// what differs. **Being shared, a fault here is invisible to the cross-check** (see the
+    /// module docs); its edge behaviour is held by tests alone.
     ///
     /// # Errors
     ///
@@ -368,6 +381,44 @@ pub(super) mod tests {
             PixelRect::outward((f64::NAN, 0.0, 1.0, 1.0), 1, (10, 10)),
             Err(Error::Internal(_))
         ));
+    }
+
+    /// The far edge, pinned on its own: the cross-check shares this function, so a clamp one
+    /// pixel short at the right or bottom would shrink the paint and the check together, and
+    /// nothing at run time would see it.
+    ///
+    /// KILLS: right/bottom clamped to `width - 1` / `height - 1`; the outward rounding turned
+    /// inward (`round` or `floor` for the far edges, `ceil` or `round` for the near ones).
+    #[test]
+    fn outward_reaches_the_last_pixel_and_rounds_away_from_the_rectangle() {
+        // Overrunning the bottom-right corner: clamped to the bitmap's extent, not one short.
+        assert_eq!(
+            PixelRect::outward((7.2, 6.5, 12.0, 30.0), 1, (10, 10)).unwrap(),
+            PixelRect {
+                left: 6,
+                top: 5,
+                right: 10,
+                bottom: 10
+            }
+        );
+        // Ending exactly on the extent, no margin: the last column and row are in.
+        let whole = PixelRect::outward((0.0, 0.0, 10.0, 10.0), 0, (10, 10)).unwrap();
+        assert_eq!((whole.right, whole.bottom), (10, 10));
+        assert!(whole.contains(9, 9));
+        // Outward rounding: near edges floor, far edges ceil, a hair past a pixel takes it.
+        assert_eq!(
+            PixelRect::outward((2.5, 3.5, 4.1, 5.9), 0, (10, 10)).unwrap(),
+            PixelRect {
+                left: 2,
+                top: 3,
+                right: 5,
+                bottom: 6
+            }
+        );
+        let on = PixelRect::outward((1.0, 1.0, 9.0, 9.0), 0, (10, 10)).unwrap();
+        let past = PixelRect::outward((1.0, 1.0, 9.0001, 9.0001), 0, (10, 10)).unwrap();
+        assert_eq!((on.right, on.bottom), (9, 9));
+        assert_eq!((past.right, past.bottom), (10, 10));
     }
 
     #[test]
