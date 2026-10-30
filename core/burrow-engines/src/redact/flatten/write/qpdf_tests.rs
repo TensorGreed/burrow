@@ -482,6 +482,56 @@ fn page_n_keeps_its_place_in_a_nested_tree() {
     );
 }
 
+/// One lie per way the page-tree climb can end (S1 round 2, L-6), on the nested tree's page 1
+/// (input place: steps `[1, 0]`, ending at the catalogue's `/Pages`). Each changes nothing qpdf
+/// enumerates from the catalogue, so only V2's place comparison refuses it; between them they
+/// pin the climb's ends one by one: `Unlisted` through the `/Kids` search at the first step and
+/// one step up, `Detached` one step up, the same steps with a different end, and the same end with
+/// a different step.
+///
+/// The depth bound (`TooDeep`) is NOT reachable this way, measured: a loop above page *N* is also
+/// above every page sharing its `/Parent`, and the frame reading V1 runs climbs `/Parent` for
+/// inherited attributes and refuses it first. [`Lie::AncestorLoops`] is kept, asserting that
+/// shadowing, so a change that lets the loop past V1 is seen.
+#[test]
+fn every_way_the_climb_can_end_differently_is_rejected() {
+    let nested = nested_tree();
+    for (lie, says) in [
+        (
+            Lie::ParentUnlisting,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::AncestorDetached,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::AncestorUnlisted,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::AncestorEndsElsewhere,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::AncestorShifted,
+            "/Parent is not the input's place in the page tree",
+        ),
+        (
+            Lie::AncestorLoops,
+            "does not have the input's display frame",
+        ),
+    ] {
+        plant(lie);
+        let error = flatten(&nested, 1).expect_err("a write that moves page N must not come back");
+        assert!(
+            matches!(error, Error::OutputRejected(ref what) if what.contains(says)),
+            "{lie:?}: expected a rejection saying {says:?}, got {error:?}"
+        );
+    }
+    flatten(&nested, 1).expect("an unplanted flatten is honest");
+}
+
 /// The `/Contents` stream's dictionary holds only what qpdf's write adds.
 #[test]
 fn the_content_stream_has_exactly_its_keys() {

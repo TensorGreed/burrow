@@ -779,6 +779,26 @@ pub(crate) mod lie {
         ImageTypeOther,
         ImageSubtypeOther,
         ImageUndecodable,
+        // ONE PER WAY THE PAGE-TREE CLIMB CAN END (S1 round 2, L-6), each written so that only
+        // [`super::Place`]'s comparison stands between it and a returned document: none changes
+        // what qpdf enumerates from the catalogue's `/Pages`, so V1 and the page's own keys pass.
+        /// Page *N*'s `/Parent` becomes an indirect `/Pages` node whose `/Kids` is empty:
+        /// `Unlisted` at the first step, through the `/Kids` search rather than the direct-parent
+        /// clause [`Lie::ParentReplaced`] reaches.
+        ParentUnlisting,
+        /// Page *N*'s `/Parent` loses its own `/Parent`: `Detached` one step up.
+        AncestorDetached,
+        /// Page *N*'s `/Parent` gets a `/Parent` that does not list it: `Unlisted` one step up.
+        AncestorUnlisted,
+        /// Page *N*'s `/Parent` gets a `/Parent` that lists it and has no `/Parent` of its own:
+        /// the **same steps** as the input's, ending `Detached` rather than at the catalogue's
+        /// `/Pages`. Only the end tells them apart.
+        AncestorEndsElsewhere,
+        /// An empty `/Pages` node is put before page *N*'s `/Parent` in the root's `/Kids`: the
+        /// same pages in the same order, the **same end**, one step different.
+        AncestorShifted,
+        /// Page *N*'s `/Parent` climbs into two nodes that list each other: `TooDeep`.
+        AncestorLoops,
     }
 
     thread_local! {
@@ -792,7 +812,11 @@ pub(crate) mod lie {
 
     const FOO: Name = Name::literal(b"/BurrowLie\0");
 
-    pub(super) fn apply<D>(document: &D, page: &D::Object<'_>, promise: &Promise) -> Result<()>
+    pub(super) fn apply<'a, D>(
+        document: &'a D,
+        page: &D::Object<'a>,
+        promise: &Promise,
+    ) -> Result<()>
     where
         D: PdfDocument,
         for<'d> D::Object<'d>: BuildsObjects,
@@ -823,7 +847,54 @@ pub(crate) mod lie {
                 .key(&super::IMAGE)
         };
         let name = |name: &Name| page.name_beside(name);
+        // A `/Pages` node listing `kids`, made indirect: a direct one would end the climb by the
+        // direct-parent clause instead of the clause each lie below is about.
+        let node = |kids: &[&D::Object<'a>]| -> Result<D::Object<'a>> {
+            let node = page.dictionary_beside();
+            node.replace_key(&super::TYPE, &name(&Name::literal(b"/Pages\0")))?;
+            let array = page.array_beside();
+            for kid in kids {
+                array.append_item(kid)?;
+            }
+            node.replace_key(&super::KIDS, &array)?;
+            node.made_indirect()
+        };
+        let parent = || page.key(&super::PARENT);
         match lie {
+            Lie::ParentUnlisting => page.replace_key(&super::PARENT, &node(&[])?),
+            Lie::AncestorDetached => {
+                parent().remove_key(&super::PARENT);
+                Ok(())
+            }
+            Lie::AncestorUnlisted => parent().replace_key(&super::PARENT, &node(&[])?),
+            Lie::AncestorEndsElsewhere => {
+                let above = parent();
+                above.replace_key(&super::PARENT, &node(&[&above])?)
+            }
+            Lie::AncestorShifted => {
+                let pages = document.trailer()?.key(&super::ROOT).key(&super::PAGES);
+                let empty = node(&[])?;
+                empty.replace_key(&super::PARENT, &pages)?;
+                empty.replace_key(&Name::literal(b"/Count\0"), &page.integer_beside(0))?;
+                let kids = page.array_beside();
+                kids.append_item(&empty)?;
+                let old = pages.key(&super::KIDS);
+                for at in 0..old.array_len() {
+                    kids.append_item(&old.array_item(at))?;
+                }
+                pages.replace_key(&super::KIDS, &kids)
+            }
+            Lie::AncestorLoops => {
+                // `/Parent` -> Y, Y lists it and Z, Y's `/Parent` is Z, Z lists Y and has Y as its
+                // `/Parent`: the climb goes round Y and Z until its depth bound.
+                let above = parent();
+                let y = node(&[&above])?;
+                let z = node(&[&y])?;
+                y.key(&super::KIDS).append_item(&z)?;
+                y.replace_key(&super::PARENT, &z)?;
+                z.replace_key(&super::PARENT, &y)?;
+                above.replace_key(&super::PARENT, &y)
+            }
             Lie::ParentReplaced => {
                 let parent = page.dictionary_beside();
                 parent.replace_key(&super::TYPE, &name(&Name::literal(b"/Pages\0")))?;
