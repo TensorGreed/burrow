@@ -7,13 +7,15 @@
 #   no job named X               tolerated for a bounded number of polls (it may not be scheduled
 #                                yet), then exits 1; a job that appears within the bound succeeds
 #   two jobs named X             exits 1
-#   the API erroring             gives up after 5 errors, exits 1
+#   the API erroring             gives up after 5 errors IN A ROW, exits 1
+#   errors interleaved with      4 errors, a success, 4 more errors, then completed: exits 0 (only
+#     successful reads           consecutive errors count; main run 41103583240 failed on 5 spread out)
 #   stuck in_progress            exits 1 at the deadline
 #   queued, in_progress, success exits 0
 #
 # Mutants: copies of the script BESIDE it, one rule broken, asserted applied; this script re-run
 # against each must FAIL naming the case that rule guards (skipped passing; no deadline; the
-# missing-job tolerance unbounded).
+# missing-job tolerance unbounded; the error count never reset by a successful read).
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="${BURROW_WAIT_SCRIPT:-$here/wait-for-ci-job.sh}"
@@ -22,7 +24,7 @@ mutant="$here/.wait-for-ci-job.mutant.sh"
 trap 'rm -rf "$work"; rm -f "$mutant"' EXIT
 pass=0
 fail=0
-expected=13
+expected=14
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
@@ -70,7 +72,8 @@ done
 run_case "no job named X exits 1 after the bounded polls" 1 "after 3 polls" 3 60 -- EMPTY
 run_case "a job that appears within the bound is waited for (N2)" 0 "succeeded" 3 60 -- EMPTY EMPTY "completed success"
 run_case "two jobs named X exits 1" 1 "2 jobs named" 1 60 -- "completed success\ncompleted success"
-run_case "an API error that persists gives up after 5" 1 "giving up" 5 60 -- ERR
+run_case "an API error that persists gives up after 5 in a row" 1 "failed 5 times in a row" 5 60 -- ERR
+run_case "errors interleaved with successful reads do not accumulate" 0 "succeeded" 10 60 -- ERR ERR ERR ERR "in_progress " ERR ERR ERR ERR "completed success"
 run_case "an API error that clears is survived" 0 "succeeded" 3 60 -- ERR ERR "completed success"
 run_case "stuck in_progress exits 1 at the deadline" 1 "had not completed after 2 s" "" 2 -- "in_progress "
 run_case "queued, in_progress, success exits 0" 0 "succeeded" 3 60 -- "queued " "in_progress " "completed success"
@@ -108,7 +111,9 @@ PY
     "stuck in_progress exits 1 at the deadline"
   plant "the missing-job tolerance is unbounded" 'if [ "$missing" -ge "$max_missing" ]; then' 'if false; then' \
     "no job named X exits 1 after the bounded polls"
-  if [ "$mutants" -eq 3 ]; then ok "3 of 3 wait-script mutants were planted"; else bad "planted $mutants of 3 mutants"; fi
+  plant "errors never reset by a successful read" 'errors=0 # a successful read ends a run of errors: only CONSECUTIVE errors count' ':' \
+    "errors interleaved with successful reads do not accumulate"
+  if [ "$mutants" -eq 4 ]; then ok "4 of 4 wait-script mutants were planted"; else bad "planted $mutants of 4 mutants"; fi
   expected=$((expected + mutants + 1))
 fi
 

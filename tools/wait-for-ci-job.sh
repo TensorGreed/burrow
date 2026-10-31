@@ -10,7 +10,7 @@
 # for another job in the middle of a job, so this is that wait: it asks the Actions API for the
 # named job's state in this run, polls until it completes, and exits 0 only on `success`.
 #
-# FAILS CLOSED. Any other conclusion, the job still missing from the run after a few polls, an API error that persists, or
+# FAILS CLOSED. Any other conclusion, the job still missing from the run after a few polls, API errors that persist (5 in a row), or
 # the deadline passing exits non-zero, and the web job goes red. The artifact downloads that follow
 # would also fail on a missing artifact; this exists so that a red native job reads as that rather
 # than as a confusing download error, and so the wait has a deadline.
@@ -40,9 +40,10 @@ while :; do
     --jq ".jobs[] | select(.name == \"$name\") | \"\(.status) \(.conclusion)\"")" || status=$?
   if [ "$status" -ne 0 ]; then
     errors=$((errors + 1))
-    echo "wait-for-ci-job: API error $errors reading this run's jobs (status $status)" >&2
-    [ "$errors" -lt 5 ] || { echo "::error::wait-for-ci-job: the Actions API failed $errors times running; giving up" >&2; exit 1; }
+    echo "wait-for-ci-job: API error $errors in a row reading this run's jobs (status $status)" >&2
+    [ "$errors" -lt 5 ] || { echo "::error::wait-for-ci-job: the Actions API failed $errors times in a row; giving up" >&2; exit 1; }
   else
+    errors=0 # a successful read ends a run of errors: only CONSECUTIVE errors count
     count="$(printf '%s\n' "$state" | grep -c . || true)"
     if [ "$count" -eq 0 ]; then
       # A job that has not been scheduled yet is not in the list: tolerate that for a few polls,
