@@ -15,10 +15,11 @@ name: fuzz (nightly)
 #
 # AND FIREFOX AND WEBKIT (owner (82)(3), 2026-10-29). CI runs the browser tests in Chromium alone on
 # a pull request and in the merge queue; the other two run on push to main and here, every night.
-# A nightly failure of either is read per job under DECISIONS rule 11, like a fuzz job's. The three
-# jobs at the end are that: `native-record` builds the two native files the browser differential
+# A nightly failure of either is read per job under DECISIONS rule 11, like a fuzz job's. The first three
+# of the jobs at the end are that: `native-record` builds the two native files the browser differential
 # compares against -- with the native engines, as ci.yml's job of the same name does -- and
 # `web-firefox` / `web-webkit` wait for it with `needs:`, since nothing here is in a hurry.
+# The fourth, `web-size-lines`, is the size record for rule 18 and has no `needs:`.
 
 on:
   schedule:
@@ -450,6 +451,11 @@ jobs:
     name: web size lines (main)
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      # The one workflow-level variable ci.yml's `web (chromium)` builds under and this workflow
+      # does not set. Same build env by construction, so a nightly artifact and a push artifact
+      # from one sha cannot differ because of it.
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build-web-payload
