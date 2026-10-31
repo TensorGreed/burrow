@@ -436,3 +436,35 @@ jobs:
           name: playwright-report-webkit
           path: apps/web/playwright-report/
           retention-days: 7
+
+  # THE SIZE LINES, FROM MAIN, EVERY NIGHT (owner (92)(Q5), 2026-10-30; DECISIONS rule 18's
+  # x86-records change). ci.yml's `web (chromium)` uploads `web-size-lines` on every push to main,
+  # and artifacts expire after 30 days; rule 18 will compare against main's latest copy and treat a
+  # missing or expired one as a hard stop. A quiet fortnight must not be able to cause that, so this
+  # job rebuilds main's production web payload and uploads the same file under the same name. It is
+  # the production build -- `pnpm build`, the figures that ship -- and not the harness build the two
+  # browser jobs above upload; those hold `web-bundles-*` and cannot carry a size line. Same
+  # checker, same format: tools/size-lines.mjs. No native record is needed, so no `needs:`.
+  # `if:` keeps a manual dispatch from a branch from uploading a branch's figures as main's.
+  web-size-lines:
+    name: web size lines (main)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build-web-payload
+      - name: Stage the engines and generate the CSP
+        working-directory: apps/web
+        run: pnpm run prebuild
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+      - name: Write and check the size lines
+        run: tools/check-size-lines.sh --out "$RUNNER_TEMP/web-size-lines/size-lines.json"
+      - name: Upload the size lines
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-size-lines
+          path: ${{ runner.temp }}/web-size-lines/size-lines.json
+          if-no-files-found: error
+          retention-days: 30
