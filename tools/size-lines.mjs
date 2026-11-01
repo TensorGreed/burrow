@@ -6,8 +6,9 @@
 // figures as measured by CI's x86 build, not as recorded from another machine, and a few hundred
 // bytes of JSON is the cheapest thing that carries them: `web-bundles-*` holds only the wasm and JS
 // files, so it has no `page` (html, css, fonts), no `engines/control.txt`, and no way to name the
-// heaviest route. THIS PR ONLY PRODUCES AND CHECKS THE FILE. Nothing reads it yet; the fetch, the
-// 0% compare and the re-record are PR-B.
+// heaviest route. THIS FILE PRODUCES AND CHECKS IT. `tools/size-compare.mjs` reads it: `ci.yml`'s
+// `web (chromium)` fetches main's latest copy (`tools/fetch-main-size-lines.sh`) and holds this
+// build's lines to it at 0%.
 //
 // THE FORMAT (`format: 1`), one object:
 //   arch            "x86_64" | "aarch64" | ...  the machine that measured it

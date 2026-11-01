@@ -1151,9 +1151,9 @@ jobs:
       # THE SIZE LINES, A FEW HUNDRED BYTES OF JSON (owner (92)(Q2), 2026-10-30; DECISIONS rule 18's
       # x86-records change, PR-A). Every base line of this production build -- raw, brotli and both
       # hashes, by `size-budget.json` name, plus the two totals -- written and checked complete, then
-      # kept 30 days. Rule 18 will compare each base line with main's latest copy of this artifact at
-      # 0% (PR-B); `web-bundles-chromium` above cannot serve that, since it holds no `page` or
-      # `control.txt` line. NOTHING READS IT YET. On main the nightly (`fuzz-nightly.yml`'s
+      # kept 30 days. Rule 18 compares each base line with main's latest copy of this artifact at
+      # 0% (the two steps after the upload below); `web-bundles-chromium` above cannot serve that,
+      # since it holds no `page` or `control.txt` line. On main the nightly (`fuzz-nightly.yml`'s
       # `web-size-lines`) uploads the same artifact, so it does not expire in a quiet fortnight.
       # Before the harness rebuild, like the bundles, and from the repository root so the parity
       # extractor sees the checker.
@@ -1166,6 +1166,20 @@ jobs:
           path: ${{ runner.temp }}/web-size-lines/size-lines.json
           if-no-files-found: error
           retention-days: 30
+      # EVERY BASE LINE AGAINST MAIN'S LATEST CI ARTIFACT, AT 0% (DECISIONS rule 18, owner (85)(3),
+      # (92)). The fetch takes the newest SUCCESSFUL run on main of ci.yml (push) or fuzz-nightly.yml
+      # (schedule) that is not this one, with no third-party action: `gh api` and this job's own
+      # token (`actions: read`). A missing or expired artifact, an API failure or an artifact that is
+      # not what it says it is FAILS this step naming why -- never a pass (owner (92)(Q5)). The
+      # compare then holds every base line and both totals to 0% against it: a line that moved must
+      # be re-recorded in `size-budget.json`, and the run says "N of N" and which run it compared
+      # with. Both run from the repository root, by name, so the parity extractor sees them.
+      - name: Fetch main's latest size lines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/fetch-main-size-lines.sh --out "$RUNNER_TEMP/main-size-lines"
+      - name: Base lines against main's artifact, at 0%
+        run: tools/check-size-vs-main.sh --build "$RUNNER_TEMP/web-size-lines/size-lines.json" --main "$RUNNER_TEMP/main-size-lines"
       # Reports the first-load payload against its budget on every PR, as a step summary.
       #
       # A step summary and not a PR comment: this workflow runs with `permissions:
@@ -1203,6 +1217,15 @@ jobs:
       # and the real build's count. Here because it reads the production `dist/` this job built.
       - name: The size-lines checker refuses what it should
         run: tools/test-check-size-lines.sh
+
+      # The fetch and the compare above, each held to a per-rule probe and a near-miss twin, and to
+      # mutants of a copy: the fetch against a fake `gh` and a throwaway origin (no network), the
+      # compare against planted artifacts and recordings. They read no `dist/`; they sit here, with
+      # the checks they test, so a gate and its self-test are one place.
+      - name: The size fetch and the compare against main refuse what they should
+        run: |
+          tools/test-fetch-main-size-lines.sh
+          tools/test-check-size-vs-main.sh
 
       # Its counterpart for redaction (ADR 0029, 2026-09-21 amendment): the base module and the
       # base bundle carry none of redaction's error spellings. Here for the same reason -- it

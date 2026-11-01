@@ -173,6 +173,13 @@ EXEMPT: dict[str, str] = {
         "this file. CI runs the parity check to keep this table honest; running it as a local "
         "job of itself would be circular. It is covered by being the thing you are running."
     ),
+    "tools/fetch-main-size-lines.sh": (
+        "fetches main's latest `web-size-lines` CI artifact through the Actions API (`gh api` and "
+        "the job's own token) so `web (chromium)` can hold this build to it at 0% (DECISIONS rule "
+        "18). A developer machine has no main artifact and no `actions: read` token to ask for "
+        "one. What can run anywhere does: the `size-vs-main` job runs the fetch against a fake "
+        "`gh` and a throwaway origin, and the compare against planted files."
+    ),
     "tools/wait-for-ci-job.sh": (
         "waits, through the Actions API, for another job of the same CI run (`native-record`) "
         "before the browsers run. Locally there is no other run to wait for: this table's jobs run "
@@ -642,6 +649,19 @@ JOBS: list[dict] = [
             "tools/test-check-size-lines.sh",
         ],
         "why": "the size-lines artifact holds every base line by name (DECISIONS rule 18, owner (92))",
+    },
+    {
+        # NO `dist/`: both halves are held to planted inputs. The REAL compare needs main's CI
+        # artifact, which only CI can fetch (`tools/fetch-main-size-lines.sh` is exempt, with its
+        # reason); what is run here is the compare's rules on every plant and the fetch's every stop.
+        "name": "size-vs-main",
+        "run": "tools/test-fetch-main-size-lines.sh && tools/test-check-size-vs-main.sh",
+        "covers": [
+            "tools/check-size-vs-main.sh",
+            "tools/test-check-size-vs-main.sh",
+            "tools/test-fetch-main-size-lines.sh",
+        ],
+        "why": "every base line against main's CI artifact at 0%, and the fetch that finds it (DECISIONS rule 18)",
     },
     {
         # AFTER `web`, for the same reason as the job above: it reads the production `dist/`.

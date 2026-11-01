@@ -840,6 +840,42 @@ else
 fi
 rm -f "$broken"
 
+# --- Rule 18's size gates: take away the exemption or the covering job and parity refuses -----
+#
+# `tools/fetch-main-size-lines.sh` is CI-only (no main artifact on a developer machine), argued in
+# EXEMPT; `tools/check-size-vs-main.sh` is covered by the `size-vs-main` job. A copy of the runner
+# with either removed must refuse naming that script, beside the original (a copy elsewhere resolves
+# its paths wrongly), and each mutation asserts it applied.
+for case in exemption job; do
+  broken="$here/.ci-local-size-gates-fixture.py"
+  python3 - "$here/ci-local.py" "$broken" "$case" <<'PYBREAK'
+import pathlib, re, sys
+src, dst, which = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+text = src.read_text()
+if which == "exemption":
+    pattern = re.compile(r'    "tools/fetch-main-size-lines.sh": \(\n(?:        .*\n)+?    \),\n')
+else:
+    pattern = re.compile(r'    \{\n(?:        #.*\n)+        "name": "size-vs-main",\n(?:        .*\n)+?    \},\n')
+assert len(pattern.findall(text)) == 1, "the %s is not spelled as this test expects" % which
+mutated = pattern.sub("", text, count=1)
+assert mutated != text, "the size-gates mutation did not apply"
+dst.write_text(mutated)
+PYBREAK
+  status=0
+  out="$(python3 "$broken" --check 2>&1)" || status=$?
+  want=tools/fetch-main-size-lines.sh
+  [ "$case" = job ] && want=tools/check-size-vs-main.sh
+  if [ "$status" -ne 0 ] && grep -qF "$want" <<<"$out" && grep -q "have no local counterpart" <<<"$out"; then
+    echo "  ok   rule 18's size gates: without its $case, parity refuses and names $want"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL rule 18's size gates: without its $case, parity did not refuse by name (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+  rm -f "$broken"
+done
+
 # --- `--changed` may only ever NARROW, and each rule that lets it is probed ------------------
 #
 # A selective sweep that skipped a job it should have run is indistinguishable, from its output,
