@@ -194,3 +194,6 @@ core/*/tests/zz_*.rs
 
 # Agent memory is local to each machine, at any depth.
 **/.claude/agent-memory/
+
+# The size-lines self-test writes a mutated copy of the engine beside it; a killed run can leave it.
+tools/size-lines.selftest-mutant.mjs

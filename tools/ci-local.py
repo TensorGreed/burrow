@@ -627,6 +627,21 @@ JOBS: list[dict] = [
         "why": "PDFium reaches the render bundle and no other part of the web build (ADR 0026)",
     },
     {
+        # AFTER `web`, because it reads the production `dist/` that job built. CI runs the writer
+        # and then the self-test; here the writer's `--out` goes to a temp file, so no local sweep
+        # leaves a JSON behind in the tree.
+        "name": "size-lines",
+        "run": (
+            'out="$(mktemp -d)" && tools/check-size-lines.sh --out "$out/size-lines.json" && '
+            'rm -rf "$out" && tools/test-check-size-lines.sh'
+        ),
+        "covers": [
+            "tools/check-size-lines.sh",
+            "tools/test-check-size-lines.sh",
+        ],
+        "why": "the size-lines artifact holds every base line by name (DECISIONS rule 18, owner (92))",
+    },
+    {
         # AFTER `web`, for the same reason as the job above: it reads the production `dist/`.
         "name": "redaction-not-in-base",
         "run": (

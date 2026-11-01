@@ -1148,6 +1148,24 @@ jobs:
             apps/web/dist/**/*.js
           if-no-files-found: error
           retention-days: 30
+      # THE SIZE LINES, A FEW HUNDRED BYTES OF JSON (owner (92)(Q2), 2026-10-30; DECISIONS rule 18's
+      # x86-records change, PR-A). Every base line of this production build -- raw, brotli and both
+      # hashes, by `size-budget.json` name, plus the two totals -- written and checked complete, then
+      # kept 30 days. Rule 18 will compare each base line with main's latest copy of this artifact at
+      # 0% (PR-B); `web-bundles-chromium` above cannot serve that, since it holds no `page` or
+      # `control.txt` line. NOTHING READS IT YET. On main the nightly (`fuzz-nightly.yml`'s
+      # `web-size-lines`) uploads the same artifact, so it does not expire in a quiet fortnight.
+      # Before the harness rebuild, like the bundles, and from the repository root so the parity
+      # extractor sees the checker.
+      - name: Write and check the size lines
+        run: tools/check-size-lines.sh --out "$RUNNER_TEMP/web-size-lines/size-lines.json"
+      - name: Upload the size lines
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-size-lines
+          path: ${{ runner.temp }}/web-size-lines/size-lines.json
+          if-no-files-found: error
+          retention-days: 30
       # Reports the first-load payload against its budget on every PR, as a step summary.
       #
       # A step summary and not a PR comment: this workflow runs with `permissions:
@@ -1180,6 +1198,11 @@ jobs:
         run: |
           tools/check-pdfium-is-render-only.sh
           tools/test-check-pdfium-is-render-only.sh
+
+      # The size-lines checker's own self-test: per-rule probes, near-miss twins, mutants of a copy,
+      # and the real build's count. Here because it reads the production `dist/` this job built.
+      - name: The size-lines checker refuses what it should
+        run: tools/test-check-size-lines.sh
 
       # Its counterpart for redaction (ADR 0029, 2026-09-21 amendment): the base module and the
       # base bundle carry none of redaction's error spellings. Here for the same reason -- it
