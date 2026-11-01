@@ -180,6 +180,13 @@ EXEMPT: dict[str, str] = {
         "one. What can run anywhere does: the `size-vs-main` job runs the fetch against a fake "
         "`gh` and a throwaway origin, and the compare against planted files."
     ),
+    "tools/check-size-vs-main.sh": (
+        "the real compare: this build's size lines against main's fetched artifact, which `web "
+        "(chromium)` obtains with `tools/fetch-main-size-lines.sh` and a developer machine cannot "
+        "(no main artifact, no `actions: read` token). It is NOT run locally. What runs anywhere is "
+        "its self-test, `tools/test-check-size-vs-main.sh`, in the `size-vs-main` job: every rule on "
+        "a planted input, a mutant for each, and the real script on files on disk."
+    ),
     "tools/wait-for-ci-job.sh": (
         "waits, through the Actions API, for another job of the same CI run (`native-record`) "
         "before the browsers run. Locally there is no other run to wait for: this table's jobs run "
@@ -652,12 +659,11 @@ JOBS: list[dict] = [
     },
     {
         # NO `dist/`: both halves are held to planted inputs. The REAL compare needs main's CI
-        # artifact, which only CI can fetch (`tools/fetch-main-size-lines.sh` is exempt, with its
-        # reason); what is run here is the compare's rules on every plant and the fetch's every stop.
+        # artifact, which only CI can fetch (`tools/fetch-main-size-lines.sh` and `tools/check-size-vs-main.sh`
+        # are exempt, each with its reason); what is run here is the compare's rules on every plant and the fetch's every stop.
         "name": "size-vs-main",
         "run": "tools/test-fetch-main-size-lines.sh && tools/test-check-size-vs-main.sh",
         "covers": [
-            "tools/check-size-vs-main.sh",
             "tools/test-check-size-vs-main.sh",
             "tools/test-fetch-main-size-lines.sh",
         ],
