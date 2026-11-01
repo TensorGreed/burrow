@@ -276,6 +276,33 @@ one is decided in an issue, with the same three parts.
     largest allowance is 150 bytes, on `burrow_wasm_bg.wasm` (largest measured difference 75).
     *Does not cover:* how an allowance is re-measured when a toolchain moves, beyond "from saved
     runs, never by hand"; and the per-line budgets and the headroom policy, which are unchanged.
+    *The allowances, and the comparison off the recording's architecture, are superseded by the
+    amendment below.*
+
+    **Amended 2026-10-29: base lines are recorded from CI's x86 artifacts.** Size records are taken
+    from CI's x86_64 build -- the architecture the site is built and deployed on -- never from a
+    local build. CI compares each base line (anything a visitor loads, the render lines included)
+    and both totals against the `web-size-lines` artifact of main's latest successful CI run, with
+    0% drift, so any movement is re-recorded with the approval named in the PR body, as above. The
+    nightly uploads the same artifact from main, so it does not expire in a quiet period; a missing
+    or expired artifact is a stop, not a pass. The cross-architecture allowance
+    (`cross_arch_allowance_brotli`) is retired for base lines. Local aarch64 sweeps keep only a
+    loose check, which flags gross growth and is never the record: a line fails above max(1%, 64 B)
+    of its recorded brotli size, a total above the sum of its lines' bounds, and a line whose bytes
+    equal the recording stays exact. When the owner approves re-recording a part, the totals that
+    contain it may move to their policy minimums by the same change, without asking, and the
+    why-note says so. *Decided:* owner (85)(3), 2026-10-29, after #431's +234 B on x86 could not be
+    told from cross-architecture noise without an x86 artifact; the totals clause owner (90)(2),
+    2026-10-30, after #431's re-record moved the payload total 244 B past its budget's headroom,
+    and restated as an owner decision (94)(1), 2026-11-01; the main artifact as the comparison,
+    the loose bound and the stop on a missing artifact owner (92), 2026-10-30. *Does not cover:*
+    held bundles, which keep the 2% `drift_tolerance`; and the per-line budgets and the headroom
+    policy, which are unchanged.
+
+    **Until the base lines are re-recorded from CI's x86 artifact** (the re-record PR that follows
+    this change), `measured_arch` in `size-budget.json` still says aarch64, so CI takes the loose
+    path in `size-budget.test.ts` and its 0% is the comparison with main's artifact alone; the
+    re-record PR deletes this paragraph.
 
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
     output with burrow's own walk shares any blind spot the walk has (the review of #206 measured
