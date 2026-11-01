@@ -192,6 +192,27 @@ impl Document {
         unsafe { ffi::qpdf_more_warnings(self.data) != 0 }
     }
 
+    /// Whether qpdf's whole-file resolution has run to the end since this document's last
+    /// cross-reference reconstruction: qpdf's own flag, `fixed_dangling_refs`, read through
+    /// burrow's shim (ADR 0031 §1, *Resolution at open*).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`] if the shim answers anything but 1 or 0: it answers -1 only for a
+    /// null handle, which this struct never holds.
+    pub(super) fn resolved(&self) -> Result<bool> {
+        // SAFETY: `self.data` is a live handle owned by this struct. The shim reads one `bool`
+        // behind it, parses nothing and is `noexcept` (see
+        // `engines/qpdf-untrapped-accepted.toml`).
+        match unsafe { ffi::burrow_qpdf_fixed_dangling_refs(self.data) } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err(Error::Internal(
+                "qpdf: the resolution flag could not be read".to_owned(),
+            )),
+        }
+    }
+
     /// Whether qpdf is holding an error, and what it is.
     ///
     /// Called after **every** FFI call, whatever that call returned. `qpdf-c.h:70-73`:

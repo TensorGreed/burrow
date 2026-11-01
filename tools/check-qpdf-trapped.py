@@ -835,6 +835,121 @@ def parse_ffi(text: str) -> list[str]:
     return re.findall(r"^\s*pub\(super\) fn (qpdf[A-Za-z_0-9]*)\s*\(", text, re.MULTILINE)
 
 
+# BURROW'S SHIM (ADR 0031 §1, *Resolution at open*; flatten slice 2, owner decision (89)).
+#
+# `burrow_qpdf_*` functions are declared in the same `extern "C"` block as qpdf's C API and
+# linked from the same libqpdf.a, but they are burrow's own C++, written inline in the engine
+# build scripts (`write_qpdf_shim` in engines/build-native.sh, the same text in
+# engines/build-wasm.sh) rather than in qpdf's sources. So they are never on the generated
+# trapped list -- every one must be ARGUED in qpdf-untrapped-accepted.toml, as any untrapped
+# call is -- and the source the argument rests on is checked here: each declared shim function
+# must be defined by the shim in BOTH build scripts, the shim may define nothing ffi.rs does not
+# declare, and the two copies must be the same text, so that the argument read against one is
+# the argument for the other.
+#
+# Its own parse rather than a widened `parse_ffi`: the qpdf parse, its cases and the
+# self-test's mutations of it stay exactly what they were.
+SHIM_SCRIPTS = (
+    REPO / "engines" / "build-native.sh",
+    REPO / "engines" / "build-wasm.sh",
+)
+SHIM_PREFIX = "burrow_qpdf"
+
+SHIM_FFI_CASES: tuple[tuple[str, str | None, str], ...] = (
+    ("    pub(super) fn burrow_qpdf_fixed_dangling_refs(qpdf: QpdfData) -> c_int;",
+     "burrow_qpdf_fixed_dangling_refs", "a shim declaration"),
+    ("    pub(super) fn qpdf_more_warnings(", None, "a qpdf C API declaration"),
+    ("    // pub(super) fn burrow_qpdf_fixed_dangling_refs(", None,
+     "a commented-out shim declaration"),
+    ("    pub(super) fn burrow_pdfium_selftest(", None, "a burrow function that is not qpdf's shim"),
+)
+
+# A definition is a name at the START of a line followed by `(`: qpdf's own style, which the
+# shim follows, puts the return type on the line above. A call is indented and a comment starts
+# with `//`, so neither is a definition.
+SHIM_SOURCE_CASES: tuple[tuple[str, set[str], str], ...] = (
+    ('extern "C" QPDF_DLL int\nburrow_qpdf_selftest(qpdf_data qpdf) noexcept\n{\n}\n',
+     {"burrow_qpdf_selftest"}, "a definition"),
+    ("    burrow_qpdf_selftest(qpdf);\n", set(), "a call, indented as a statement"),
+    ("// burrow_qpdf_selftest(qpdf_data): 1 if ...\n", set(), "a comment naming it"),
+    ("qpdf_selftest(qpdf_data qpdf)\n", set(), "a qpdf-named definition"),
+)
+
+
+def parse_ffi_shim(text: str) -> list[str]:
+    """burrow's shim declarations in `qpdf/ffi.rs`'s `extern \"C\"` block."""
+    return re.findall(r"^\s*pub\(super\) fn (burrow_qpdf[A-Za-z_0-9]*)\s*\(", text, re.MULTILINE)
+
+
+def shim_sources(script: str) -> list[str]:
+    """Every `<<'CPP'` here-document in an engine build script that defines a shim function."""
+    bodies = re.findall(r"<<'CPP'\n(.*?)\nCPP$", script, re.S | re.MULTILINE)
+    return [body for body in bodies if shim_definitions(body)]
+
+
+def shim_definitions(source: str) -> set[str]:
+    """The `burrow_qpdf_*` functions a shim source defines."""
+    return set(re.findall(r"^(burrow_qpdf[A-Za-z_0-9]*)\s*\(", source, re.MULTILINE))
+
+
+def shim_problems(declared: set[str], scripts: dict[str, str]) -> list[str]:
+    """What is wrong with the shim against the declarations: see SHIM_SCRIPTS' comment."""
+    problems: list[str] = []
+    texts: list[str] = []
+    for label, script in scripts.items():
+        sources = shim_sources(script)
+        if len(sources) != 1:
+            problems.append(
+                f"{label} holds {len(sources)} shim source(s), not 1: the shim's source is "
+                f"what each `burrow_qpdf_*` exemption is argued against"
+            )
+            continue
+        texts.append(sources[0])
+        defined = shim_definitions(sources[0])
+        for name in sorted(declared - defined):
+            problems.append(f"{name} is declared in ffi.rs but the shim in {label} does not define it")
+        for name in sorted(defined - declared):
+            problems.append(f"the shim in {label} defines {name}, which ffi.rs declares nowhere")
+    if len(texts) == len(scripts) and len(set(texts)) > 1:
+        problems.append(
+            "the shim's copies in " + " and ".join(scripts) + " differ: the argument read "
+            "against one is not the argument for the other"
+        )
+    return problems
+
+
+SHIM_PROBES_RUN: list[str] = []
+
+
+def check_shim_probes() -> list[str]:
+    """Each shim rule refuses its own planted case and passes its near-miss, on every run."""
+    problems: list[str] = []
+    shim = "extern \"C\" int\nburrow_qpdf_selftest(qpdf_data q) noexcept\n{\n}\n"
+    script = f"cat > x <<'CPP'\n{shim}\nCPP\n"
+    other = f"cat > x <<'CPP'\n{shim}// changed\n\nCPP\n"
+    declared = {"burrow_qpdf_selftest"}
+
+    def probe(name: str, got: list[str], needle: str | None) -> None:
+        SHIM_PROBES_RUN.append(name)
+        if needle is None and got:
+            problems.append(f"shim probe '{name}': refused a sound shim: {got}")
+        elif needle is not None and not any(needle in g for g in got):
+            problems.append(f"shim probe '{name}': not refused for {needle!r}: {got}")
+
+    probe("identical copies defining what is declared pass",
+          shim_problems(declared, {"a": script, "b": script}), None)
+    probe("copies that differ are refused",
+          shim_problems(declared, {"a": script, "b": other}), "differ")
+    probe("a declared function the shim does not define is refused",
+          shim_problems(declared | {"burrow_qpdf_other"}, {"a": script, "b": script}),
+          "does not define it")
+    probe("a shim function nothing declares is refused",
+          shim_problems(set(), {"a": script, "b": script}), "declares nowhere")
+    probe("a script with no shim source is refused",
+          shim_problems(declared, {"a": script, "b": "echo nothing\n"}), "holds 0 shim source")
+    return problems
+
+
 def parse_js_bridge(text: str) -> list[str]:
     """qpdf C exports the JS bridge calls into the Emscripten module."""
     return re.findall(r"\._(qpdf[A-Za-z_0-9]*)\s*\(", text)
@@ -857,6 +972,24 @@ def check_parser_fixtures() -> list[str]:
             problems.append(
                 f"the ffi.rs parser does not find {label}: {line.strip()!r} -> {got!r}, "
                 f"expected [{expected!r}]"
+            )
+
+    for line, expected, label in SHIM_FFI_CASES:
+        got = parse_ffi_shim(line)
+        if expected is None and got:
+            problems.append(f"the ffi.rs shim parser matches {label}: {line.strip()!r} -> {got!r}")
+        elif expected is not None and got != [expected]:
+            problems.append(
+                f"the ffi.rs shim parser does not find {label}: {line.strip()!r} -> {got!r}, "
+                f"expected [{expected!r}]"
+            )
+
+    for source, expected_set, label in SHIM_SOURCE_CASES:
+        got_set = shim_definitions(source)
+        if got_set != expected_set:
+            problems.append(
+                f"the shim definition parser reads {label} as {sorted(got_set)!r}, "
+                f"expected {sorted(expected_set)!r}"
             )
 
     for line, expected, label in JS_CASES:
@@ -1326,6 +1459,9 @@ def declared_functions() -> dict[str, list[str]]:
     for name in parse_ffi(ffi_text):
         record(name, "qpdf/ffi.rs")
 
+    for name in parse_ffi_shim(ffi_text):
+        record(name, "qpdf/ffi.rs (burrow's shim)")
+
     for name in parse_js_bridge(bridge_text):
         record(name, "worker/bridge.js")
 
@@ -1339,6 +1475,12 @@ def declared_functions() -> dict[str, list[str]]:
         externs_by_token(strip_rust_comments(ffi_text)),
         "qpdf/ffi.rs",
         "qpdf",
+    )
+    cross += cross_check(
+        set(parse_ffi_shim(ffi_text)),
+        externs_by_token(strip_rust_comments(ffi_text)),
+        "qpdf/ffi.rs",
+        SHIM_PREFIX,
     )
     cross += cross_check(
         set(parse_js_bridge(bridge_text)),
@@ -1829,6 +1971,12 @@ def verify() -> int:
 
     problems += wasm_binding_is_covered()
 
+    problems += check_shim_probes()
+    shims = {name for name in declared if name.startswith(SHIM_PREFIX)}
+    problems += shim_problems(
+        shims, {path.relative_to(REPO).as_posix(): path.read_text() for path in SHIM_SCRIPTS}
+    )
+
     for name, where in sorted(declared.items()):
         if name in trapped:
             continue
@@ -1868,6 +2016,13 @@ def verify() -> int:
     )
     for name in WRAPPER_PROBES_RUN:
         print(f"    probe: {name}")
+    print(
+        f"  burrow's shim: {len(shims)} function(s) declared ({', '.join(sorted(shims)) or 'none'}), "
+        f"each defined by the one shim source in each of {len(SHIM_SCRIPTS)} build scripts "
+        f"({', '.join(path.name for path in SHIM_SCRIPTS)}); parsers verified against "
+        f"{len(SHIM_FFI_CASES)} declaration and {len(SHIM_SOURCE_CASES)} definition case(s), "
+        f"and {len(SHIM_PROBES_RUN)} shim rule probes"
+    )
     print(
         f"  proven helpers, pinned by body hash: "
         + ", ".join(f"{name} ({role})" for name, (role, _) in sorted(helpers.items()))

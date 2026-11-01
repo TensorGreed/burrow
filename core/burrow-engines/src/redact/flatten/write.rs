@@ -6,7 +6,9 @@ use std::ffi::CString;
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
 use super::super::frames::{PageFrameReading, PageFrames};
-use super::super::graph::{BuildsObjects, OpensForRedaction, PdfDocument, PdfObject};
+use super::super::graph::{
+    BuildsObjects, OpensForRedaction, PdfDocument, PdfObject, ReportsResolution,
+};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 
@@ -224,7 +226,10 @@ struct Promise {
 /// - [`Error::Internal`] for a picture whose size is not the frame's at 150 dpi, or whose buffer
 ///   is not exactly *W*·*H*·3 bytes: the drawing side is burrow's, so either is a bug.
 /// - `[engine-repaired-input]` for a repair at the open's resolution, after the constructors, or
-///   in the write.
+///   in the write; and for qpdf's resolved-once flag found clear after the constructors or after
+///   the write, which only a reconstruction of the cross-reference table does.
+/// - [`Error::Internal`] for the flag found clear after the open's forced resolution returned:
+///   the route that should have resolved the table did not.
 /// - [`Error::OutputRejected`] for an output that does not read back as promised.
 /// - [`Error::LimitExceeded`] for `max_memory_bytes`, **detected, not bounded**: the resident set
 ///   is read before the open and compared after the write and again during the read-back, with its
@@ -245,6 +250,7 @@ pub(crate) fn flatten<E, F>(
 ) -> Result<Vec<u8>>
 where
     E: OpensForRedaction,
+    E::Document: ReportsResolution,
     for<'d> <E::Document as PdfDocument>::Object<'d>: BuildsObjects,
     F: Fn(&[u8]) -> Result<PageFrames>,
 {
@@ -257,13 +263,14 @@ where
     // THE MEMORY READING the write and the read-back are measured against.
     let rss_before = crate::rss::resident_bytes();
 
-    // 3. THE OPEN, AND THE RESOLUTION INSIDE THE TRAP.
+    // 3. THE OPEN, AND THE RESOLUTION INSIDE THE TRAP, asserted by qpdf's own flag.
     let (document, _) = engine.open_for_redaction(bytes, options)?;
     let trailer = document.trailer()?;
-    let resolved = trailer.null_beside().made_indirect()?;
+    let resolved = force_resolution(&trailer)?;
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Open)?;
     deadline.checkpoint(clock)?;
 
     // 4. THE REPLACEMENT, with page N's place in the tree read first, from the input.
@@ -280,17 +287,19 @@ where
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Constructors)?;
     deadline.checkpoint(clock)?;
 
     let output = document.write()?;
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Write)?;
     // WHAT THE OPEN, THE EDIT AND THE WRITE COST, read while the document is still held: detected,
     // not bounded (ADR 0007's 2026-09-12 amendment).
     crate::estimate::check_measured_memory(
         rss_before,
-        crate::rss::resident_bytes(),
+        resident_bytes(Reading::Write),
         &options.limits,
     )?;
     // EVERY HANDLE, AND THE DOCUMENT, released before the read-back opens its own.
@@ -308,6 +317,96 @@ where
     check_output(engine, &output, &expected, options, deadline, &frames)?;
     deadline.checkpoint(clock)?;
     Ok(output)
+}
+
+/// Where the flatten reads qpdf's resolved-once flag, and, for the two memory readings, where it
+/// reads the resident set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reading {
+    /// After the open's forced resolution, beside the repair check there.
+    Open,
+    /// After the replacement's constructors, beside the repair check there.
+    Constructors,
+    /// After the write, beside the repair check there.
+    Write,
+    /// During the read-back, with its document and decoded pixels held (memory only).
+    ReadBack,
+}
+
+/// §1's forced resolution: a trapped call that reaches qpdf's whole-file resolution of the
+/// cross-reference table (`qpdf_make_indirect_object` on a new null, which asks qpdf for the
+/// next object number, which resolves the table first). Returns the handle it made, which the
+/// caller holds until the document is released.
+///
+/// # Errors
+///
+/// Whatever the engine latched during the resolution.
+fn force_resolution<O: BuildsObjects>(trailer: &O) -> Result<O> {
+    // THE RESOLUTION-SKIPPED HOOK: a call that returns Ok and resolves nothing, so that the
+    // flag, not the call's return, is shown to be what the open asserts.
+    #[cfg(test)]
+    if hooks::RESOLUTION_SKIPPED.with(|once| once.replace(false)) {
+        return Ok(trailer.null_beside());
+    }
+    trailer.null_beside().made_indirect()
+}
+
+/// The flag says the forced resolution ran and nothing has undone it since (ADR 0031 §1:
+/// "asserts that it ran" means reading `fixed_dangling_refs`). Read at each of [`Reading`]'s
+/// three engine points, after the repair check there, which it does not replace: the flag says
+/// a resolution ran, not that it repaired nothing.
+///
+/// # Errors
+///
+/// - At [`Reading::Open`], [`Error::Internal`] for a clear flag: the call that should have
+///   resolved returned without resolving, which is burrow's route failing, not the input.
+/// - At the later two, `[engine-repaired-input]` for a clear flag: only qpdf's reconstruction of
+///   the cross-reference table clears it once set, so the input changed under the edit.
+/// - Whatever reading the flag reports.
+fn still_resolved<D: ReportsResolution>(document: &D, at: Reading) -> Result<()> {
+    let resolved = document.resolved()?;
+    #[cfg(test)]
+    hooks::FLAG_READINGS.with(|readings| readings.borrow_mut().push((at, resolved)));
+    match (resolved, at) {
+        (true, _) => Ok(()),
+        (false, Reading::Open) => Err(Error::Internal(
+            "pdf flatten: the open's forced resolution did not run".to_owned(),
+        )),
+        (false, _) => Err(super::super::repaired_by_the_engine()),
+    }
+}
+
+/// The resident set, for the measured-memory check at `at`.
+fn resident_bytes(at: Reading) -> Option<u64> {
+    // THE MEMORY HOOK: a reading as large as it can be, at one point only, so that each of the
+    // two checks is shown to be there. The open reads the resident set too, so a hook in
+    // `crate::rss` itself could not say which reading it was answering.
+    #[cfg(test)]
+    if hooks::MEMORY_GROWS_AT.with(|point| point.get() == Some(at)) {
+        hooks::MEMORY_GROWS_AT.with(|point| point.set(None));
+        return Some(u64::MAX);
+    }
+    #[cfg(not(test))]
+    let _ = at;
+    crate::rss::resident_bytes()
+}
+
+/// Test-only switches, each spent by the flatten that reads it, on this thread.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use core::cell::{Cell, RefCell};
+
+    use super::Reading;
+
+    thread_local! {
+        /// The next flatten's forced resolution returns Ok without resolving.
+        pub(crate) static RESOLUTION_SKIPPED: Cell<bool> = const { Cell::new(false) };
+        /// The next flatten's resident-set reading at this point is `u64::MAX`.
+        pub(crate) static MEMORY_GROWS_AT: Cell<Option<Reading>> = const { Cell::new(None) };
+        /// Every flag reading, in order, with what it read. Cleared by the test that reads it.
+        pub(crate) static FLAG_READINGS: RefCell<Vec<(Reading, bool)>> =
+            const { RefCell::new(Vec::new()) };
+    }
 }
 
 /// Read the input's frames into what the output must hold, and hold the picture to page *N*'s.
@@ -572,9 +671,17 @@ where
     // that differs is a frame that differs. It is kept as the statement of what was written.
     box_is(&page.key(&MEDIA_BOX), promise, "/MediaBox")?;
     box_is(&page.key(&CROP_BOX), promise, "/CropBox")?;
-    // `/Parent`, KEPT VERBATIM BY THE WRITE: page N is where the input had it in the tree.
-    let output_place = place(&trailer, &page, options.clock.as_ref(), deadline)
-        .map_err(|error| rejected("its page tree cannot be read back", &error))?;
+    // `/Parent`, KEPT VERBATIM BY THE WRITE: page N is where the input had it in the tree. The
+    // climb's own deadline is the operation's limit, not a fault in the output, and is passed
+    // through as one (S1 round 2, L-7).
+    let output_place =
+        place(&trailer, &page, options.clock.as_ref(), deadline).map_err(|error| {
+            if matches!(error, Error::LimitExceeded { .. }) {
+                error
+            } else {
+                rejected("its page tree cannot be read back", &error)
+            }
+        })?;
     if output_place != *input_place {
         return Err(reject("/Parent is not the input's place in the page tree"));
     }
@@ -629,7 +736,7 @@ where
     // pixels are still held, so the measurement sees them. Detected, not bounded.
     crate::estimate::check_measured_memory(
         rss_before,
-        crate::rss::resident_bytes(),
+        resident_bytes(Reading::ReadBack),
         &options.limits,
     )?;
     match pixels {

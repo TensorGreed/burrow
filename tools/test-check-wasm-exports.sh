@@ -171,6 +171,36 @@ else
   fi
 fi
 
+# BURROW'S SHIM (flatten slice 2). A `burrow_qpdf_*` declaration is seen by its own parse, so a
+# new one that is neither exported nor argued is refused like a qpdf one. Synthetic, for the
+# reason `synthetic` above is.
+cp "$ffi_rs" "$work/ffi-shim-undeclared.rs"
+printf '    pub(super) fn burrow_qpdf_selftest_not_a_real_function(\n' >>"$work/ffi-shim-undeclared.rs"
+plants_it "a new shim declaration that is neither exported nor argued is caught" \
+  "$work/ffi-shim-undeclared.rs" "$not_exported" \
+  "DECLARED NATIVELY BUT NOT EXPORTED"
+
+# AND THE SHIM PARSE'S OWN GATE: break it in a copy, and the copy must refuse through its probe.
+copy="$here/.wasm-exports-fixture.sh"
+sed 's|pub(super) fn \\(burrow_qpdf\[A-Za-z_0-9\]\*\\)|pub(super) fn \\(burrow_qpdfZZZ[A-Za-z_0-9]*\\)|' "$tool" >"$copy"
+chmod +x "$copy"
+if cmp -s "$copy" "$tool"; then
+  echo "  FAIL the shim parse mutation did not apply, so this case would prove nothing"
+  fail=$((fail + 1))
+else
+  if got="$("$copy" "$wasm" "$ffi_rs" "$not_exported" 2>&1)"; then
+    echo "  FAIL a checker whose shim parse sees nothing ran anyway"
+    fail=$((fail + 1))
+  elif grep -qF "the shim parse does not match its own fixture" <<<"$got"; then
+    echo "  ok   a broken shim parse is caught by its probe, naming the fixture"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL the broken copy failed, but not via the shim parse's probe"
+    sed 's/^/        /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

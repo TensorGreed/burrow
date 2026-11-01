@@ -17,7 +17,9 @@ use super::handle::ObjectHandle;
 use super::{Document, Qpdf};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
-use crate::redact::graph::{BuildsObjects, OpensForRedaction, PdfDocument, PdfObject};
+use crate::redact::graph::{
+    BuildsObjects, OpensForRedaction, PdfDocument, PdfObject, ReportsResolution,
+};
 
 impl PdfDocument for Document {
     type Object<'a> = ObjectHandle<'a>;
@@ -66,6 +68,12 @@ impl PdfDocument for Document {
 
     fn repaired(&self) -> bool {
         Document::repaired(self)
+    }
+}
+
+impl ReportsResolution for Document {
+    fn resolved(&self) -> Result<bool> {
+        Document::resolved(self)
     }
 }
 

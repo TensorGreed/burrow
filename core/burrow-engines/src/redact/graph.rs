@@ -154,6 +154,34 @@ pub(crate) trait PdfDocument {
     fn repaired(&self) -> bool;
 }
 
+/// A document that can say whether the engine's whole-file resolution has run: what ADR 0031 §1's
+/// flatten write asserts after its forced resolution (*Resolution at open*).
+///
+/// **A trait of its own**, as [`BuildsObjects`] is and for the same reason: the native engine
+/// reads qpdf's flag through burrow's shim; the web's arrives with the shim's export (flatten
+/// slice 11), and until then no web document implements it, so the flatten policy cannot be
+/// instantiated on the web at all.
+#[cfg_attr(
+    not(all(feature = "native-engines", burrow_native_engines)),
+    expect(
+        dead_code,
+        reason = "the flatten write is native only until the web's shim is exported"
+    )
+)]
+pub(crate) trait ReportsResolution: PdfDocument {
+    /// Whether the engine's whole-file resolution of the cross-reference table has run to the
+    /// end since its last reconstruction of it: qpdf's `fixed_dangling_refs`. Once true, nothing
+    /// the flatten calls afterwards resolves again; a reconstruction clears it. It says the
+    /// resolution **ran**, not that it repaired nothing: [`PdfDocument::repaired`] is asked
+    /// beside it.
+    ///
+    /// # Errors
+    ///
+    /// [`burrow_types::Error::Internal`] where the flag cannot be read, which natively is only
+    /// a broken handle.
+    fn resolved(&self) -> Result<bool>;
+}
+
 /// A handle to one object, bound to the document that issued it.
 ///
 /// Each method reaches the engine through that document. Unless it says it drains, a method does

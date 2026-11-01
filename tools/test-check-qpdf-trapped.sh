@@ -123,6 +123,33 @@ breaks_it "a fingerprint gate blind to a changed body is caught" \
   'elif False:' \
   "does not notice a helper body changing"
 
+# BURROW'S SHIM (flatten slice 2): each of its parsers and rules, broken in a copy, refuses
+# through the probe or fixture that names it.
+breaks_it "a silent shim declaration parser is caught" \
+  'fn (burrow_qpdf\[A-Za-z_0-9\]\*)' \
+  'fn (burrow_qpdfZZZ[A-Za-z_0-9]*)' \
+  "the ffi.rs shim parser does not find a shim declaration"
+
+breaks_it "a shim definition parser that reads a call as a definition is caught" \
+  'r"\^(burrow_qpdf\[' \
+  'r"^\\s*(burrow_qpdf[' \
+  "the shim definition parser reads a call"
+
+breaks_it "a shim rule blind to two copies that differ is caught" \
+  'if len(texts) == len(scripts) and len(set(texts)) > 1:' \
+  'if False:' \
+  "shim probe 'copies that differ are refused'"
+
+breaks_it "a shim rule blind to a declaration the shim does not define is caught" \
+  'for name in sorted(declared - defined):' \
+  'for name in []:' \
+  "shim probe 'a declared function the shim does not define is refused'"
+
+breaks_it "a shim rule blind to a definition nothing declares is caught" \
+  'for name in sorted(defined - declared):' \
+  'for name in []:' \
+  "shim probe 'a shim function nothing declares is refused'"
+
 # AND THE GATE ITSELF. Deleting it alone changes nothing observable -- the parsers still
 # work, so the tool still passes. The case has to break a parser AND delete the gate, which
 # is what a real regression would look like: somebody "fixes" a failing fixture by removing

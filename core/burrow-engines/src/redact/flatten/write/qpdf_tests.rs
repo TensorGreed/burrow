@@ -14,16 +14,18 @@
     reason = "tests"
 )]
 
+use core::cell::Cell;
+use core::ffi::c_int;
 use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result};
 
 use super::super::Picture;
 use super::lie::{Lie, plant};
-use super::{CONTENTS_KEYS, IMAGE_KEYS, PAGE_KEYS};
+use super::{CONTENTS_KEYS, IMAGE_KEYS, PAGE_KEYS, Reading, hooks};
 use crate::qpdf::Qpdf;
 use crate::redact::frames::PageFrameReading;
-use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
+use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject, ReportsResolution};
 use crate::{OpenOptions, PageFlattener, PageFrameReader};
 
 fn options(limits: Limits) -> OpenOptions<'static> {
@@ -674,9 +676,10 @@ fn a_page_without_a_frame_or_past_the_end_is_refused() {
 
 /// §1's resolution at open: an object nothing on the page tree reaches, whose cross-reference
 /// offset is wrong, is resolved by the open's forced resolution -- inside the trap -- and the
-/// repair refuses. Twin: the same file with the offset right. The ADR's mutations: skip the forced
-/// resolution, and the repair surfaces after the constructors (still refused); skip that re-check
-/// too, and this goes red.
+/// repair refuses. Twin: the same file with the offset right. KILLS: skipping the forced
+/// resolution -- measured in slice 2, the flag then reads clear at the open on the twin and the
+/// broken file alike, so this test's twin is refused and it goes red on its own, with every
+/// re-check in place.
 #[test]
 fn a_repair_at_the_open_s_resolution_is_refused() {
     let well_formed = with_unreferenced_object(false);
@@ -798,6 +801,359 @@ fn each_resolution_fixture_repairs_only_at_the_forced_resolution() {
             }
         }
     }
+}
+
+/// Every flag reading the last flatten on this thread made, in order; cleared.
+fn flag_readings() -> Vec<(Reading, bool)> {
+    hooks::FLAG_READINGS.with(|readings| core::mem::take(&mut *readings.borrow_mut()))
+}
+
+/// (89)(1): qpdf's resolved-once flag reads **clear** after the redaction's open and **set**
+/// after the forced resolution, on each well-formed twin. That this is a false-to-true fixture is
+/// what the first reading measures: the open did not resolve the table, so the forced resolution
+/// is the call that set the flag. The broken files are read too, and stated: each reads clear
+/// after the open (the open alone never reaches object 5) and set after the forced resolution,
+/// including `OffsetInside`, whose reconstruction clears the flag partway and whose second pass
+/// sets it again (`QPDF::fixDanglingReferences`, 12.4.1) -- which is why that file is not the
+/// one this test rests on, and why the repair check, not the flag, refuses it.
+#[test]
+fn the_flag_reads_clear_before_the_forced_resolution_and_set_after() {
+    use crate::redact::graph::BuildsObjects;
+
+    let mut examined = 0;
+    for repair in Repair::ALL {
+        for broken in [false, true] {
+            let bytes = resolution_fixture(repair, broken);
+            let (document, _) = Qpdf
+                .open_for_redaction(&bytes, &options(Limits::DEFAULT))
+                .unwrap();
+            assert!(
+                !document.resolved().unwrap(),
+                "{repair:?}/{broken}: the open alone must not have resolved the table"
+            );
+            let trailer = document.trailer().unwrap();
+            let _resolved = trailer.null_beside().made_indirect().unwrap();
+            assert!(
+                document.resolved().unwrap(),
+                "{repair:?}/{broken}: the forced resolution must set the flag"
+            );
+            examined += 1;
+        }
+    }
+    assert_eq!(examined, 6, "three fixtures and their three twins");
+}
+
+/// The flag is read at all three points, each after the repair check there: on every twin it
+/// reads set at the open, after the constructors and after the write, and the flatten returns; on
+/// every broken file the repair check at the open refuses first, so no reading is taken.
+#[test]
+fn the_flag_is_read_at_each_point_beside_the_repair_check() {
+    let all_set = vec![
+        (Reading::Open, true),
+        (Reading::Constructors, true),
+        (Reading::Write, true),
+    ];
+    for repair in Repair::ALL {
+        flag_readings();
+        flatten(&resolution_fixture(repair, false), 0)
+            .unwrap_or_else(|error| panic!("{repair:?}: the twin must flatten: {error}"));
+        assert_eq!(flag_readings(), all_set, "{repair:?}: the twin");
+
+        let error = flatten(&resolution_fixture(repair, true), 0).expect_err("a repair refuses");
+        assert!(
+            error.to_string().contains("[engine-repaired-input]"),
+            "{repair:?}: {error}"
+        );
+        assert_eq!(flag_readings(), [], "{repair:?}: refused before the flag");
+    }
+}
+
+/// "Asserts that it ran" is the flag, not the call's return (ADR 0031's §1 row: "assert on the
+/// call's return instead of `fixed_dangling_refs`"). With the forced resolution replaced by a call
+/// that returns Ok and resolves nothing, every well-formed twin is refused at the open as
+/// burrow's own failure. Without the flag check, the constructors would resolve the table outside
+/// the trap with nothing to repair, and each would come back. Twin: the same files unhooked.
+/// KILLS: checking the call's return instead of the flag at the open.
+#[test]
+fn a_forced_resolution_that_did_not_resolve_is_refused() {
+    for repair in Repair::ALL {
+        let bytes = resolution_fixture(repair, false);
+        hooks::RESOLUTION_SKIPPED.with(|once| once.set(true));
+        flag_readings();
+        let error = flatten(&bytes, 0).expect_err("an unresolved open must not flatten");
+        assert!(
+            matches!(error, Error::Internal(ref what) if what.contains("forced resolution did not run")),
+            "{repair:?}: {error:?}"
+        );
+        assert_eq!(flag_readings(), [(Reading::Open, false)], "{repair:?}");
+        assert!(
+            !hooks::RESOLUTION_SKIPPED.with(Cell::get),
+            "the hook is spent"
+        );
+        flatten(&bytes, 0).unwrap_or_else(|error| panic!("{repair:?}: unhooked: {error}"));
+    }
+}
+
+/// A document that answers as qpdf's does, except at one point: the flag reads clear there, or a
+/// repair is reported there. The first document an engine opens lies; the read-back's is honest.
+struct Lying<D> {
+    inner: D,
+    lie: Option<(Reading, Says)>,
+    resolved_asked: Cell<usize>,
+    repaired_asked: Cell<usize>,
+}
+
+/// What a [`Lying`] document says at its point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Says {
+    FlagClear,
+    Repaired,
+}
+
+/// The order the flatten reads its three engine points in.
+const POINTS: [Reading; 3] = [Reading::Open, Reading::Constructors, Reading::Write];
+
+impl<D: PdfDocument> Lying<D> {
+    fn lies(&self, says: Says, asked: &Cell<usize>) -> bool {
+        let at = POINTS.get(asked.get()).copied();
+        asked.set(asked.get() + 1);
+        matches!(self.lie, Some((point, said)) if said == says && Some(point) == at)
+    }
+}
+
+impl<D: PdfDocument> PdfDocument for Lying<D> {
+    type Object<'a>
+        = D::Object<'a>
+    where
+        Self: 'a;
+
+    fn page_count(&self) -> Result<u64> {
+        self.inner.page_count()
+    }
+
+    fn page(&self, index: usize) -> Result<Self::Object<'_>> {
+        self.inner.page(index)
+    }
+
+    fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>> {
+        self.inner.object(number, generation)
+    }
+
+    fn trailer(&self) -> Result<Self::Object<'_>> {
+        self.inner.trailer()
+    }
+
+    fn write(&self) -> Result<Vec<u8>> {
+        self.inner.write()
+    }
+
+    fn repaired(&self) -> bool {
+        self.lies(Says::Repaired, &self.repaired_asked) || self.inner.repaired()
+    }
+}
+
+impl<D: ReportsResolution> ReportsResolution for Lying<D> {
+    fn resolved(&self) -> Result<bool> {
+        if self.lies(Says::FlagClear, &self.resolved_asked) {
+            return Ok(false);
+        }
+        self.inner.resolved()
+    }
+}
+
+/// qpdf, whose first document opened lies as [`Lying`] says.
+struct LyingQpdf {
+    lie: (Reading, Says),
+    opened: Cell<bool>,
+}
+
+impl OpensForRedaction for LyingQpdf {
+    type Document = Lying<<Qpdf as OpensForRedaction>::Document>;
+
+    fn open_for_redaction(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+    ) -> Result<(Self::Document, Deadline)> {
+        let (inner, deadline) = Qpdf.open_for_redaction(bytes, options)?;
+        let lie = (!self.opened.replace(true)).then_some(self.lie);
+        Ok((
+            Lying {
+                inner,
+                lie,
+                resolved_asked: Cell::new(0),
+                repaired_asked: Cell::new(0),
+            },
+            deadline,
+        ))
+    }
+
+    fn renderer_page_size(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        options: &OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>> {
+        Qpdf.renderer_page_size(bytes, page, options)
+    }
+}
+
+/// Flatten page 0 of `bytes` through an engine that lies once, as `lie` says.
+fn flatten_lying(bytes: &[u8], lie: (Reading, Says)) -> Result<Vec<u8>> {
+    let (wide, high, rgb) = pixels_for_page(bytes, 0);
+    let picture = Picture::new(wide, high, &rgb);
+    let options = options(Limits::DEFAULT);
+    let deadline = Deadline::start(options.clock.as_ref(), &options.limits);
+    let engine = LyingQpdf {
+        lie,
+        opened: Cell::new(false),
+    };
+    super::flatten(
+        &engine,
+        bytes,
+        0,
+        &picture,
+        &options,
+        &deadline,
+        |document| Qpdf.page_frames(document, &options),
+    )
+}
+
+/// The fake engine's half of §1's row: a document whose flag reads clear after a forced
+/// resolution that returned Ok is refused at whichever point it reads clear -- at the open as
+/// burrow's failure, and after the constructors or the write as a repair; and a document that
+/// reports a repair at any of the three points is refused there. On the well-formed twin, where
+/// the real qpdf reads set and reports nothing, so that only the lie stands between it and a
+/// returned document. KILLS: deleting any one of the three flag readings, and either repair
+/// re-check (neither of which a real input can reach once the open has resolved the table).
+#[test]
+fn a_lie_at_any_of_the_three_points_is_refused_there() {
+    let twin = resolution_fixture(Repair::OffsetInside, false);
+    let mut examined = 0;
+    for point in POINTS {
+        for says in [Says::FlagClear, Says::Repaired] {
+            let error = flatten_lying(&twin, (point, says))
+                .expect_err("a lying engine must not return a document");
+            let expected = if says == Says::FlagClear && point == Reading::Open {
+                "forced resolution did not run"
+            } else {
+                "[engine-repaired-input]"
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "{point:?}/{says:?}: expected {expected:?}, got {error}"
+            );
+            examined += 1;
+        }
+    }
+    assert_eq!(examined, 6, "three points, two lies each");
+    // A LIE ON THE READ-BACK'S OPEN ONLY is no lie the flatten asks: the honest twin.
+    flatten(&twin, 0).expect("the honest engine flattens the twin");
+}
+
+/// S1 round 2, L-7: the read-back's measured-memory check is there, and so is the write's. A
+/// resident-set reading made as large as it can be at one point only is refused there with
+/// `max_memory_bytes`; the twin, with no reading moved, flattens. KILLS: deleting the read-back's
+/// `check_measured_memory` (and the write's).
+#[test]
+fn each_measured_memory_check_is_there() {
+    assert!(
+        crate::rss::resident_bytes().is_some(),
+        "this test needs a readable resident set"
+    );
+    let bytes = document(&[LETTER], "");
+    for point in [Reading::Write, Reading::ReadBack] {
+        hooks::MEMORY_GROWS_AT.with(|at| at.set(Some(point)));
+        let error = flatten(&bytes, 0).expect_err("a measured overrun must not come back");
+        assert!(
+            matches!(
+                error,
+                Error::LimitExceeded {
+                    limit: "max_memory_bytes",
+                    ..
+                }
+            ),
+            "{point:?}: {error:?}"
+        );
+        assert_eq!(
+            hooks::MEMORY_GROWS_AT.with(Cell::get),
+            None,
+            "{point:?}: the reading was taken"
+        );
+    }
+    flatten(&bytes, 0).expect("the twin, with no reading moved, flattens");
+}
+
+/// A clock that moves a millisecond every time it is read.
+struct Counting(std::sync::atomic::AtomicU64);
+impl Clock for Counting {
+    fn now_ms(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Flatten page 1 of the nested tree on a counting clock with `budget` ms, and how often the
+/// clock was read.
+fn flatten_counting(budget: u64) -> (Result<Vec<u8>>, u64) {
+    let bytes = nested_tree();
+    let (wide, high, rgb) = pixels_for_page(&bytes, 1);
+    let clock = Arc::new(Counting(std::sync::atomic::AtomicU64::new(0)));
+    let mut limits = Limits::DEFAULT;
+    limits.max_duration_ms = budget;
+    let options = OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>);
+    let deadline = Deadline::start(clock.as_ref(), &options.limits);
+    let result = Qpdf.flatten_page(
+        &bytes,
+        1,
+        &Picture::new(wide, high, &rgb),
+        &options,
+        &deadline,
+    );
+    (result, clock.0.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// S1 round 2, L-7: the operation's deadline expiring **inside the read-back's page-tree climb**
+/// is the time limit, not a rejected output. Every budget from 0 up to the clock reads an
+/// unhurried flatten makes is tried, on a clock that moves one millisecond per read, so the
+/// expiry lands at every checkpoint in turn -- among them both of the climb's on the nested
+/// tree's page 1 -- and none of them may come back as the climb's rejection. Twin: a budget
+/// spent before the read-back (the smallest), which is the time limit either way; and the
+/// unhurried flatten, which returns. KILLS: mapping the climb's `LimitExceeded` to
+/// `OutputRejected` again.
+///
+/// The read-back's other calls (its frames, its open, the decodes) still map every error to a
+/// rejection; that is recorded for the spec review, not changed here.
+#[test]
+fn a_deadline_inside_the_read_back_climb_is_the_time_limit() {
+    let (unhurried, reads) = flatten_counting(u64::MAX / 2);
+    unhurried.expect("the unhurried flatten returns");
+    assert!(reads > 10, "the flatten reads the clock: {reads}");
+    let mut limited = 0;
+    for budget in 0..reads {
+        match flatten_counting(budget).0 {
+            Ok(_) => {}
+            Err(Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            }) => limited += 1,
+            Err(Error::OutputRejected(what)) => assert!(
+                !what.contains("its page tree cannot be read back"),
+                "budget {budget}: the climb's deadline came back as a rejection"
+            ),
+            Err(other) => panic!("budget {budget}: {other:?}"),
+        }
+    }
+    assert!(limited > 0, "no budget expired: the sweep examined nothing");
+    assert!(
+        matches!(
+            flatten_counting(0).0,
+            Err(Error::LimitExceeded {
+                limit: "max_duration_ms",
+                ..
+            })
+        ),
+        "the twin: a budget spent before the read-back"
+    );
 }
 
 proptest::proptest! {
