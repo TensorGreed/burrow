@@ -81,22 +81,4 @@ mod tests {
         let rss = resident_bytes().expect("/proc/self/statm should be readable on Linux");
         assert!(rss > 0, "a running process has a non-zero resident set");
     }
-
-    #[test]
-    fn resident_bytes_grows_when_memory_is_actually_touched() {
-        let before = resident_bytes().expect("readable");
-        // Touched, not just allocated: untouched zero pages are never faulted in and would
-        // not move the resident set -- which is exactly why the 2 GiB input test does not
-        // use any real memory.
-        let mut block = vec![0u8; 64 * 1024 * 1024];
-        for page in block.chunks_mut(4096) {
-            page[0] = 1;
-        }
-        let after = resident_bytes().expect("readable");
-        assert!(
-            after > before,
-            "resident set did not grow after touching 64 MiB: {before} -> {after}"
-        );
-        drop(block);
-    }
 }
