@@ -11,10 +11,9 @@
 //
 // WHAT "A RE-RECORD" MEANS HERE, said precisely because it is the part that could be hollow. A line
 // that moved against main's artifact is accepted only if this tree's `size-budget.json` records it
-// DIFFERENTLY from main's recording at the artifact's commit (raw, brotli or sha256). Whether the
-// new recording is the right number is the size test's job, which holds the build to the recording
-// (exact on `measured_arch`, loose elsewhere); this check is what stops growth that nobody recorded.
-// The loose local check alone could let a +1 KiB through unrecorded; this closes it.
+// AS THE BUILD MEASURES IT: equal to the build in every field that moved (raw, brotli, sha256), not
+// merely different from main's recording. A "+1" edit beside a +500 B build would otherwise pass, and
+// while `measured_arch` is not x86_64 the size test only holds the build to the recording loosely.
 //
 // THE WITNESS (A). When main's recording was measured on the artifact's architecture, every line
 // of that recording must equal main's artifact at 0 bytes, or the record is not the build that
@@ -53,10 +52,17 @@ const EVENTS = ["push", "schedule"];
 
 const recLine = (budget, key) => budget.artifacts?.[key] ?? budget.render?.artifacts?.[key];
 
-/** Does a recording entry differ from another in any field a line is held to? */
-function recordedDiffers(a, b, fields) {
-  if (a === undefined || b === undefined) return a !== b;
-  return fields.some(([, field]) => a[field] !== b[field]);
+/**
+ * Does this tree's recording EQUAL the build in every field that moved? A re-record is the build's
+ * own numbers written down, not any edit: a recording that merely differs from main's, by one byte
+ * or by a thousand, would let a grown line through on the strength of an unrelated change.
+ */
+function recordedAsBuilt(treeRec, built, moved, fields) {
+  if (treeRec === undefined) return false;
+  return moved.every((f) => {
+    const field = fields.find(([name]) => name === f)?.[1];
+    return field !== undefined && treeRec[field] === built[f];
+  });
 }
 
 /**
@@ -157,7 +163,7 @@ export function compareSizeLines({ build, main, meta, tree, mainBudget }) {
   }
 
   const rows = [];
-  const judge = (key, built, mainLine, treeRec, mainRec, fields) => {
+  const judge = (key, built, mainLine, treeRec, fields) => {
     if (built === undefined && mainLine === undefined) return;
     if (mainLine === undefined) {
       rows.push({ key, kind: "new", built, main: null });
@@ -172,7 +178,7 @@ export function compareSizeLines({ build, main, meta, tree, mainBudget }) {
       rows.push({ key, kind: "same", built, main: mainLine });
       return;
     }
-    const recorded = recordedDiffers(treeRec, mainRec, fields);
+    const recorded = recordedAsBuilt(treeRec, built, moved, fields);
     rows.push({
       key,
       kind: recorded ? "moved, re-recorded" : "moved, NOT re-recorded",
@@ -184,7 +190,9 @@ export function compareSizeLines({ build, main, meta, tree, mainBudget }) {
       problems.push(
         `${key} moved against main's artifact (${moved.join(", ")}: brotli ` +
           `${mainLine.brotli} -> ${built.brotli}) and this tree's size-budget.json does not ` +
-          `record it differently from main's. Base lines are held at 0%: re-record it, and name ` +
+          `record this build's value for ${moved.length > 1 ? "them" : "it"} (${moved
+            .map((f) => `${f}: recorded ${treeRec?.[fields.find(([n]) => n === f)?.[1]]}, built ${built[f]}`)
+            .join("; ")}). Base lines are held at 0%: re-record it from the build, and name ` +
           `the approval in the PR body (DECISIONS rule 18).`,
       );
     }
@@ -197,15 +205,14 @@ export function compareSizeLines({ build, main, meta, tree, mainBudget }) {
       build.lines[key],
       main.lines[key],
       recLine(tree, key),
-      recLine(mainBudget, key),
       LINE_FIELDS,
     );
   }
-  for (const [name, treeRec, mainRec] of [
-    ["total", tree.total, mainBudget.total],
-    ["render_total", tree.render?.total, mainBudget.render?.total],
+  for (const [name, treeRec] of [
+    ["total", tree.total],
+    ["render_total", tree.render?.total],
   ]) {
-    judge(name, build[name], main[name], treeRec, mainRec, TOTAL_FIELDS);
+    judge(name, build[name], main[name], treeRec, TOTAL_FIELDS);
   }
 
   const lineRows = rows.filter((r) => r.key !== "total" && r.key !== "render_total");

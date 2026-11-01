@@ -111,6 +111,10 @@ const cases = {
   "K sha only, recorded": (c) => { shaChange(c, K); rerecord(c, K); },
   "grow R, unrecorded": (c) => grow(c, R, "brotli", 1),
   "grow R, recorded": (c) => { grow(c, R, "brotli", 1); rerecord(c, R); rerecordTotals(c); },
+  "grow K +500, record +1": (c) => { grow(c, K, "brotli", 500); recOf(c.tree, K).measured_brotli += 1; rerecordTotals(c); },
+  "grow K +500, record exactly": (c) => { grow(c, K, "brotli", 500); rerecord(c, K); rerecordTotals(c); },
+  "grow K raw and brotli, record brotli only": (c) => { grow(c, K, "raw", 7); grow(c, K, "brotli", 7); recOf(c.tree, K).measured_brotli = c.build.lines[K].brotli; rerecordTotals(c); },
+  "grow K +500, record -1 (below main)": (c) => { grow(c, K, "brotli", 500); recOf(c.tree, K).measured_brotli -= 1; rerecordTotals(c); },
   "K recorded, totals not": (c) => { grow(c, K, "brotli", 1); rerecord(c, K); },
   "R recorded, render total not": (c) => { grow(c, R, "brotli", 1); rerecord(c, R); c.tree.total = clone(c.mainBudget.total); },
   "build is aarch64": (c) => { c.build.arch = "aarch64"; },
@@ -205,6 +209,11 @@ refuses "R1 a base line whose bytes changed at the same size (sha256 only)" "K s
 accepts "R1 twin: sha256 only, re-recorded" "K sha only, recorded"
 refuses "R1 a render line +1 brotli, not re-recorded" "grow R, unrecorded" "$R moved against main's artifact (brotli: brotli"
 accepts "R1 twin: the render line, re-recorded" "grow R, recorded"
+# R1b: a re-record is the build's own number, not any edit (the review's SF-1).
+refuses "R1b a base line +500 B, recorded as +1 (an edit, not the build)" "grow K +500, record +1" "does not record this build's value for it (brotli: recorded"
+accepts "R1b twin: +500 B, recorded exactly" "grow K +500, record exactly" "| moved, re-recorded"
+refuses "R1b a recording below main's, still not the build" "grow K +500, record -1 (below main)" "does not record this build's value for it (brotli: recorded"
+refuses "R1b two fields moved, only one recorded as built" "grow K raw and brotli, record brotli only" "does not record this build's value for them (raw: recorded"
 # R2: totals are held the same way.
 refuses "R2 the base total moved, not re-recorded" "K recorded, totals not" "total moved against main's artifact"
 refuses "R2 the render total moved, not re-recorded" "R recorded, render total not" "render_total moved against main's artifact"
@@ -258,7 +267,9 @@ mutant_twin() { # <name> <old> <new> <twin case> <text the broken run must now s
   ok "$name: mutant now shows '$expect'"
 }
 mutant_gate "R1 the unrecorded-move refusal" 'if (!recorded) {' 'if (false) {' "grow K, unrecorded" "$K moved against main's artifact"
-mutant_gate "R1 recordedDiffers always true" 'return fields.some(([, field]) => a[field] !== b[field]);' 'return true;' "grow K, unrecorded" "moved against main's artifact"
+mutant_gate "R1 recordedAsBuilt always true" 'return field !== undefined && treeRec[field] === built[f];' 'return true;' "grow K, unrecorded" "moved against main's artifact"
+mutant_gate "R1b reverted to 'differs from main', not 'equals the build'" 'const recorded = recordedAsBuilt(treeRec, built, moved, fields);' 'const recorded = treeRec !== undefined && moved.some((f) => treeRec[fields.find(([n]) => n === f)[1]] !== mainLine[f]);' "grow K +500, record +1" "does not record this build's value"
+mutant_gate "R1b every moved field must equal: every -> some" 'return moved.every((f) => {' 'return moved.some((f) => {' "grow K raw and brotli, record brotli only" "does not record this build's value"
 mutant_gate "R1 raw is not compared" 'const LINE_FIELDS = [
   ["raw", "measured_raw"],
 ' 'const LINE_FIELDS = [
@@ -267,7 +278,7 @@ mutant_gate "R1 brotli is not compared" '  ["brotli", "measured_brotli"],
   ["sha256", "measured_sha256"],' '  ["sha256", "measured_sha256"],' "grow K, unrecorded" "$K moved against main's artifact (brotli"
 mutant_gate "R1 sha256 is not compared" '  ["sha256", "measured_sha256"],
 ];' '];' "K sha only, unrecorded" "$K moved against main's artifact (sha256"
-mutant_gate "R2 the totals are not judged" 'judge(name, build[name], main[name], treeRec, mainRec, TOTAL_FIELDS);' 'void treeRec;' "K recorded, totals not" "total moved against"
+mutant_gate "R2 the totals are not judged" 'judge(name, build[name], main[name], treeRec, TOTAL_FIELDS);' 'void treeRec;' "K recorded, totals not" "total moved against"
 mutant_gate "R3 the architecture rule" 'if (build.arch !== main.arch) {' 'if (false) {' "build is aarch64" "not comparable across architectures"
 mutant_gate "R4 the artifact sha rule" 'if (src.sha !== meta.head_sha) {' 'if (false) {' "artifact sha differs from the run" "says it is from"
 mutant_gate "R4 the artifact run rule" 'if (String(src.run_id) !== String(meta.run_id)) {' 'if (false) {' "artifact run id differs from the fetch" "says run"
