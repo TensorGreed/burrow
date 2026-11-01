@@ -673,6 +673,35 @@ impl crate::PageRedactor for Qpdf {
     }
 }
 
+/// Redaction v1's page replacement natively: the policy in `redact::flatten`, with every frame read
+/// as [`crate::PageFrameReader::page_frames`] reads it.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+impl crate::PageFlattener for Qpdf {
+    fn flatten_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        picture: &crate::redact::flatten::Picture<'_>,
+        options: &crate::OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<u8>> {
+        use crate::PageFrameReader;
+        crate::redact::flatten::flatten(self, bytes, page, picture, options, deadline, |document| {
+            self.page_frames(document, options)
+        })
+    }
+
+    fn rotations_before_flattening(
+        &self,
+        bytes: &[u8],
+        options: &crate::OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
+        rotations_of(&document, pages, options, deadline)
+    }
+}
+
 /// Every page's frame natively: the policy in `redact::frames`, with PDFium as the second reading
 /// an inherited `/MediaBox` needs.
 ///

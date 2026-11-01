@@ -271,6 +271,61 @@ pub(crate) trait PdfObject: Sized {
     fn replace_stream_data(&self, bytes: &[u8], filter: &Self, decode_parms: &Self) -> Result<()>;
 }
 
+/// The constructors ADR 0031's flatten write needs, beside a handle (§1 step 7, §8).
+///
+/// **A trait of its own** so that an engine implements the flatten write only when it has these.
+/// The native engine does; the web's arrives with its exports (a later slice of the same build),
+/// and until then `WebQpdf` does not implement it, so the flatten policy cannot be instantiated on
+/// the web at all. Every method makes its value **in this handle's document**, for the reason
+/// [`PdfObject::null_beside`] does.
+#[cfg_attr(
+    not(all(feature = "native-engines", burrow_native_engines)),
+    expect(
+        dead_code,
+        reason = "the flatten write is native only until the web's constructors are exported"
+    )
+)]
+pub(crate) trait BuildsObjects: PdfObject {
+    /// An empty direct dictionary.
+    fn dictionary_beside(&self) -> Self;
+
+    /// An empty direct array.
+    fn array_beside(&self) -> Self;
+
+    /// The name `name`, which is always a literal of this crate's.
+    fn name_beside(&self, name: &Name) -> Self;
+
+    /// A real holding exactly `text`, which the caller formatted and owns the syntax of.
+    fn real_beside(&self, text: &core::ffi::CStr) -> Self;
+
+    /// A new, empty, indirect stream. **Parse-free only once [`Self::made_indirect`] has run on
+    /// this document**: the first object number qpdf hands out resolves the whole
+    /// cross-reference table (ADR 0031 §1, *Resolution at open*).
+    fn stream_beside(&self) -> Self;
+
+    /// This object made indirect. Drains. Called for its side effect: the whole-file resolution,
+    /// inside the trap.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the engine latched.
+    fn made_indirect(&self) -> Result<Self>;
+
+    /// Append `item` to this array. Drains.
+    ///
+    /// # Errors
+    ///
+    /// `item` from another document; whatever the engine latched.
+    fn append_item(&self, item: &Self) -> Result<()>;
+
+    /// Set `key` to `item` on this dictionary. Drains.
+    ///
+    /// # Errors
+    ///
+    /// `item` from another document; whatever the engine latched.
+    fn replace_key(&self, key: &Name, item: &Self) -> Result<()>;
+}
+
 /// An engine that can open a document for redaction, and open its output again to read it back.
 ///
 /// Both halves go through here so the read-back is the same engine's, with the same ceilings, as

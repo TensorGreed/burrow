@@ -90,6 +90,8 @@ PREFIXES = {
     "redact_references": 0,
     # #136's page frames read a whole document, every page of it.
     "redact_page_frames": 0,
+    # ADR 0031's page replacement reads a whole document and flattens its first framed page.
+    "redact_flatten": 0,
 }
 
 # THE PREFIX BYTE EVERY SEED CARRIES. Named rather than written twice: `LIVE_REQUESTS` below

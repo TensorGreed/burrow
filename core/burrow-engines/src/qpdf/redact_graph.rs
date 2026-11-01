@@ -17,7 +17,7 @@ use super::handle::ObjectHandle;
 use super::{Document, Qpdf};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
-use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
+use crate::redact::graph::{BuildsObjects, OpensForRedaction, PdfDocument, PdfObject};
 
 impl PdfDocument for Document {
     type Object<'a> = ObjectHandle<'a>;
@@ -177,6 +177,45 @@ impl PdfObject for ObjectHandle<'_> {
     fn replace_stream_data(&self, bytes: &[u8], filter: &Self, decode_parms: &Self) -> Result<()> {
         // `ObjectHandle::replace_stream_data` checks both and drains itself (#130).
         Self::replace_stream_data(self, bytes, filter, decode_parms)
+    }
+}
+
+impl BuildsObjects for ObjectHandle<'_> {
+    fn dictionary_beside(&self) -> Self {
+        Self::dictionary_beside(self)
+    }
+
+    fn array_beside(&self) -> Self {
+        Self::array_beside(self)
+    }
+
+    fn name_beside(&self, name: &Name) -> Self {
+        Self::name_beside(self, name)
+    }
+
+    fn real_beside(&self, text: &core::ffi::CStr) -> Self {
+        Self::real_beside(self, text)
+    }
+
+    fn stream_beside(&self) -> Self {
+        Self::stream_beside(self)
+    }
+
+    fn made_indirect(&self) -> Result<Self> {
+        Self::made_indirect(self)
+    }
+
+    fn append_item(&self, item: &Self) -> Result<()> {
+        // `ObjectHandle::append_item` checks the document and drains itself.
+        Self::append_item(self, item)
+    }
+
+    fn replace_key(&self, key: &Name, item: &Self) -> Result<()> {
+        // CHECKED, NOT ASSUMED, as `set_array_item` above: `ObjectHandle::replace_key` leaves the
+        // document check to its caller, and the caller is generic code.
+        same_document(self, item)?;
+        Self::replace_key(self, key, item);
+        self.drained()
     }
 }
 

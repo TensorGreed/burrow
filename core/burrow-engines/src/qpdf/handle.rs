@@ -317,6 +317,94 @@ impl<'a> ObjectHandle<'a> {
         unsafe { self.sibling(handle) }
     }
 
+    /// An empty direct dictionary, in **this handle's** document. See [`Self::null_beside`].
+    pub(super) fn dictionary_beside(&self) -> Self {
+        // SAFETY: as `null_beside`. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`: it constructs an empty dictionary and never
+        // touches the document.
+        let handle = unsafe { ffi::qpdf_oh_new_dictionary(self.data) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// An empty direct array, in **this handle's** document. See [`Self::null_beside`].
+    pub(super) fn array_beside(&self) -> Self {
+        // SAFETY: as `null_beside`. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`, as `new_integer`.
+        let handle = unsafe { ffi::qpdf_oh_new_array(self.data) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// The name `name`, in **this handle's** document. See [`Self::null_beside`].
+    pub(super) fn name_beside(&self, name: &Name) -> Self {
+        // SAFETY: as `null_beside`; `name` is NUL-terminated by construction (`Name`). Untrapped
+        // and argued in `engines/qpdf-untrapped-accepted.toml`: it stores the text verbatim.
+        let handle = unsafe { ffi::qpdf_oh_new_name(self.data, name.as_ptr()) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// A real holding exactly `text`, in **this handle's** document. See [`Self::null_beside`].
+    ///
+    /// qpdf stores the text without parsing it and writes it back as given, so the caller owns
+    /// its syntax: `redact::flatten` passes only a finite, positive `f64` it formatted itself.
+    pub(super) fn real_beside(&self, text: &core::ffi::CStr) -> Self {
+        // SAFETY: as `null_beside`; `text` is NUL-terminated (`CStr`) and outlives the call,
+        // which copies it. Untrapped and argued in `engines/qpdf-untrapped-accepted.toml`.
+        let handle = unsafe { ffi::qpdf_oh_new_real_from_string(self.data, text.as_ptr()) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// A new, empty stream, in **this handle's** document. See [`Self::null_beside`].
+    ///
+    /// **Parse-free only after [`Self::made_indirect`] has run on this document**: see
+    /// `ffi::qpdf_oh_new_stream`. Its one caller, `redact::flatten`, forces that at the open.
+    pub(super) fn stream_beside(&self) -> Self {
+        // SAFETY: as `null_beside`. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`, on the condition stated above.
+        let handle = unsafe { ffi::qpdf_oh_new_stream(self.data) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// This object made indirect, in this handle's document. Drains the error slot.
+    ///
+    /// Its purpose is the side effect: the first call resolves the whole cross-reference table,
+    /// inside the trap (`ffi::qpdf_make_indirect_object`).
+    ///
+    /// # Errors
+    ///
+    /// Whatever qpdf latched, mapped at the boundary.
+    pub(super) fn made_indirect(&self) -> Result<Self> {
+        // SAFETY: `self.data` is live and `self.handle` was issued by it. Routes through
+        // `trap_errors` via `do_with_oh` -> `trap_oh_errors`.
+        let handle = unsafe { ffi::qpdf_make_indirect_object(self.data, self.handle) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        let made = unsafe { self.sibling(handle) };
+        made.drained()?;
+        Ok(made)
+    }
+
+    /// Append `item` to this array, and report qpdf's verdict. Drains the error slot, as
+    /// [`Self::replace_stream_data`] does and for its reason.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`] if `item` belongs to another document; whatever qpdf latched.
+    pub(super) fn append_item(&self, item: &Self) -> Result<()> {
+        if item.data != self.data {
+            return Err(Error::Internal(
+                "qpdf: an array item came from another document".to_owned(),
+            ));
+        }
+        // SAFETY: `self.data` is live; both handles were issued by it (checked above). Routes
+        // through `trap_errors` via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+        unsafe { ffi::qpdf_oh_append_item(self.data, self.handle, item.handle) };
+        self.drained()
+    }
+
     /// Whether `other` was issued by the same document as this handle.
     ///
     /// Compares the documents, never the handles: two handles are never equal (see

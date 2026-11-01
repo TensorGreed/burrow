@@ -76,6 +76,9 @@ use burrow_types::{Error, Result};
 // #191 amendment). Everything below decides what a redaction removes, keeps or refuses; nothing
 // below names an engine.
 pub(crate) mod frame;
+// Redaction v1's page replacement (ADR 0031). Public for `Picture` and the pixel arithmetic the
+// render side must share; the write itself is `pub(crate)`, reached through `crate::PageFlattener`.
+pub mod flatten;
 // Every page's frame, read before a region exists (#136). Public for its two result types; the
 // reading itself is `pub(crate)` and reached through `crate::PageFrameReader`.
 pub mod frames;
