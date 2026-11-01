@@ -1226,6 +1226,7 @@ jobs:
         run: |
           tools/test-fetch-main-size-lines.sh
           tools/test-check-size-vs-main.sh
+          tools/test-size-loose-bound.sh
 
       # Its counterpart for redaction (ADR 0029, 2026-09-21 amendment): the base module and the
       # base bundle carry none of redaction's error spellings. Here for the same reason -- it

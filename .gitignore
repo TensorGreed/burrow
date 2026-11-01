@@ -199,3 +199,4 @@ core/*/tests/zz_*.rs
 tools/size-lines.selftest-mutant.mjs
 tools/size-compare.selftest-mutant.mjs
 tools/.fetch-main-size-lines.mutant.sh
+apps/web/src/*.mutant.*

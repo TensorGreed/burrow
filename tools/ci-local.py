@@ -662,10 +662,14 @@ JOBS: list[dict] = [
         # artifact, which only CI can fetch (`tools/fetch-main-size-lines.sh` and `tools/check-size-vs-main.sh`
         # are exempt, each with its reason); what is run here is the compare's rules on every plant and the fetch's every stop.
         "name": "size-vs-main",
-        "run": "tools/test-fetch-main-size-lines.sh && tools/test-check-size-vs-main.sh",
+        "run": (
+            "tools/test-fetch-main-size-lines.sh && tools/test-check-size-vs-main.sh && "
+            "tools/test-size-loose-bound.sh"
+        ),
         "covers": [
             "tools/test-check-size-vs-main.sh",
             "tools/test-fetch-main-size-lines.sh",
+            "tools/test-size-loose-bound.sh",
         ],
         "why": "every base line against main's CI artifact at 0%, and the fetch that finds it (DECISIONS rule 18)",
     },
