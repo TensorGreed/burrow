@@ -51,12 +51,6 @@ export interface Recorded {
   measured_sha256?: string;
   /** The same, with generated engine content hashes replaced by a fixed token. */
   measured_sha256_normalised?: string;
-  /**
-   * A base line's brotli allowance on an architecture other than the recording's (DECISIONS
-   * rule 18, 2026-10-18 amendment): twice the largest cross-architecture difference measured
-   * from saved runs. Read only for base lines, and only off the recording's architecture.
-   */
-  cross_arch_allowance_brotli?: number;
 }
 
 /** What the build actually contains for one artifact. */
@@ -74,8 +68,7 @@ export type Finding =
   | { kind: "drift"; key: string; recorded: number; live: number; tolerance: number }
   | { kind: "hash-coupled-drift"; key: string; recorded: number; live: number; bound: number }
   | { kind: "base-drift"; key: string; recorded: number; live: number }
-  | { kind: "no-allowance"; key: string }
-  | { kind: "cross-arch-drift"; key: string; recorded: number; live: number; allowance: number };
+  | { kind: "loose-drift"; key: string; recorded: number; live: number; bound: number };
 
 /**
  * How far a size may move when only the generated engine hashes changed.
@@ -85,6 +78,27 @@ export type Finding =
  * without being large enough to hide a real edit -- a paragraph of prose is bigger.
  */
 export const HASH_COUPLING_BYTES = 64;
+
+/**
+ * THE LOOSE LOCAL CHECK (DECISIONS rule 18, amended 2026-11-01; owner (92)(Q3)): off the
+ * recording's architecture, a base line may differ from the recording by at most
+ * `max(LOOSE_FRACTION of its recorded brotli size, LOOSE_FLOOR_BYTES)`.
+ *
+ * MEASURED, not guessed: the x86_64 and aarch64 builds of one commit differed by at most 75 bytes
+ * on any line over ten commits (2026-10-19), and the same 22 function bodies of the base module
+ * differ by 1-3 index bytes each between architectures (`flatten-s1-wasm-diag`, 2026-10-30). 1% is
+ * 886 bytes on `burrow_wasm_bg.wasm`, 394 on `burrow-worker.js`, 234 on `page`: 6x to 110x the
+ * measured noise, so no honest build is flagged. The floor is for `control.txt`, 68 bytes, where
+ * 1% is under a byte. A slice-sized regression (a few hundred bytes) is NOT flagged locally, by
+ * design: this flags gross growth and is never the record. The record is CI's x86_64 artifact.
+ */
+export const LOOSE_FRACTION = 0.01;
+export const LOOSE_FLOOR_BYTES = 64;
+
+/** One base line's loose bound in brotli bytes (not rounded: a difference above it fails). */
+export function looseBound(recordedBrotli: number): number {
+  return Math.max(recordedBrotli * LOOSE_FRACTION, LOOSE_FLOOR_BYTES);
+}
 
 export interface Inputs {
   recorded: Record<string, Recorded>;
@@ -99,9 +113,9 @@ export interface Inputs {
    *
    * On the recording's architecture (`sameArch`) a base line may not move at all: every case
    * that would have taken `tolerance` or the 64-byte hash-coupling bound takes 0 instead. Off
-   * it, each line moves at most its own `cross_arch_allowance_brotli`, and passing that is a
-   * stop rather than a re-record: the allowance is a measured property of two toolchains, so a
-   * line past it has changed in a way the recording architecture did not see.
+   * it, only the LOOSE check applies (`looseBound`): a line whose bytes differ moves at most
+   * max(1%, 64 B). The loose check flags gross growth and is never the record; CI's x86_64
+   * artifact is (`tools/size-compare.mjs`). A line whose bytes equal the recording stays exact.
    */
   base?: { sameArch: boolean };
 }
@@ -152,9 +166,9 @@ export function driftFindings({
     }
 
     if (base !== undefined && !sameBytes) {
-      // A BASE LINE WHOSE BYTES DIFFER FROM THE RECORDING. No percentage and no 64-byte bound:
-      // on the recording's architecture it may not move at all, and off it only by its own
-      // measured allowance. Identical bytes fall through to the false-record check below.
+      // A BASE LINE WHOSE BYTES DIFFER FROM THE RECORDING. No percentage and no 64-byte hash
+      // bound: on the recording's architecture it may not move at all, and off it only by the
+      // loose bound. Identical bytes fall through to the false-record check below.
       const moved = Math.abs(actual.brotli - record.measured_brotli);
       if (base.sameArch) {
         if (moved > 0) {
@@ -165,17 +179,13 @@ export function driftFindings({
             live: actual.brotli,
           });
         }
-      } else if (record.cross_arch_allowance_brotli === undefined) {
-        // Without an allowance the line has no bound off the recording's architecture, which
-        // must fail rather than pass: a missing number is how this would be switched off.
-        findings.push({ kind: "no-allowance", key });
-      } else if (moved > record.cross_arch_allowance_brotli) {
+      } else if (moved > looseBound(record.measured_brotli)) {
         findings.push({
-          kind: "cross-arch-drift",
+          kind: "loose-drift",
           key,
           recorded: record.measured_brotli,
           live: actual.brotli,
-          allowance: record.cross_arch_allowance_brotli,
+          bound: looseBound(record.measured_brotli),
         });
       }
       continue;
@@ -302,17 +312,12 @@ export function explain(finding: Finding): string {
         `${finding.live} brotli on the recording's architecture, and base lines have no drift ` +
         `tolerance (DECISIONS rule 18). Re-record it, and name the approval in the PR body.`
       );
-    case "no-allowance":
+    case "loose-drift":
       return (
-        `${finding.key}: a base line with no cross_arch_allowance_brotli, so nothing bounds it ` +
-        `off the recording's architecture. Measure one from saved runs (rule 18).`
-      );
-    case "cross-arch-drift":
-      return (
-        `${finding.key}: moved from the recorded ${finding.recorded} to ${finding.live} brotli ` +
-        `on an architecture other than the recording's, past its ${finding.allowance}-byte ` +
-        `cross-architecture allowance. STOP, NOT A RE-RECORD (DECISIONS rule 18): the ` +
-        `allowance is measured, so this is a change the recording architecture did not see.`
+        `${finding.key}: moved from the recorded ${finding.recorded} to ${finding.live} brotli on ` +
+        `an architecture other than the recording's, past the loose local bound of ` +
+        `${finding.bound} bytes (max of 1% and ${LOOSE_FLOOR_BYTES} B, DECISIONS rule 18). That is ` +
+        `gross growth. This check is never the record: the record is CI's x86_64 artifact.`
       );
     case "drift":
       return (
@@ -334,21 +339,22 @@ export function archName(nodeArch: string): string {
  * A payload total against the build (DECISIONS rule 18, 2026-10-18 amendment).
  *
  * On the recording's architecture the live total must equal the recorded one exactly -- every
- * base line is at 0%, so the sum is too. Off it, the total may move at most the summed
- * allowances of the lines in it. `null` when it holds; otherwise the line to print.
+ * base line is at 0%, so the sum is too. Off it, the total may move at most the sum of the
+ * loose bounds of the lines in it (`looseBound`). `null` when it holds; otherwise the line to
+ * print.
  */
 export function totalFinding({
   name,
   recorded,
   live,
   sameArch,
-  allowances,
+  bounds,
 }: {
   name: string;
   recorded: number;
   live: number;
   sameArch: boolean;
-  allowances: number[];
+  bounds: number[];
 }): string | null {
   const moved = Math.abs(live - recorded);
   if (sameArch) {
@@ -357,9 +363,9 @@ export function totalFinding({
       : `${name}: the build is ${live} brotli and the recording ${recorded}, on the recording's ` +
           `architecture, where a total equals the exact sum of its measured parts. Re-record.`;
   }
-  const bound = allowances.reduce((n, a) => n + a, 0);
+  const bound = bounds.reduce((n, b) => n + b, 0);
   return moved <= bound
     ? null
     : `${name}: the build is ${live} brotli and the recording ${recorded}, ${moved} apart, past ` +
-        `the ${bound} bytes its lines' cross-architecture allowances sum to. STOP, NOT A RE-RECORD.`;
+        `the ${bound} bytes its lines' loose local bounds sum to. Gross growth; never the record.`;
 }

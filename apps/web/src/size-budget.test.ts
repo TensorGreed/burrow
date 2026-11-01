@@ -47,6 +47,7 @@ import {
   classify,
   driftFindings,
   explain,
+  looseBound,
   totalFinding,
 } from "./size-budget-drift.js";
 import { baseLineDeltaTable, baseLineDeltas } from "../../../tools/size-budget-base-delta.mjs";
@@ -61,7 +62,6 @@ interface Line {
   measured_brotli: number;
   measured_sha256?: string;
   measured_sha256_normalised?: string;
-  cross_arch_allowance_brotli?: number;
   budget_brotli: number;
   why?: string;
 }
@@ -149,9 +149,12 @@ const redactLive: Record<string, Live> = Object.fromEntries(
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
 
-// THE RECORDING'S ARCHITECTURE (DECISIONS rule 18, 2026-10-18 amendment). On it, base and render
-// lines -- everything a visitor loads -- are held at 0%; off it (CI's x86_64, which is the build
-// that ships), each is held to its own measured `cross_arch_allowance_brotli`.
+// THE RECORDING'S ARCHITECTURE (DECISIONS rule 18). On it, base and render lines -- everything a
+// visitor loads -- are held at 0%; off it, only the LOOSE local check applies: max(1%, 64 B) per
+// line, totals by the sum of their lines, and it is never the record (`looseBound`). The record is
+// CI's x86_64 artifact. `measured_arch` stays aarch64 until the base lines are re-recorded from it,
+// so until then CI takes the loose path here and its 0% is `tools/check-size-vs-main.sh`'s, which
+// holds every base line to main's latest CI artifact in the same job.
 const runningArch = archName(process.arch);
 const sameArch = runningArch === budget.measured_arch;
 
@@ -706,7 +709,7 @@ describe("the recording describes the build it claims to", () => {
 
   // THE WIRING PROBE. A hash-only plant through the real calls' own inputs, one line at a time,
   // in each line class: on the recording's architecture a single brotli byte must be a
-  // `base-drift`; off it, the line's allowance plus one must be a `cross-arch-drift`. Hash-only
+  // `base-drift`; off it, one byte past the line's loose bound must be a `loose-drift`. Hash-only
   // is the plant that tells the rules apart -- the held-bundle path would wave it through under
   // the 64-byte hash-coupling bound. The architecture decision is derived again here from
   // `process.arch`, not read from `sameArch`, so a wrong `sameArch` cannot agree with itself.
@@ -722,7 +725,7 @@ describe("the recording describes the build it claims to", () => {
       );
       for (const key of keys) {
         const record = inputs.recorded[key];
-        const step = onRecordingArch ? 1 : (record.cross_arch_allowance_brotli ?? 0) + 1;
+        const step = onRecordingArch ? 1 : Math.floor(looseBound(record.measured_brotli)) + 1;
         const planted: Live = {
           ...inputs.live[key],
           brotli: record.measured_brotli + step,
@@ -738,8 +741,8 @@ describe("the recording describes the build it claims to", () => {
         const findings = driftFindings({ ...inputs, live: { ...inputs.live, [key]: planted } });
         expect(
           findings.filter((f) => f.key === key).map((f) => f.kind),
-          `${lineClass} line ${key}, ${onRecordingArch ? "+1 on" : "allowance+1 off"} the recording's arch`,
-        ).toEqual([onRecordingArch ? "base-drift" : "cross-arch-drift"]);
+          `${lineClass} line ${key}, ${onRecordingArch ? "+1 on" : "loose bound+1 off"} the recording's arch`,
+        ).toEqual([onRecordingArch ? "base-drift" : "loose-drift"]);
       }
     });
   }
@@ -751,40 +754,39 @@ describe("the recording describes the build it claims to", () => {
     // eslint-disable-next-line no-console -- a test reporting what it compared against
     console.log(
       `  base/render drift: running ${runningArch}, recorded on ${budget.measured_arch}: ` +
-        (sameArch ? "0% on every base and render line" : "each line's cross-arch allowance"),
+        (sameArch
+          ? "0% on every base and render line"
+          : "the loose check, max(1%, 64 B) per line (never the record)"),
     );
   });
 
-  it("gives every base and render line a cross-architecture allowance", () => {
-    const lines = { ...budget.artifacts, ...budget.render.artifacts };
-    const missing = Object.entries(lines)
-      .filter(([, l]) => !Number.isInteger(l.cross_arch_allowance_brotli))
-      .map(([key]) => key);
-    expect(missing, "base/render lines with no measured allowance").toEqual([]);
-    // The held bundles keep the percentage, so an allowance there would be a number nothing reads.
-    const stray = Object.entries(budget.redact.artifacts)
-      .filter(([, l]) => l.cross_arch_allowance_brotli !== undefined)
-      .map(([key]) => key);
-    expect(stray, "held lines carry an allowance nothing reads").toEqual([]);
+  it("carries no cross-architecture allowance on any line (DECISIONS rule 18, retired)", () => {
+    // The allowance is retired for base lines, and the held bundles never had one. A field left on
+    // any line would be a number nothing reads that reads like a bound; the raw file is checked
+    // because the typed `Line` no longer has the field, so a typed read could not see it.
+    const raw = readFileSync(join(webApp, "size-budget.json"), "utf8");
+    expect(raw, "size-budget.json still names cross_arch_allowance_brotli").not.toContain(
+      "cross_arch_allowance_brotli",
+    );
   });
 
-  it("finds the base and render totals equal to the build, or within the summed allowances", () => {
-    const allowance = (lines: Record<string, Line>) =>
-      Object.values(lines).map((l) => l.cross_arch_allowance_brotli ?? 0);
+  it("finds the base and render totals equal to the build, or within the summed loose bounds", () => {
+    const bound = (lines: Record<string, Line>) =>
+      Object.values(lines).map((l) => looseBound(l.measured_brotli));
     const findings = [
       totalFinding({
         name: "total",
         recorded: budget.total.measured_brotli,
         live: measurement.total.brotli,
         sameArch,
-        allowances: allowance(budget.artifacts),
+        bounds: bound(budget.artifacts),
       }),
       totalFinding({
         name: "render total",
         recorded: budget.render.total.measured_brotli,
         live: renderMeasurement.total.brotli,
         sameArch,
-        allowances: [...allowance(budget.artifacts), ...allowance(budget.render.artifacts)],
+        bounds: [...bound(budget.artifacts), ...bound(budget.render.artifacts)],
       }),
     ].filter((f) => f !== null);
     expect(findings).toEqual([]);
@@ -1401,16 +1403,18 @@ describe("the base-line delta against main, and its count (owner, 2026-10-18)", 
   });
 });
 
-describe("base lines at 0%, held bundles at 2% (DECISIONS rule 18, 2026-10-18 amendment)", () => {
+describe("base lines at 0%, loose off-arch, held bundles at 2% (DECISIONS rule 18)", () => {
   // Per-rule probes, on every run. Each plant asserts it applied before the rule is read.
   const recordedBrotli = 10_000;
-  const line = (extra: Partial<Recorded> = {}): Record<string, Recorded> => ({
+  const line = (
+    extra: Partial<Recorded> = {},
+    brotli = recordedBrotli,
+  ): Record<string, Recorded> => ({
     a: {
       measured_raw: 1,
-      measured_brotli: recordedBrotli,
+      measured_brotli: brotli,
       measured_sha256: "raw0",
       measured_sha256_normalised: "norm0",
-      cross_arch_allowance_brotli: 40,
       ...extra,
     },
   });
@@ -1452,37 +1456,70 @@ describe("base lines at 0%, held bundles at 2% (DECISIONS rule 18, 2026-10-18 am
     expect(kinds(findings)).toEqual(["base-drift"]);
   });
 
-  it("passes a base line at its exact allowance off the recording's architecture", () => {
-    const build = rebuilt(recordedBrotli + 40);
-    expect(build.a.brotli - recordedBrotli).toBe(40);
+  it("passes a base line at exactly 1% off the recording's architecture, and fails one byte past", () => {
+    // 1% of 10,000 is 100, and it is above the 64-byte floor, so 1% is the bound.
+    expect(looseBound(recordedBrotli), "the bound is 1% here, not the floor").toBe(100);
+    const at = rebuilt(recordedBrotli + 100);
+    const past = rebuilt(recordedBrotli + 101);
+    expect(at.a.brotli - recordedBrotli, "the plant must be the bound").toBe(100);
+    expect(past.a.brotli - recordedBrotli, "the plant must be the bound plus one").toBe(101);
+    const off = { ...exempt, recorded: line(), base: { sameArch: false } };
+    expect(driftFindings({ ...off, live: at })).toEqual([]);
+    const findings = driftFindings({ ...off, live: past });
+    expect(kinds(findings)).toEqual(["loose-drift"]);
+    expect(explain(findings[0])).toContain("gross growth");
+    expect(explain(findings[0])).toContain("never the record");
+  });
+
+  it("applies the same bound to shrinkage, and to a line that is not a round 1%", () => {
+    // 10,050 x 1% = 100.5: a difference of 100 passes, 101 fails -- the bound is not rounded up.
+    const recorded = line({}, 10_050);
+    expect(looseBound(10_050)).toBeCloseTo(100.5, 10);
+    const off = { ...exempt, recorded, base: { sameArch: false } };
+    expect(driftFindings({ ...off, live: rebuilt(10_050 - 100) })).toEqual([]);
+    expect(kinds(driftFindings({ ...off, live: rebuilt(10_050 - 101) }))).toEqual(["loose-drift"]);
+  });
+
+  it("holds a small line to the 64-byte floor, where 1% would be a fraction of a byte", () => {
+    const recorded = line({}, 1_000);
+    expect(looseBound(1_000), "1% of 1,000 is 10, so the floor is the bound").toBe(64);
+    const off = { ...exempt, recorded, base: { sameArch: false } };
+    expect(driftFindings({ ...off, live: rebuilt(1_064) })).toEqual([]);
+    expect(kinds(driftFindings({ ...off, live: rebuilt(1_065) }))).toEqual(["loose-drift"]);
+    // And the same one byte over the floor is exact on the recording's architecture.
     expect(
-      driftFindings({ ...exempt, recorded: line(), live: build, base: { sameArch: false } }),
-    ).toEqual([]);
+      kinds(driftFindings({ ...off, base: { sameArch: true }, live: rebuilt(1_001) })),
+    ).toEqual(["base-drift"]);
   });
 
-  it("fails a base line one byte past its allowance, as a stop rather than a re-record", () => {
-    const build = rebuilt(recordedBrotli - 41);
-    expect(recordedBrotli - build.a.brotli, "the plant must be the allowance plus one").toBe(41);
-    const findings = driftFindings({
-      ...exempt,
-      recorded: line(),
-      live: build,
-      base: { sameArch: false },
-    });
-    expect(kinds(findings)).toEqual(["cross-arch-drift"]);
-    expect(explain(findings[0])).toContain("STOP, NOT A RE-RECORD");
-  });
-
-  it("fails a base line with no allowance off the recording's architecture", () => {
-    const recorded = line({ cross_arch_allowance_brotli: undefined });
-    expect(recorded.a.cross_arch_allowance_brotli).toBeUndefined();
+  it("keeps a line whose bytes equal the recording exact, off the recording's architecture too", () => {
+    // Identical digests with a different recorded size is a false record, loose check or not.
+    const same: Record<string, Live> = {
+      a: { raw: 1, brotli: recordedBrotli, sha256: "raw0", sha256Normalised: "norm0" },
+    };
+    const recorded = line({ measured_brotli: recordedBrotli - 1 });
+    expect(recorded.a.measured_brotli, "the plant must make the record one byte off").toBe(
+      recordedBrotli - 1,
+    );
     const findings = driftFindings({
       ...exempt,
       recorded,
-      live: rebuilt(recordedBrotli),
+      live: same,
       base: { sameArch: false },
     });
-    expect(kinds(findings)).toEqual(["no-allowance"]);
+    expect(kinds(findings)).toEqual(["false-record"]);
+  });
+
+  it("no longer reads a cross-architecture allowance: a stale field changes nothing", () => {
+    // A recording that still carried the retired field must be judged by the loose bound only.
+    const stale = line({ cross_arch_allowance_brotli: 5 } as Partial<Recorded>);
+    expect(
+      (stale.a as unknown as Record<string, unknown>).cross_arch_allowance_brotli,
+      "the plant must carry the stale field",
+    ).toBe(5);
+    const off = { ...exempt, recorded: stale, base: { sameArch: false } };
+    expect(driftFindings({ ...off, live: rebuilt(recordedBrotli + 6) })).toEqual([]);
+    expect(driftFindings({ ...off, live: rebuilt(recordedBrotli + 100) })).toEqual([]);
   });
 
   it("passes a held bundle grown 1% and fails one grown 3%", () => {
@@ -1495,13 +1532,16 @@ describe("base lines at 0%, held bundles at 2% (DECISIONS rule 18, 2026-10-18 am
   });
 
   it("fails a total one byte off on the recording's architecture, and bounds it elsewhere", () => {
-    const at = { name: "total", recorded: 1_000, allowances: [40, 20] };
+    // Bounds are each line's own: two lines of 4,000 and 2,000 are 64 + 64 (the floor), 128 in all.
+    const bounds = [looseBound(4_000), looseBound(2_000)];
+    expect(bounds, "both lines are on the floor").toEqual([64, 64]);
+    const at = { name: "total", recorded: 1_000, bounds };
     expect(totalFinding({ ...at, live: 1_000, sameArch: true })).toBeNull();
     expect(totalFinding({ ...at, live: 1_001, sameArch: true })).toContain("total:");
     expect(totalFinding({ ...at, live: 999, sameArch: true })).toContain("total:");
-    expect(totalFinding({ ...at, live: 1_060, sameArch: false })).toBeNull();
-    expect(totalFinding({ ...at, live: 1_061, sameArch: false })).toContain(
-      "STOP, NOT A RE-RECORD",
-    );
+    expect(totalFinding({ ...at, live: 1_128, sameArch: false })).toBeNull();
+    expect(totalFinding({ ...at, live: 1_129, sameArch: false })).toContain("never the record");
+    expect(totalFinding({ ...at, live: 872, sameArch: false })).toBeNull();
+    expect(totalFinding({ ...at, live: 871, sameArch: false })).toContain("never the record");
   });
 });
