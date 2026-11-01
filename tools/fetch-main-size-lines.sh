@@ -12,16 +12,18 @@
 #                                look false
 #        <dir>/meta.json         run_id, head_sha, event, workflow, artifact_id, created_at, expires_at
 #
-# WHICH RUN. The newest run on branch `main` that SUCCEEDED, of ci.yml with event `push` or of
-# fuzz-nightly.yml with event `schedule`, other than the run this job belongs to. Pull-request and
+# WHICH RUN. The newest run on branch `main` that SUCCEEDED, of ci.yml with event `push`, or a
+# completed run of fuzz-nightly.yml with event `schedule` whose `web size lines (main)` JOB succeeded
+# (the run itself is red whenever any fuzz job is, which must not hide this job's artifact), other
+# than the run this job belongs to. Pull-request and
 # merge-group runs upload the same artifact and are excluded on purpose: their sizes are not main's,
 # and a baseline taken from an unmerged PR would let that PR approve itself. A red main run is not a
 # baseline either. Runs are walked newest first; one with no artifact, or an expired one, is passed
 # over and counted, because retention is 30 days and a run older than that is older than every
 # newer run too.
 #
-# FAILS CLOSED, NEVER A PASS. Exit 1, naming the reason, when: the Actions API fails; no successful
-# main run is listed; no run in the window has a live artifact (counting how many had none and how
+# FAILS CLOSED, NEVER A PASS. Exit 1, naming the reason, when: the Actions API fails (listing runs,
+# a nightly run's jobs, or artifacts); no usable main run is listed; no run in the window has a live artifact (counting how many had none and how
 # many had expired); the artifact does not belong to the run it was listed under or is not on
 # `main`; the download fails; the zip is not exactly one `size-lines.json` within 1 MiB; main's
 # recording cannot be fetched at the run's commit. An expired or missing artifact is a STOP rather
@@ -41,6 +43,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="${BURROW_SIZE_GIT_DIR:-$(cd "$here/.." && pwd)}"
 window="${BURROW_SIZE_RUN_WINDOW:-30}"
 artifact_name="web-size-lines"
+size_job_name="web size lines (main)"
 
 stop() {
   echo "::error::fetch-main-size-lines: STOP -- $*" >&2
@@ -63,12 +66,19 @@ case "$window" in '' | *[!0-9]*) stop "BURROW_SIZE_RUN_WINDOW is not a number: $
 
 # --- the candidate runs, newest first -------------------------------------------------------------
 candidates=""
-for spec in "ci.yml:push" "fuzz-nightly.yml:schedule"; do
-  workflow="${spec%%:*}"
-  event="${spec##*:}"
+# ci.yml is taken on the RUN's conclusion. fuzz-nightly.yml is taken on the conclusion of its
+# `web size lines (main)` JOB (below): that run is red whenever any fuzz job is, and a red fuzz job
+# says nothing about this job's artifact. The run only has to be completed.
+for spec in "ci.yml:push:success" "fuzz-nightly.yml:schedule:completed"; do
+  IFS=: read -r workflow event run_status <<<"$spec"
   status=0
-  listed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=main&event=$event&status=success&per_page=$window" \
-    --jq ".workflow_runs[] | select(.head_branch == \"main\" and .event == \"$event\" and .conclusion == \"success\") | [.created_at, (.id | tostring), .head_sha, \"$workflow\", \"$event\"] | @tsv")" || status=$?
+  if [ "$run_status" = success ]; then
+    conclusion_test='.conclusion == "success"'
+  else
+    conclusion_test='.status == "completed"'
+  fi
+  listed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=main&event=$event&status=$run_status&per_page=$window" \
+    --jq ".workflow_runs[] | select(.head_branch == \"main\" and .event == \"$event\" and $conclusion_test) | [.created_at, (.id | tostring), .head_sha, \"$workflow\", \"$event\"] | @tsv")" || status=$?
   [ "$status" -eq 0 ] || stop "the Actions API failed listing $workflow runs (status $status)"
   [ -z "$listed" ] || candidates="$candidates$listed"$'\n'
 done
@@ -79,6 +89,7 @@ candidates="$(printf '%s' "$candidates" | grep . | sort -r || true)"
 examined=0
 no_artifact=0
 expired=0
+size_job_bad=0
 chosen=""
 while IFS=$'\t' read -r created run_id head_sha workflow event; do
   [ -n "$run_id" ] || continue
@@ -87,6 +98,18 @@ while IFS=$'\t' read -r created run_id head_sha workflow event; do
   case "$head_sha" in *[!0-9a-f]* | '') stop "run $run_id has a malformed head sha: $head_sha" ;; esac
   [ "${#head_sha}" -eq 40 ] || stop "run $run_id has a malformed head sha: $head_sha"
   examined=$((examined + 1))
+  if [ "$workflow" = "fuzz-nightly.yml" ]; then
+    # The nightly's run may be red for an unrelated job; what matters is the job that made the file.
+    status=0
+    job_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+      --jq "[.jobs[] | select(.name == \"$size_job_name\") | .conclusion] | first // \"absent\"")" || status=$?
+    [ "$status" -eq 0 ] || stop "the Actions API failed listing run $run_id's jobs (status $status)"
+    if [ "$job_conclusion" != "success" ]; then
+      size_job_bad=$((size_job_bad + 1))
+      echo "fetch-main-size-lines: run $run_id ($event, ${head_sha:0:9}): the '$size_job_name' job is '$job_conclusion', not success; passing over it" >&2
+      continue
+    fi
+  fi
   status=0
   art="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?name=$artifact_name&per_page=100" \
     --jq ".artifacts[] | select(.name == \"$artifact_name\") | [(.id | tostring), (.expired | tostring), .created_at, .expires_at, (.workflow_run.head_branch // \"\"), ((.workflow_run.id // 0) | tostring)] | @tsv")" || status=$?
@@ -110,7 +133,7 @@ while IFS=$'\t' read -r created run_id head_sha workflow event; do
 done <<<"$candidates"
 
 if [ -z "$chosen" ]; then
-  stop "no live $artifact_name artifact among the $examined newest successful main run(s) (excluding this one): $no_artifact had none, $expired had expired. An expired or missing main artifact is a stop, not a pass (owner (92)(Q5)); a run on main re-creates it"
+  stop "no live $artifact_name artifact among the $examined newest successful main run(s) (excluding this one): $no_artifact had none, $expired had expired, $size_job_bad were nightly runs whose size job had not succeeded. An expired or missing main artifact is a stop, not a pass (owner (92)(Q5)); a run on main re-creates it"
 fi
 
 # --- download, extract exactly one member -----------------------------------------------------------
@@ -128,10 +151,11 @@ try:
         names = z.namelist()
         if names != ["size-lines.json"]:
             sys.exit("the zip holds %r, expected exactly ['size-lines.json']" % (names,))
-        info = z.getinfo("size-lines.json")
-        if info.file_size < 1 or info.file_size > 1 << 20:
-            sys.exit("size-lines.json is %d bytes, expected 1 to 1048576" % info.file_size)
-        data = z.read("size-lines.json")
+        # The cap is on the bytes actually read, not on the size the header declares.
+        with z.open("size-lines.json") as member:
+            data = member.read((1 << 20) + 1)
+        if len(data) < 1 or len(data) > 1 << 20:
+            sys.exit("size-lines.json is %s bytes, expected 1 to 1048576" % ("more than 1048576" if len(data) > 1 << 20 else len(data)))
 except zipfile.BadZipFile as e:
     sys.exit("not a zip: %s" % e)
 with open(dst, "wb") as f:

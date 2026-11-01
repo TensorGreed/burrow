@@ -46,6 +46,7 @@ path="${url%%\?*}"
 case "$path" in
   */actions/workflows/*/runs) key="runs-$(basename "$(dirname "$path")")"; kind=json ;;
   */actions/runs/*/artifacts) key="artifacts-$(basename "$(dirname "$path")")"; kind=json ;;
+  */actions/runs/*/jobs) key="jobs-$(basename "$(dirname "$path")")"; kind=json ;;
   */actions/artifacts/*/zip) key="zip-$(basename "$(dirname "$path")")"; kind=zip ;;
   *) exit 65 ;;
 esac
@@ -53,7 +54,12 @@ esac
 if [ "$kind" = zip ]; then cat "$fix/$key.zip"; exit 0; fi
 file="$fix/$key.json"
 if [ ! -e "$file" ]; then
-  case "$key" in runs-*) echo '{"workflow_runs":[]}' >"$file" ;; *) echo '{"artifacts":[]}' >"$file" ;; esac
+  case "$key" in
+    runs-*) echo '{"workflow_runs":[]}' >"$file" ;;
+    # a run whose size job is not described succeeded in it: the default world is a green nightly
+    jobs-*) echo '{"jobs":[{"name":"fuzz target","conclusion":"success"},{"name":"web size lines (main)","conclusion":"success"}]}' >"$file" ;;
+    *) echo '{"artifacts":[]}' >"$file" ;;
+  esac
 fi
 if [ -n "$expr" ]; then jq -r "$expr" "$file"; else cat "$file"; fi
 FAKE
@@ -82,8 +88,13 @@ reset() { rm -rf "$work/fix"; mkdir -p "$work/fix"; rm -f "$work/calls"; }
 # runs <workflow> <json array of run objects>
 runs() { printf '{"workflow_runs": %s}\n' "$2" >"$work/fix/runs-$1.json"; }
 run_obj() { # id created sha event [branch] [conclusion]
-  printf '{"id": %s, "created_at": "%s", "head_sha": "%s", "event": "%s", "head_branch": "%s", "conclusion": "%s"}' \
+  printf '{"id": %s, "created_at": "%s", "head_sha": "%s", "event": "%s", "head_branch": "%s", "status": "completed", "conclusion": "%s"}' \
     "$1" "$2" "$3" "$4" "${5:-main}" "${6:-success}"
+}
+# jobs <run id> <conclusion of the size job, or "none" for no such job at all>, beside a failed fuzz job
+jobs() {
+  if [ "$2" = none ]; then printf '{"jobs": [{"name": "fuzz target", "conclusion": "failure"}]}\n' >"$work/fix/jobs-$1.json"
+  else printf '{"jobs": [{"name": "fuzz target", "conclusion": "failure"}, {"name": "web size lines (main)", "conclusion": "%s"}]}\n' "$2" >"$work/fix/jobs-$1.json"; fi
 }
 # artifacts <run id> <artifact id> <expired true|false> [branch] [workflow run id]
 artifacts() {
@@ -225,6 +236,25 @@ status=0; env PATH="$work/bin:$PATH" FAKE_DIR="$work" GITHUB_REPOSITORY=o/r "$sc
 status=0; env -u GITHUB_REPOSITORY PATH="$work/bin:$PATH" "$script" --out "$work/o" >/dev/null 2>&1 || status=$?
 [ "$status" -ne 0 ] && ok "no GITHUB_REPOSITORY is refused" || bad "no GITHUB_REPOSITORY was accepted"
 
+# SF-2: the nightly is judged by its size job, not by the run (red whenever any fuzz job is).
+world
+runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 success
+expect "SF-2 a nightly run that is red for another job, whose size job succeeded, is used" 0 "run 350 (fuzz-nightly.yml, schedule)"
+world
+runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 failure
+expect "SF-2 twin: a nightly whose size job failed is passed over, naming the job" 0 "the 'web size lines (main)' job is 'failure', not success"
+[ "$(chosen)" = 300 ] && ok "...and the newest push run (300) is taken instead" || bad "chose '$(chosen)', wanted 300"
+world
+runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 none
+expect "SF-2 a nightly run with no size job at all is passed over as 'absent'" 0 "job is 'absent'"
+world
+runs ci.yml "[]"; runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 failure
+expect "SF-2 STOP: the only run is a nightly whose size job failed, counted" 1 "1 were nightly runs whose size job had not succeeded"
+world
+runs ci.yml "[]"
+touch "$work/fix/fail-jobs-250"
+expect "SF-2 STOP: the Actions API fails listing a nightly run's jobs" 1 "the Actions API failed listing run 250's jobs"
+
 echo
 echo "mutants (a copy of the script with one rule broken must stop behaving as the rule requires)"
 mutate() { # <old> <new>
@@ -278,13 +308,19 @@ w_nightly() { world; runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z 
 mutant_stops "all-expired STOP" 'if [ "$art_expired" != "false" ]; then' 'if false; then' w_expired "3 had expired"
 mutant_stops "no-live-artifact STOP" 'if [ -z "$chosen" ]; then' 'if false; then' w_none "no live web-size-lines artifact"
 mutant_picks "this run's own artifact is not excluded" '[ "$run_id" != "$this_run" ] || continue' 'true' world 250 GITHUB_RUN_ID=300
-mutant_picks "any run offered, not only main push/schedule success (the PR run)" 'select(.head_branch == \"main\" and .event == \"$event\" and .conclusion == \"success\")' 'select(true)' w_pr 300
-mutant_picks "a red run offered as a baseline" 'select(.head_branch == \"main\" and .event == \"$event\" and .conclusion == \"success\")' 'select(true)' w_red 300
+mutant_picks "any run offered, not only main push/schedule success (the PR run)" 'select(.head_branch == \"main\" and .event == \"$event\" and $conclusion_test)' 'select(true)' w_pr 300
+mutant_picks "a red run offered as a baseline" 'select(.head_branch == \"main\" and .event == \"$event\" and $conclusion_test)' 'select(true)' w_red 300
 mutant_picks "newest first becomes oldest first" 'sort -r' 'sort' w_nightly 350
 mutant_stops "the artifact-branch rule" '[ "$art_branch" = "main" ] || stop' 'true || stop' w_branch "belongs to branch"
 mutant_stops "the artifact-run rule" '[ "$art_run" = "$run_id" ] || stop' 'true || stop' w_runmismatch "belongs to run 999"
 mutant_stops "the zip-member rule" 'if names != ["size-lines.json"]:' 'if False:' w_notzip2 "not a usable size-lines zip"
-mutant_stops "the zip-size cap" 'info.file_size > 1 << 20' 'info.file_size > 1 << 40' w_big "not a usable size-lines zip"
+w_nightly_redrun() { world; runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 success; }
+w_nightly_badjob() { world; runs fuzz-nightly.yml "[$(run_obj 350 2026-11-01T13:00:00Z "$good_sha" schedule main failure)]"; artifacts 350 3500 false; good_zip 3500; jobs 350 failure; }
+w_jobsfail() { world; runs ci.yml "[]"; touch "$work/fix/fail-jobs-250"; }
+mutant_picks "SF-2 reverted: the nightly is judged by its RUN's conclusion" "'.status == \"completed\"'" "'.conclusion == \"success\"'" w_nightly_redrun 350
+mutant_picks "SF-2 the nightly's size-job check is skipped" 'if [ "$job_conclusion" != "success" ]; then' 'if false; then' w_nightly_badjob 300
+mutant_stops "SF-2 the API-failure stop on a nightly run's jobs" '[ "$status" -eq 0 ] || stop "the Actions API failed listing run $run_id'"'"'s jobs (status $status)"' 'true' w_jobsfail "the Actions API failed listing run 250's jobs"
+mutant_stops "the zip-size cap" 'len(data) > 1 << 20:' 'len(data) > 1 << 40:' w_big "not a usable size-lines zip"
 mutant_stops "the commit fetch" 'git -C "$repo" fetch --no-tags --depth=1 origin "$head_sha" >&2 || status=$?' 'true' w_absent "cannot fetch commit"
 mutant_stops "the API-failure stop on the run listing" '[ "$status" -eq 0 ] || stop "the Actions API failed listing $workflow runs (status $status)"' 'true' w_listfail "the Actions API failed listing ci.yml runs"
 mutant_stops "the API-failure stop on the artifact listing" '[ "$status" -eq 0 ] || stop "the Actions API failed listing run $run_id'"'"'s artifacts (status $status)"' 'true' w_artfail "the Actions API failed listing run 300's artifacts"
