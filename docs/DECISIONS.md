@@ -279,13 +279,16 @@ one is decided in an issue, with the same three parts.
     *The allowances, and the comparison off the recording's architecture, are superseded by the
     amendment below.*
 
-    **Amended 2026-10-29: base lines are recorded from CI's x86 artifacts.** Size records are taken
+    **Amended 2026-11-01: base lines are recorded from CI's x86 artifacts.** Size records are taken
     from CI's x86_64 build -- the architecture the site is built and deployed on -- never from a
     local build. CI compares each base line (anything a visitor loads, the render lines included)
-    and both totals against the `web-size-lines` artifact of main's latest successful CI run, with
-    0% drift, so any movement is re-recorded with the approval named in the PR body, as above. The
-    nightly uploads the same artifact from main, so it does not expire in a quiet period; a missing
-    or expired artifact is a stop, not a pass. The cross-architecture allowance
+    and both totals against the `web-size-lines` artifact of main's latest usable run, with 0% drift:
+    a `ci.yml` push run that succeeded, or a `fuzz-nightly.yml` schedule run whose `web size lines
+    (main)` job succeeded (that run may be red for an unrelated fuzz job). A line that moved must be
+    re-recorded in `size-budget.json` at the build's own value in every field that moved, not merely
+    changed, and the PR body names the approval, as above. The nightly uploads the same artifact from
+    main, so it does not expire in a quiet period; a missing or expired artifact is a stop, not a
+    pass. The cross-architecture allowance
     (`cross_arch_allowance_brotli`) is retired for base lines. Local aarch64 sweeps keep only a
     loose check, which flags gross growth and is never the record: a line fails above max(1%, 64 B)
     of its recorded brotli size, a total above the sum of its lines' bounds, and a line whose bytes
@@ -301,7 +304,9 @@ one is decided in an issue, with the same three parts.
 
     **Until the base lines are re-recorded from CI's x86 artifact** (the re-record PR that follows
     this change), `measured_arch` in `size-budget.json` still says aarch64, so CI takes the loose
-    path in `size-budget.test.ts` and its 0% is the comparison with main's artifact alone; the
+    path in `size-budget.test.ts`. The 0% in CI is then the comparison with main's artifact, which
+    requires every moved line to be recorded at exactly the build's value; a line that has not moved
+    against main's artifact is held only by the loose bound against the (aarch64) recording. The
     re-record PR deletes this paragraph.
 
 19. **A same-source check may gate a merge, never the launch.** A verification that re-reads the
