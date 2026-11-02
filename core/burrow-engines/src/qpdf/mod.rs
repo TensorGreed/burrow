@@ -204,13 +204,7 @@ impl Document {
         // SAFETY: `self.data` is a live handle owned by this struct. The shim reads one `bool`
         // behind it, parses nothing and is `noexcept` (see
         // `engines/qpdf-untrapped-accepted.toml`).
-        match unsafe { ffi::burrow_qpdf_fixed_dangling_refs(self.data) } {
-            1 => Ok(true),
-            0 => Ok(false),
-            _ => Err(Error::Internal(
-                "qpdf: the resolution flag could not be read".to_owned(),
-            )),
-        }
+        interpret(unsafe { ffi::burrow_qpdf_fixed_dangling_refs(self.data) })
     }
 
     /// Whether qpdf is holding an error, and what it is.
@@ -273,6 +267,56 @@ impl Document {
         #[cfg(not(feature = "fuzzing"))]
         let _ = error;
         Some(crate::codes::qpdf::map_code(code))
+    }
+}
+
+/// The shim's answer, `burrow_qpdf_fixed_dangling_refs`, as [`Document::resolved`] reports it: 1
+/// is resolved and 0 is not. **Anything else is [`Error::Internal`], never a reading**: the shim
+/// answers -1 for a null handle, and any other value is a shim that is not the one argued in
+/// `engines/qpdf-untrapped-accepted.toml`. Neither may read as resolved, or the flatten's open
+/// would be asserted by an answer that says nothing.
+///
+/// Its own function so that the mapping is tested without a null handle, which
+/// [`Document`] never holds (flatten slice 2, security round 1, L-2).
+///
+/// # Errors
+///
+/// [`Error::Internal`] for any answer but 1 or 0.
+fn interpret(answer: core::ffi::c_int) -> Result<bool> {
+    match answer {
+        1 => Ok(true),
+        0 => Ok(false),
+        _ => Err(Error::Internal(
+            "qpdf: the resolution flag could not be read".to_owned(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod interpret_tests {
+    #![allow(clippy::unwrap_used, reason = "tests")]
+
+    use burrow_types::Error;
+
+    use super::interpret;
+
+    /// 1 and 0 are the two readings; -1 (the shim's null-handle answer) and any other value are
+    /// `Internal`, never a reading. KILLS: mapping -1, or any other answer, to resolved or to
+    /// unresolved.
+    #[test]
+    fn only_one_and_zero_are_readings() {
+        assert!(interpret(1).unwrap());
+        assert!(!interpret(0).unwrap());
+        for answer in [-1, 2, core::ffi::c_int::MIN, core::ffi::c_int::MAX] {
+            assert!(
+                matches!(
+                    interpret(answer),
+                    Err(Error::Internal(ref what)) if what.contains("resolution flag could not be read")
+                ),
+                "{answer}: {:?}",
+                interpret(answer)
+            );
+        }
     }
 }
 
