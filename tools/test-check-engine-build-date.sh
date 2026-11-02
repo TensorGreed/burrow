@@ -14,6 +14,12 @@ work="$(mktemp -d)"
 gate="$here/.check-engine-build-date-gate-copy.sh"
 trap 'rm -rf "$work"; rm -f "$gate"' EXIT
 pass=0; fail=0
+# The pin, read the way the checker reads it, so a libjpeg-turbo bump that moves build_date does
+# not fail this test with a message that does not point at the pin.
+# shellcheck source=engines/pins.sh
+source "$repo/engines/pins.sh"
+PIN_DATE="$(pins_get libjpeg-turbo.build_date)" || { echo "cannot read libjpeg-turbo.build_date" >&2; exit 1; }
+PIN="$(date -u -d "$PIN_DATE" +%Y%m%d)" || { echo "bad build_date $PIN_DATE" >&2; exit 1; }
 ok()  { pass=$((pass+1)); echo "  ok   $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL $1" >&2; }
 
@@ -22,9 +28,9 @@ make_repo() {
   local d="$1"
   mkdir -p "$d/tools" "$d/engines/vendor/wasm/lib"
   cp "$tool" "$d/tools/"; cp "$repo/engines/pins.sh" "$repo/engines/pins.toml" "$d/engines/"
-  printf 'MZ\0libjpeg-turbo version 3.2.0 (build 20260630)\0%b' "$2" > "$d/engines/vendor/wasm/lib/qpdf.wasm"
+  printf 'MZ\0libjpeg-turbo version 3.2.0 (build %s)\0%b' "$PIN" "$2" > "$d/engines/vendor/wasm/lib/qpdf.wasm"
   printf 'MZ\0%b' "$3" > "$d/engines/vendor/wasm/lib/pdfium.wasm"
-  printf '!<arch>\nlibjpeg-turbo version 3.2.0 (build 20260630)\0' > "$d/engines/vendor/wasm/lib/libjpeg.a"
+  printf '!<arch>\nlibjpeg-turbo version 3.2.0 (build %s)\0' "$PIN" > "$d/engines/vendor/wasm/lib/libjpeg.a"
 }
 # expect <name> <dir> <want-exit> <needle-in-output>
 expect() {
@@ -37,11 +43,11 @@ expect() {
 
 make_repo "$work/clean" '' ''
 expect "clean fixtures pass and say what they examined" "$work/clean" 0 "examined 3 artifact(s)"
-expect "the stamp is reported against the pin" "$work/clean" 0 "(pinned 20260630)"
+expect "the stamp is reported against the pin" "$work/clean" 0 "(pinned $PIN)"
 
 make_repo "$work/stamp" '' ''
 printf 'libjpeg-turbo version 3.2.0 (build 20261102)\0' >> "$work/stamp/engines/vendor/wasm/lib/qpdf.wasm"
-expect "a build stamp other than the pin is refused, by file" "$work/stamp" 1 "qpdf.wasm: build-stamp (build 20261102), pinned is 20260630"
+expect "a build stamp other than the pin is refused, by file" "$work/stamp" 1 "qpdf.wasm: build-stamp (build 20261102), pinned is $PIN"
 
 make_repo "$work/macro" '' 'x Nov  2 2026 y'
 expect "a __DATE__ shape is refused" "$work/macro" 1 "pdfium.wasm: date-macro"

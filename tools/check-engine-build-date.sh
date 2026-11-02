@@ -24,6 +24,12 @@
 # when present; --require-bindings makes the bindings required (the build-web-payload action,
 # which has just built them).
 #
+# NOT SCANNED, by design of what exists today: the native libqpdf.a, libpdfium.so and libz.a, and
+# the emscripten .js glue (qpdf.js, pdfium.js, bin/*.js). The wasm artifacts are what ships to the
+# browser; the native ones are test and fuzz inputs. There is no `__TIME__` (hh:mm:ss) rule and no
+# ISO-date rule, so a future dependency that stamps either passes. Its own `grep` found none
+# (rounds/repro-engine-date/grep-results.txt); add a rule and its probe if one appears.
+#
 # Usage: tools/check-engine-build-date.sh [--require-bindings] [--pinned YYYYMMDD]
 set -euo pipefail
 
