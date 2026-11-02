@@ -23,9 +23,13 @@ use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result};
 use super::super::Picture;
 use super::lie::{Lie, plant};
 use super::{CONTENTS_KEYS, IMAGE_KEYS, PAGE_KEYS, Reading, hooks};
+use crate::codes::qpdf::object_type;
+use crate::name::Name;
 use crate::qpdf::Qpdf;
 use crate::redact::frames::PageFrameReading;
-use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject, ReportsResolution};
+use crate::redact::graph::{
+    BuildsObjects, OpensForRedaction, PdfDocument, PdfObject, ReportsResolution,
+};
 use crate::{OpenOptions, PageFlattener, PageFrameReader};
 
 fn options(limits: Limits) -> OpenOptions<'static> {
@@ -818,8 +822,6 @@ fn flag_readings() -> Vec<(Reading, bool)> {
 /// one this test rests on, and why the repair check, not the flag, refuses it.
 #[test]
 fn the_flag_reads_clear_before_the_forced_resolution_and_set_after() {
-    use crate::redact::graph::BuildsObjects;
-
     let mut examined = 0;
     for repair in Repair::ALL {
         for broken in [false, true] {
@@ -895,12 +897,22 @@ fn a_forced_resolution_that_did_not_resolve_is_refused() {
 }
 
 /// A document that answers as qpdf's does, except at one point: the flag reads clear there, or a
-/// repair is reported there. The first document an engine opens lies; the read-back's is honest.
+/// repair is reported there. The first document an engine opens lies; the read-back's is honest
+/// about both, and can be told to fail the page-tree climb instead ([`Faulty`]).
+///
+/// **The point is read from what the flatten has done to the document, not from how many times
+/// it has been asked** (security round 1, L-1): a lie told by count follows a reading wherever it
+/// is moved, so a reading moved before the constructors still met its lie and the move survived.
+/// Here the after-constructors lie is told only once the replacement's constructors have put the
+/// image on page 0, and before the write; a reading moved ahead of them meets no lie.
 struct Lying<D> {
     inner: D,
     lie: Option<(Reading, Says)>,
-    resolved_asked: Cell<usize>,
-    repaired_asked: Cell<usize>,
+    /// Set by [`PdfDocument::write`]: the flatten is past the write.
+    written: Cell<bool>,
+    /// This is the read-back, and the identity of every object reached by `/Parent` cannot be
+    /// read: the climb fails on its first step.
+    climb_fails: bool,
 }
 
 /// What a [`Lying`] document says at its point.
@@ -914,16 +926,45 @@ enum Says {
 const POINTS: [Reading; 3] = [Reading::Open, Reading::Constructors, Reading::Write];
 
 impl<D: PdfDocument> Lying<D> {
-    fn lies(&self, says: Says, asked: &Cell<usize>) -> bool {
-        let at = POINTS.get(asked.get()).copied();
-        asked.set(asked.get() + 1);
-        matches!(self.lie, Some((point, said)) if said == says && Some(point) == at)
+    /// Where the flatten is, from its side effects on this document: past the write once
+    /// [`PdfDocument::write`] has been called; past the constructors once page 0's `/Resources`
+    /// holds the image stream the replacement makes (no fixture page has one before); the open
+    /// before either.
+    fn point(&self) -> Reading {
+        if self.written.get() {
+            return Reading::Write;
+        }
+        let edited = self.inner.page(0).is_ok_and(|page| {
+            page.key(&super::RESOURCES)
+                .key(&super::XOBJECT)
+                .key(&super::IMAGE)
+                .type_code()
+                == object_type::STREAM
+        });
+        if edited {
+            Reading::Constructors
+        } else {
+            Reading::Open
+        }
+    }
+
+    fn lies(&self, says: Says) -> bool {
+        self.lie
+            .is_some_and(|(point, said)| said == says && point == self.point())
+    }
+
+    fn handle<'a>(&'a self, inner: D::Object<'a>) -> Faulty<D::Object<'a>> {
+        Faulty {
+            inner,
+            climb_fails: self.climb_fails,
+            via_parent: false,
+        }
     }
 }
 
 impl<D: PdfDocument> PdfDocument for Lying<D> {
     type Object<'a>
-        = D::Object<'a>
+        = Faulty<D::Object<'a>>
     where
         Self: 'a;
 
@@ -932,39 +973,198 @@ impl<D: PdfDocument> PdfDocument for Lying<D> {
     }
 
     fn page(&self, index: usize) -> Result<Self::Object<'_>> {
-        self.inner.page(index)
+        self.inner.page(index).map(|page| self.handle(page))
     }
 
     fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>> {
-        self.inner.object(number, generation)
+        self.inner
+            .object(number, generation)
+            .map(|object| self.handle(object))
     }
 
     fn trailer(&self) -> Result<Self::Object<'_>> {
-        self.inner.trailer()
+        self.inner.trailer().map(|trailer| self.handle(trailer))
     }
 
     fn write(&self) -> Result<Vec<u8>> {
+        self.written.set(true);
         self.inner.write()
     }
 
     fn repaired(&self) -> bool {
-        self.lies(Says::Repaired, &self.repaired_asked) || self.inner.repaired()
+        self.lies(Says::Repaired) || self.inner.repaired()
     }
 }
 
 impl<D: ReportsResolution> ReportsResolution for Lying<D> {
     fn resolved(&self) -> Result<bool> {
-        if self.lies(Says::FlagClear, &self.resolved_asked) {
+        if self.lies(Says::FlagClear) {
             return Ok(false);
         }
         self.inner.resolved()
     }
 }
 
-/// qpdf, whose first document opened lies as [`Lying`] says.
+thread_local! {
+    /// How many times a [`Faulty`] handle refused its identity on this thread.
+    static CLIMB_FAULTS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A [`Lying`] document's handle: the inner engine's, except that on a read-back told to fail
+/// the climb, an object reached through `/Parent` cannot say what it is. The read-back's checks
+/// before the climb read no `/Parent`, so the first such read is the climb's first step
+/// (`place`'s `parent.object()`), and the error it gets is the engine's, not the deadline's.
+struct Faulty<O> {
+    inner: O,
+    climb_fails: bool,
+    via_parent: bool,
+}
+
+impl<O> Faulty<O> {
+    fn beside(&self, inner: O) -> Self {
+        Self {
+            inner,
+            climb_fails: self.climb_fails,
+            via_parent: false,
+        }
+    }
+}
+
+impl<O: PdfObject> PdfObject for Faulty<O> {
+    fn drained(&self) -> Result<()> {
+        self.inner.drained()
+    }
+
+    fn type_code(&self) -> c_int {
+        self.inner.type_code()
+    }
+
+    fn key(&self, key: &Name) -> Self {
+        Self {
+            inner: self.inner.key(key),
+            climb_fails: self.climb_fails,
+            via_parent: self.climb_fails && *key == super::PARENT,
+        }
+    }
+
+    fn name(&self) -> Result<Name> {
+        self.inner.name()
+    }
+
+    fn integer_value(&self) -> i64 {
+        self.inner.integer_value()
+    }
+
+    fn unparse(&self) -> Vec<u8> {
+        self.inner.unparse()
+    }
+
+    fn array_len(&self) -> c_int {
+        self.inner.array_len()
+    }
+
+    fn array_item(&self, at: c_int) -> Self {
+        self.beside(self.inner.array_item(at))
+    }
+
+    fn stream_dict(&self) -> Self {
+        self.beside(self.inner.stream_dict())
+    }
+
+    fn page_content(&self) -> Result<Vec<u8>> {
+        self.inner.page_content()
+    }
+
+    fn stream_data(&self) -> Result<Option<Vec<u8>>> {
+        self.inner.stream_data()
+    }
+
+    fn object(&self) -> Result<(c_int, c_int)> {
+        if self.via_parent {
+            CLIMB_FAULTS.with(|faults| faults.set(faults.get() + 1));
+            return Err(Error::Internal(
+                "a fake read-back: this object's identity cannot be read".to_owned(),
+            ));
+        }
+        self.inner.object()
+    }
+
+    fn null_beside(&self) -> Self {
+        self.beside(self.inner.null_beside())
+    }
+
+    fn integer_beside(&self, value: i64) -> Self {
+        self.beside(self.inner.integer_beside(value))
+    }
+
+    fn remove_key(&self, key: &Name) {
+        self.inner.remove_key(key);
+    }
+
+    fn set_array_item(&self, at: c_int, item: &Self) -> Result<()> {
+        self.inner.set_array_item(at, &item.inner)
+    }
+
+    fn erase_item(&self, at: c_int) {
+        self.inner.erase_item(at);
+    }
+
+    fn replace_stream_data(&self, bytes: &[u8], filter: &Self, decode_parms: &Self) -> Result<()> {
+        self.inner
+            .replace_stream_data(bytes, &filter.inner, &decode_parms.inner)
+    }
+}
+
+impl<O: BuildsObjects> BuildsObjects for Faulty<O> {
+    fn dictionary_beside(&self) -> Self {
+        self.beside(self.inner.dictionary_beside())
+    }
+
+    fn array_beside(&self) -> Self {
+        self.beside(self.inner.array_beside())
+    }
+
+    fn name_beside(&self, name: &Name) -> Self {
+        self.beside(self.inner.name_beside(name))
+    }
+
+    fn real_beside(&self, text: &core::ffi::CStr) -> Self {
+        self.beside(self.inner.real_beside(text))
+    }
+
+    fn stream_beside(&self) -> Self {
+        self.beside(self.inner.stream_beside())
+    }
+
+    fn made_indirect(&self) -> Result<Self> {
+        self.inner.made_indirect().map(|made| self.beside(made))
+    }
+
+    fn append_item(&self, item: &Self) -> Result<()> {
+        self.inner.append_item(&item.inner)
+    }
+
+    fn replace_key(&self, key: &Name, item: &Self) -> Result<()> {
+        self.inner.replace_key(key, &item.inner)
+    }
+}
+
+/// qpdf, whose first document opened lies as `lie` says, and whose later ones (the read-back's)
+/// fail the climb if `climb_fails`.
 struct LyingQpdf {
-    lie: (Reading, Says),
+    lie: Option<(Reading, Says)>,
+    climb_fails: bool,
     opened: Cell<bool>,
+}
+
+impl LyingQpdf {
+    fn new(lie: Option<(Reading, Says)>, climb_fails: bool) -> Self {
+        Self {
+            lie,
+            climb_fails,
+            opened: Cell::new(false),
+        }
+    }
 }
 
 impl OpensForRedaction for LyingQpdf {
@@ -976,13 +1176,13 @@ impl OpensForRedaction for LyingQpdf {
         options: &OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)> {
         let (inner, deadline) = Qpdf.open_for_redaction(bytes, options)?;
-        let lie = (!self.opened.replace(true)).then_some(self.lie);
+        let first = !self.opened.replace(true);
         Ok((
             Lying {
                 inner,
-                lie,
-                resolved_asked: Cell::new(0),
-                repaired_asked: Cell::new(0),
+                lie: if first { self.lie } else { None },
+                written: Cell::new(false),
+                climb_fails: !first && self.climb_fails,
             },
             deadline,
         ))
@@ -998,18 +1198,14 @@ impl OpensForRedaction for LyingQpdf {
     }
 }
 
-/// Flatten page 0 of `bytes` through an engine that lies once, as `lie` says.
-fn flatten_lying(bytes: &[u8], lie: (Reading, Says)) -> Result<Vec<u8>> {
+/// Flatten page 0 of `bytes` through `engine`.
+fn flatten_through(bytes: &[u8], engine: &LyingQpdf) -> Result<Vec<u8>> {
     let (wide, high, rgb) = pixels_for_page(bytes, 0);
     let picture = Picture::new(wide, high, &rgb);
     let options = options(Limits::DEFAULT);
     let deadline = Deadline::start(options.clock.as_ref(), &options.limits);
-    let engine = LyingQpdf {
-        lie,
-        opened: Cell::new(false),
-    };
     super::flatten(
-        &engine,
+        engine,
         bytes,
         0,
         &picture,
@@ -1019,6 +1215,11 @@ fn flatten_lying(bytes: &[u8], lie: (Reading, Says)) -> Result<Vec<u8>> {
     )
 }
 
+/// Flatten page 0 of `bytes` through an engine that lies once, as `lie` says.
+fn flatten_lying(bytes: &[u8], lie: (Reading, Says)) -> Result<Vec<u8>> {
+    flatten_through(bytes, &LyingQpdf::new(Some(lie), false))
+}
+
 /// The fake engine's half of §1's row: a document whose flag reads clear after a forced
 /// resolution that returned Ok is refused at whichever point it reads clear -- at the open as
 /// burrow's failure, and after the constructors or the write as a repair; and a document that
@@ -1026,6 +1227,12 @@ fn flatten_lying(bytes: &[u8], lie: (Reading, Says)) -> Result<Vec<u8>> {
 /// the real qpdf reads set and reports nothing, so that only the lie stands between it and a
 /// returned document. KILLS: deleting any one of the three flag readings, and either repair
 /// re-check (neither of which a real input can reach once the open has resolved the table).
+///
+/// **Each reading is pinned to its place, not only to its existence** (security round 1, L-1):
+/// [`Lying`] tells its lie by what the flatten has done, so a reading after the constructors that
+/// is moved ahead of them, or a reading after the write moved ahead of it, meets no lie, and the
+/// lying engine's document comes back. KILLS, too: moving the after-constructors flag reading or
+/// repair check before the constructors (R6), and the after-write ones before the write.
 #[test]
 fn a_lie_at_any_of_the_three_points_is_refused_there() {
     let twin = resolution_fixture(Repair::OffsetInside, false);
@@ -1049,6 +1256,39 @@ fn a_lie_at_any_of_the_three_points_is_refused_there() {
     assert_eq!(examined, 6, "three points, two lies each");
     // A LIE ON THE READ-BACK'S OPEN ONLY is no lie the flatten asks: the honest twin.
     flatten(&twin, 0).expect("the honest engine flattens the twin");
+    // AND THE FAKE ITSELF, TELLING NO LIE: reading its point off the document changes nothing.
+    flatten_through(&twin, &LyingQpdf::new(None, false))
+        .expect("the fake engine with no lie flattens the twin");
+}
+
+/// Security round 1, L-3: an error inside the read-back's page-tree climb that is **not** the
+/// deadline is a rejected output, `its page tree cannot be read back`; only the climb's
+/// `LimitExceeded` is passed through as the time limit (S1 round 2, L-7). The fake read-back
+/// cannot read the identity of page *N*'s `/Parent`, the climb's first step, and the error is
+/// the engine's (`Internal`), not a limit. That the fault was raised there, once, is counted.
+/// Twin: the same fake with the climb honest flattens. KILLS: passing every climb error through
+/// (R4), and mapping only some non-deadline errors to the rejection.
+#[test]
+fn an_engine_error_inside_the_read_back_climb_is_a_rejected_output() {
+    let twin = resolution_fixture(Repair::OffsetInside, false);
+    CLIMB_FAULTS.with(|faults| faults.set(0));
+    let error = flatten_through(&twin, &LyingQpdf::new(None, true))
+        .expect_err("a read-back whose climb fails must not return a document");
+    assert!(
+        matches!(
+            error,
+            Error::OutputRejected(ref what) if what.contains("its page tree cannot be read back")
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        CLIMB_FAULTS.with(Cell::get),
+        1,
+        "the fault was raised once, inside the climb"
+    );
+    flatten_through(&twin, &LyingQpdf::new(None, false))
+        .expect("the twin: the same fake, its climb honest, flattens");
+    assert_eq!(CLIMB_FAULTS.with(Cell::get), 1, "the twin raised no fault");
 }
 
 /// S1 round 2, L-7: the read-back's measured-memory check is there, and so is the write's. A
