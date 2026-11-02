@@ -18,6 +18,9 @@ pub(crate) mod thread;
 // Redaction's second reading (#206): where PDFium places characters, and its page counts.
 pub(crate) mod read_back;
 
+// Redaction v1's render of page N, painted in PDFium's heap (ADR 0031 §1 steps 2 and 4).
+pub(crate) mod flatten_render;
+
 use std::sync::Arc;
 
 use core::ffi::{c_char, c_int, c_void};
