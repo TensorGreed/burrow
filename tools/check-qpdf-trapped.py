@@ -845,7 +845,10 @@ def parse_ffi(text: str) -> list[str]:
 # call is -- and the source the argument rests on is checked here: each declared shim function
 # must be defined by the shim in BOTH build scripts, the shim may define nothing ffi.rs does not
 # declare, and the two copies must be the same text, so that the argument read against one is
-# the argument for the other.
+# the argument for the other. And the text read is the text COMPILED: the path each script's
+# here-document writes the shim to must be the path its compiler is handed with `-c` (security
+# round 1, L-4), so a build that checks one file and compiles another is refused here rather
+# than left to the nm guard and the runtime tests.
 #
 # Its own parse rather than a widened `parse_ffi`: the qpdf parse, its cases and the
 # self-test's mutations of it stay exactly what they were.
@@ -892,6 +895,40 @@ def shim_definitions(source: str) -> set[str]:
     return set(re.findall(r"^(burrow_qpdf[A-Za-z_0-9]*)\s*\(", source, re.MULTILINE))
 
 
+def shim_written_paths(script: str) -> list[str]:
+    """The paths the shim's here-document is written to, as the script spells them.
+
+    `cat > PATH <<'CPP'` names it directly. Where PATH is `"$1"` the here-document is the body
+    of a shell function, and the paths are the first argument of each call to that function.
+    """
+    paths: list[str] = []
+    for match in re.finditer(r"^[ \t]*cat > (\S+) <<'CPP'\n(.*?)\nCPP$", script, re.S | re.M):
+        if not shim_definitions(match.group(2)):
+            continue
+        target = match.group(1)
+        if target != '"$1"':
+            paths.append(target)
+            continue
+        functions = re.findall(r"^([A-Za-z_][A-Za-z_0-9]*)\(\) \{", script[: match.start()], re.M)
+        if functions:
+            paths += re.findall(rf"^[ \t]+{functions[-1]} (\S+)[ \t]*$", script, re.M)
+    return paths
+
+
+def compiled_paths(script: str) -> set[str]:
+    """Every path the script hands a compiler with `-c`."""
+    return set(re.findall(r"(?:^|[ \t])-c (\S+)", script, re.M))
+
+
+SHIM_PATH_CASES: tuple[tuple[str, list[str], str], ...] = (
+    ("cat > \"$b/s.cpp\" <<'CPP'\nburrow_qpdf_x(qpdf_data q)\nCPP\n", ['"$b/s.cpp"'],
+     "a here-document written to a path"),
+    ("w() { # path\n  cat > \"$1\" <<'CPP'\nburrow_qpdf_x(qpdf_data q)\nCPP\n}\n"
+     "  w \"$b/s.cpp\"\n", ['"$b/s.cpp"'], "a here-document written through a function's argument"),
+    ("cat > \"$b/e.cpp\" <<'CPP'\nint main()\nCPP\n", [], "a here-document that is not the shim"),
+)
+
+
 def shim_problems(declared: set[str], scripts: dict[str, str]) -> list[str]:
     """What is wrong with the shim against the declarations: see SHIM_SCRIPTS' comment."""
     problems: list[str] = []
@@ -904,6 +941,20 @@ def shim_problems(declared: set[str], scripts: dict[str, str]) -> list[str]:
                 f"what each `burrow_qpdf_*` exemption is argued against"
             )
             continue
+        written = shim_written_paths(script)
+        if not written:
+            problems.append(
+                f"the shim in {label} is written to no path this checker can read, so what is "
+                f"compiled cannot be shown to be what is checked"
+            )
+        compiled = compiled_paths(script)
+        for path in written:
+            if path not in compiled:
+                problems.append(
+                    f"the shim in {label} is written to {path}, which no compile in {label} is "
+                    f"handed with -c: the file compiled is not the one checked"
+                )
+        SHIM_PATHS_EXAMINED.extend(f"{label}: {path}" for path in written)
         texts.append(sources[0])
         defined = shim_definitions(sources[0])
         for name in sorted(declared - defined):
@@ -919,14 +970,20 @@ def shim_problems(declared: set[str], scripts: dict[str, str]) -> list[str]:
 
 
 SHIM_PROBES_RUN: list[str] = []
+# Every shim path the real scripts were checked for, filled by `shim_problems`; probes reset it.
+SHIM_PATHS_EXAMINED: list[str] = []
 
 
 def check_shim_probes() -> list[str]:
     """Each shim rule refuses its own planted case and passes its near-miss, on every run."""
     problems: list[str] = []
     shim = "extern \"C\" int\nburrow_qpdf_selftest(qpdf_data q) noexcept\n{\n}\n"
-    script = f"cat > x <<'CPP'\n{shim}\nCPP\n"
-    other = f"cat > x <<'CPP'\n{shim}// changed\n\nCPP\n"
+    compile_x = "clang++ -O3 \\\n  -c x -o x.o\n"
+    script = f"cat > x <<'CPP'\n{shim}\nCPP\n{compile_x}"
+    other = f"cat > x <<'CPP'\n{shim}// changed\n\nCPP\n{compile_x}"
+    elsewhere = f"cat > x <<'CPP'\n{shim}\nCPP\nclang++ -O3 \\\n  -c y -o x.o\n"
+    by_function = f"w() {{ # path\n  cat > \"$1\" <<'CPP'\n{shim}\nCPP\n}}\n  w x\n{compile_x}"
+    by_function_elsewhere = by_function.replace("  w x\n", "  w y\n")
     declared = {"burrow_qpdf_selftest"}
 
     def probe(name: str, got: list[str], needle: str | None) -> None:
@@ -947,6 +1004,14 @@ def check_shim_probes() -> list[str]:
           shim_problems(set(), {"a": script, "b": script}), "declares nowhere")
     probe("a script with no shim source is refused",
           shim_problems(declared, {"a": script, "b": "echo nothing\n"}), "holds 0 shim source")
+    probe("a shim written through a function's argument and compiled from it passes",
+          shim_problems(declared, {"a": by_function, "b": by_function}), None)
+    probe("a shim compiled from another file is refused",
+          shim_problems(declared, {"a": script, "b": elsewhere}), "the file compiled is not")
+    probe("a shim written through a function to a file not compiled is refused",
+          shim_problems(declared, {"a": by_function_elsewhere, "b": by_function_elsewhere}),
+          "the file compiled is not")
+    SHIM_PATHS_EXAMINED.clear()
     return problems
 
 
@@ -990,6 +1055,13 @@ def check_parser_fixtures() -> list[str]:
             problems.append(
                 f"the shim definition parser reads {label} as {sorted(got_set)!r}, "
                 f"expected {sorted(expected_set)!r}"
+            )
+
+    for script, expected_paths, label in SHIM_PATH_CASES:
+        got_paths = shim_written_paths(script)
+        if got_paths != expected_paths:
+            problems.append(
+                f"the shim path parser reads {label} as {got_paths!r}, expected {expected_paths!r}"
             )
 
     for line, expected, label in JS_CASES:
@@ -2020,8 +2092,12 @@ def verify() -> int:
         f"  burrow's shim: {len(shims)} function(s) declared ({', '.join(sorted(shims)) or 'none'}), "
         f"each defined by the one shim source in each of {len(SHIM_SCRIPTS)} build scripts "
         f"({', '.join(path.name for path in SHIM_SCRIPTS)}); parsers verified against "
-        f"{len(SHIM_FFI_CASES)} declaration and {len(SHIM_SOURCE_CASES)} definition case(s), "
-        f"and {len(SHIM_PROBES_RUN)} shim rule probes"
+        f"{len(SHIM_FFI_CASES)} declaration, {len(SHIM_SOURCE_CASES)} definition and "
+        f"{len(SHIM_PATH_CASES)} path case(s), and {len(SHIM_PROBES_RUN)} shim rule probes"
+    )
+    print(
+        f"  burrow's shim, compiled from the file checked: {len(SHIM_PATHS_EXAMINED)} written "
+        f"path(s), each handed to -c ({'; '.join(SHIM_PATHS_EXAMINED) or 'none'})"
     )
     print(
         f"  proven helpers, pinned by body hash: "

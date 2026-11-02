@@ -150,6 +150,18 @@ breaks_it "a shim rule blind to a definition nothing declares is caught" \
   'for name in []:' \
   "shim probe 'a shim function nothing declares is refused'"
 
+# SECURITY ROUND 1, L-4: the text checked is the text compiled. Each half of that rule, broken in
+# a copy, refuses through the probe or path fixture that names it.
+breaks_it "a shim rule blind to a compile of another file is caught" \
+  'if path not in compiled:' \
+  'if False:' \
+  "shim probe 'a shim compiled from another file is refused'"
+
+breaks_it "a shim path parser blind to a function's argument is caught" \
+  'if functions:' \
+  'if False:' \
+  "the shim path parser reads a here-document written through a function's argument"
+
 # AND THE GATE ITSELF. Deleting it alone changes nothing observable -- the parsers still
 # work, so the tool still passes. The case has to break a parser AND delete the gate, which
 # is what a real regression would look like: somebody "fixes" a failing fixture by removing
