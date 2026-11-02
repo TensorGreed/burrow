@@ -30,7 +30,10 @@
 //!    trapped call having returned: clear after the open's resolution is burrow's route failing,
 //!    [`burrow_types::Error::Internal`]. The flag is read again after the constructors and after
 //!    the write, each beside the repair refusal read there, and clear at either is
-//!    `[engine-repaired-input]`: only a reconstruction of the table clears it once set.
+//!    `[engine-repaired-input]`: only a reconstruction of the table clears it once set. On the
+//!    pinned qpdf (12.4.1) **those two readings are shadowed** -- a reconstruction always warns,
+//!    so the repair refusal before each refuses first -- and are defence in depth that only the
+//!    fake engine's tests reach.
 //! 4. **Page *N* is rewritten in place** (§3): its dictionary keeps its object identity, every
 //!    key but `/Type` and `/Parent` is removed, and `/Rotate 0`, `/MediaBox` and `/CropBox`
 //!    `[0 0 dw dh]`, `/Resources` naming one image and `/Contents` holding one line are written.

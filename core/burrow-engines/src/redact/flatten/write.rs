@@ -356,6 +356,14 @@ fn force_resolution<O: BuildsObjects>(trailer: &O) -> Result<O> {
 /// three engine points, after the repair check there, which it does not replace: the flag says
 /// a resolution ran, not that it repaired nothing.
 ///
+/// **The later two readings are defence in depth, shadowed on the pinned qpdf.** On qpdf 12.4.1
+/// only a reconstruction of the cross-reference table clears the flag once set, and qpdf always
+/// warns that the file is damaged when it reconstructs, so the repair check just before each of
+/// those readings refuses first: no input reaches a clear flag at [`Reading::Constructors`] or
+/// [`Reading::Write`] on the real engine, and only the fake engine's tests do. They are kept for a
+/// qpdf that reconstructs without warning. The open's reading is not shadowed: a forced
+/// resolution that returned without resolving reports no repair.
+///
 /// # Errors
 ///
 /// - At [`Reading::Open`], [`Error::Internal`] for a clear flag: the call that should have
