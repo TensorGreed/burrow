@@ -134,14 +134,18 @@ export async function installRenderHeapScanner(page: Page): Promise<void> {
   await page.addInitScript((prologue: string) => {
     const w = window as unknown as {
       __scanWorkers: Worker[];
+      __scanWrapped: Set<string>;
       __scanReplies: Map<number, (result: unknown) => void>;
     };
     w.__scanWorkers = [];
+    w.__scanWrapped = new Set();
     w.__scanReplies = new Map();
     const create = URL.createObjectURL.bind(URL);
     URL.createObjectURL = (object: Blob | MediaSource) => {
       if (object instanceof Blob && object.type === "text/javascript") {
-        return create(new Blob([prologue, "\n", object], { type: "text/javascript" }));
+        const url = create(new Blob([prologue, "\n", object], { type: "text/javascript" }));
+        w.__scanWrapped.add(url);
+        return url;
       }
       return create(object);
     };
@@ -149,7 +153,9 @@ export async function installRenderHeapScanner(page: Page): Promise<void> {
     window.Worker = class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);
-        w.__scanWorkers.push(this);
+        // Only a worker built from a blob that got the prologue can answer a scan; which of
+        // those is the render worker is decided by the memories it reports, not by spawn order.
+        if (w.__scanWrapped.has(String(url))) w.__scanWorkers.push(this);
         // Registered first, so the host's listeners never see a scan answer.
         this.addEventListener("message", (event: MessageEvent) => {
           const nonce = event.data && event.data.__burrowScanned;
@@ -163,7 +169,12 @@ export async function installRenderHeapScanner(page: Page): Promise<void> {
   }, PROLOGUE);
 }
 
-/** Scan every memory of the most recently spawned worker for `needles`. */
+/**
+ * Scan every memory of the render worker for `needles`. The worker is identified by what it
+ * reports, not by when it was spawned: every worker that carries the prologue is asked, and the
+ * one whose memories include both a `pdfium` and a `burrow-render` heap is the render worker.
+ * Zero or more than one such worker is an error rather than a guess.
+ */
 export async function scanRenderHeaps(page: Page, needles: Needle[]): Promise<MemoryScan[]> {
   return page.evaluate(
     (needles) =>
@@ -172,21 +183,41 @@ export async function scanRenderHeaps(page: Page, needles: Needle[]): Promise<Me
           __scanWorkers: Worker[];
           __scanReplies: Map<number, (result: unknown) => void>;
         };
-        const worker = w.__scanWorkers[w.__scanWorkers.length - 1];
-        if (!worker) {
+        const workers = [...w.__scanWorkers];
+        if (workers.length === 0) {
           reject(new Error("no worker was spawned, so there is nothing to scan"));
           return;
         }
-        const nonce = Math.floor(Math.random() * 2 ** 31);
-        const timer = setTimeout(
-          () => reject(new Error("the worker never answered the scan")),
-          30_000,
-        );
-        w.__scanReplies.set(nonce, (result) => {
-          clearTimeout(timer);
-          resolve(result as MemoryScan[]);
-        });
-        worker.postMessage({ __burrowScan: { nonce, needles } });
+        const answers: MemoryScan[][] = [];
+        let pending = workers.length;
+        const done = () => {
+          if (--pending > 0) return;
+          const render = answers.filter(
+            (scan) =>
+              scan.some((m) => m.heap === "pdfium") && scan.some((m) => m.heap === "burrow-render"),
+          );
+          if (render.length === 1) resolve(render[0]);
+          else
+            reject(
+              new Error(
+                `${render.length} of ${workers.length} workers hold pdfium and burrow-render memories`,
+              ),
+            );
+        };
+        for (const worker of workers) {
+          const nonce = Math.floor(Math.random() * 2 ** 31);
+          // A worker the host has already terminated never answers: skip it after a pause.
+          const timer = setTimeout(() => {
+            w.__scanReplies.delete(nonce);
+            done();
+          }, 10_000);
+          w.__scanReplies.set(nonce, (result) => {
+            clearTimeout(timer);
+            answers.push(result as MemoryScan[]);
+            done();
+          });
+          worker.postMessage({ __burrowScan: { nonce, needles } });
+        }
       }),
     needles,
   );
