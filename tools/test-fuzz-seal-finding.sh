@@ -32,7 +32,7 @@ probe_rustc() {
 mutant="$here/fuzz-seal-finding.MUTANT.sh"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=22
+EXPECTED_CASES=29
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -366,6 +366,156 @@ if [ "$real_chk" = "1|1|0|0" ] \
   && [ "$(cut -d'|' -f3-4 <<< "$mut_panic")" = "1|1" ]; then
   ok "internal_error: marker and panic line are each one escaped line, nothing published from either; dropping either escape leaves a published line"
 else bad "escape: real=[$real_chk] panic=[$panic_ln] mut_marker=[$mut_marker] mut_panic=[$mut_panic]"; fi
+
+# 22-23. THE SAME CAPTURE IN fuzz-reproduce.yml AND ci.yml's `fuzz smoke` (owner (96), nit 3 of (72)).
+#     wiring.py checks one workflow job: exactly one upload, its path a single `.age` under the sealed
+#     directory (never fuzz/artifacts or a log), short retention, if-no-files-found error; install ->
+#     seal -> upload in that order; the seal step calls the script with the committed recipient, is not
+#     continue-on-error and swallows nothing ((66)(4)); install and seal are always()-gated and not
+#     filtered on any classifier verdict. It prints "examined <n> steps" so the count is a
+#     measurement. Each workflow then gets four mutants, each asserted applied, each of which must be
+#     refused with its reason named.
+cat > "$work/wiring.py" <<'PY'
+import sys, yaml
+path, job, kind = sys.argv[1:4]
+wf = yaml.safe_load(open(path))
+steps = wf["jobs"][job]["steps"]
+def run_of(s): return str(s.get("run", ""))
+uploads = [s for s in steps if str(s.get("uses", "")).lower().startswith("actions/upload-artifact")]
+assert len(uploads) == 1, f"expected exactly one upload step, found {len(uploads)}"
+up = uploads[0]
+upath = str(up["with"]["path"]).strip()
+assert upath.endswith(".age"), f"upload path does not end in .age: {upath}"
+assert "fuzz/artifacts" not in upath and ".log" not in upath, f"upload path names inputs or a log: {upath}"
+assert 1 <= int(up["with"]["retention-days"]) <= 14, "retention must be short"
+assert up["with"].get("if-no-files-found") == "error", "if-no-files-found must be error"
+seal = [s for s in steps if "tools/fuzz-seal-finding.sh" in run_of(s)]
+assert len(seal) == 1 and ".github/fuzz-findings.recipient" in run_of(seal[0]), "seal step missing or without the committed recipient"
+install = [s for s in steps if "tools/install-age.sh" in run_of(s)]
+assert len(install) == 1, "install step missing"
+order = [steps.index(install[0]), steps.index(seal[0]), steps.index(up)]
+assert order == sorted(order), "install, seal, upload must run in that order"
+assert "steps.seal.outputs.sealed == 'true'" in str(up["if"]), "upload not gated on the seal"
+assert seal[0].get("id") == "seal" and "steps.age.outcome == 'success'" in str(seal[0]["if"]), "seal not gated on the install"
+sr = run_of(seal[0])
+assert "exit 0" not in sr and "-eq 4" not in sr and "::warning" not in sr, "seal step swallows a failure"
+assert not seal[0].get("continue-on-error"), "seal step continues on error"
+for st in (install[0], seal[0]):
+    cond = str(st["if"])
+    assert cond.lstrip().startswith("always()"), f"{st['name']}: not always()-gated"
+    assert not any(w in cond.lower() for w in ("classif", "matched", "ledger", "unmatched")), f"{st['name']}: filters on a verdict"
+if kind == "smoke":
+    name = [s for s in steps if s.get("id") == "finding"]
+    assert len(name) == 1 and "fuzz-failed-target" in run_of(name[0]), "the step naming the failing target is missing"
+    assert "steps.finding.outputs.target != ''" in str(install[0]["if"]), "install not gated on a named target"
+    writers = [s for s in steps if "fuzz-failed-target" in run_of(s) and 'exit "$status"' in run_of(s)]
+    assert len(writers) == 2, f"both fuzz loops must name the failing target, found {len(writers)}"
+else:
+    assert "steps.fuzz.outputs.target != ''" in str(install[0]["if"]), "install not gated on a validated target"
+    assert "steps.fuzz.outputs.status != '0'" in str(install[0]["if"]) and "steps.fuzz.outcome == 'failure'" in str(install[0]["if"]), "install not gated on a crash"
+print(f"examined {len(steps)} steps of {job}; 1 upload, 1 seal, 1 install")
+PY
+wire() { # <workflow-file> <job> <kind> -> rc, note
+  rc=0; note="$(python3 "$work/wiring.py" "$1" "$2" "$3" 2>&1)" || rc=$?
+}
+mutate_wf() { # <src> <dst> <old> <new>: a copy with one replacement, asserted applied
+  python3 - "$@" <<'PY'
+import sys
+src, dst, old, new = sys.argv[1:5]
+s = open(src).read()
+assert old in s, "mutation did not apply"
+open(dst, "w").write(s.replace(old, new, 1))
+PY
+}
+wfdir="$repo/.github/workflows"
+m_label=(upload-artifacts-dir seal-continues seal-not-always long-retention)
+m_old=("path: \${{ runner.temp }}/sealed/" "id: seal" "if: always() && steps.age.outcome == 'success'" $'.age\n          retention-days: 7')
+m_new=("path: fuzz/artifacts/" $'id: seal\n        continue-on-error: true' "if: steps.age.outcome == 'success'" $'.age\n          retention-days: 90')
+m_why=("names inputs or a log" "seal step continues on error" "not always()-gated" "retention must be short")
+for spec in "fuzz-reproduce.yml reproduce repro" "ci.yml fuzz smoke"; do
+  read -r wfile wjob wkind <<< "$spec"
+  wire "$wfdir/$wfile" "$wjob" "$wkind"
+  real_note="$note"; real_rc=$rc
+  mut_ok=1; mut_names=""; mut_n=0
+  for i in 0 1 2 3; do
+    if ! mutate_wf "$wfdir/$wfile" "$work/mut.yml" "${m_old[$i]}" "${m_new[$i]}" 2> /dev/null; then
+      mut_ok=0; mut_names="$mut_names [${m_label[$i]}: did not apply]"; continue
+    fi
+    cmp -s "$wfdir/$wfile" "$work/mut.yml" && { mut_ok=0; mut_names="$mut_names [${m_label[$i]}: identical]"; continue; }
+    wire "$work/mut.yml" "$wjob" "$wkind"
+    if [ "$rc" -eq 0 ] || ! grep -qF "${m_why[$i]}" <<< "$note"; then
+      mut_ok=0; mut_names="$mut_names [${m_label[$i]}: rc=$rc note=$note]"
+    else mut_n=$((mut_n + 1)); fi
+  done
+  if [ "$real_rc" -eq 0 ] && grep -q '^examined [0-9]* steps' <<< "$real_note" && [ "$mut_ok" -eq 1 ] && [ "$mut_n" -eq 4 ]; then
+    ok "$wfile ($wjob): $real_note; $mut_n of 4 mutants (artifacts dir, continue-on-error, no always(), long retention) refused by name"
+  else bad "$wfile wiring: rc=$real_rc note=[$real_note] mutants caught $mut_n of 4:$mut_names"; fi
+done
+rm -f "$work/mut.yml"
+
+# 24-25. THE SMOKE JOB'S NAMING STEP, run for real: the step's own script from ci.yml, over a temp
+#     RUNNER_TEMP. No failed-target file (no crash) -> no `target=` output, so install/seal/upload
+#     skip and no artifact exists; a file naming a target -> that target; a file naming something
+#     that is not a plain name -> the step fails and writes no output. Then a mutant without the
+#     file guard (asserted applied) must misbehave on a clean run.
+python3 - "$wfdir/ci.yml" > "$work/finding.sh" <<'PY'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["fuzz"]["steps"]
+print([s for s in steps if s.get("id") == "finding"][0]["run"])
+PY
+run_finding() { # <script> <content|NONE> -> rc, outs
+  rm -rf "$work/rt" "$work/ghout"; mkdir -p "$work/rt"; : > "$work/ghout"
+  [ "$2" = NONE ] || printf '%s\n' "$2" > "$work/rt/fuzz-failed-target"
+  rc=0; RUNNER_TEMP="$work/rt" GITHUB_OUTPUT="$work/ghout" bash "$1" > /dev/null 2>&1 || rc=$?
+  outs="$(cat "$work/ghout")"
+}
+run_finding "$work/finding.sh" NONE; a_rc=$rc; a_out="$outs"
+run_finding "$work/finding.sh" reorder; b_rc=$rc; b_out="$outs"
+run_finding "$work/finding.sh" 'x; echo PLANTED-MSG'; c_rc=$rc; c_out="$outs"
+if [ "$a_rc" -eq 0 ] && [ -z "$a_out" ] && [ "$b_rc" -eq 0 ] && [ "$b_out" = "target=reorder" ] \
+  && [ "$c_rc" -ne 0 ] && [ -z "$c_out" ]; then
+  ok "smoke naming step: no crash -> no output (nothing sealed or uploaded); a crash -> its target; a non-plain name -> red, no output"
+else bad "naming step: none=[$a_rc/$a_out] reorder=[$b_rc/$b_out] bad=[$c_rc/$c_out]"; fi
+
+mutate_wf "$work/finding.sh" "$work/finding-mut.sh" 'if [ -f "$failed" ]; then' 'if true; then'
+cmp -s "$work/finding.sh" "$work/finding-mut.sh" && bad "naming-step mutation identical"
+run_finding "$work/finding-mut.sh" NONE
+if [ "$rc" -ne 0 ] || [ -n "$outs" ]; then
+  ok "mutant naming step without the file guard misbehaves on a clean run (the no-crash case above would catch it)"
+else bad "naming-step mutant behaved on a clean run"; fi
+
+# 26. A real crash through the real seal script, called the way the smoke job calls it (per-target log
+#     fuzz-<target>.log, the target's own artifacts dir). One .age, no plaintext in it, and neither
+#     marker in the script's own output (which is what the job log would show).
+mkdir -p "$work/smoke/fuzz/artifacts/reorder" "$work/smoke/rt"
+cp "$work/artifacts/reorder/"* "$work/smoke/fuzz/artifacts/reorder/"
+cp "$work/fuzz.log" "$work/smoke/rt/fuzz-reorder.log"
+rc=0; smoke_out="$(cd "$work/smoke" && GITHUB_OUTPUT="$work/smoke/gh" "$seal" reorder rt/fuzz-reorder.log "$work/recipient.pub" rt/sealed fuzz/artifacts/reorder 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$(find "$work/smoke/rt/sealed" -type f | wc -l)" -eq 1 ] \
+  && ! grep -aqF "$INPUT_MARK" "$work/smoke/rt/sealed/reorder.age" && ! grep -aqF "$MSG_MARK" "$work/smoke/rt/sealed/reorder.age" \
+  && ! grep -qF "$INPUT_MARK" <<< "$smoke_out" && ! grep -qF "$MSG_MARK" <<< "$smoke_out"; then
+  ok "smoke-shaped call: one .age, no plaintext in it, neither marker in the script's output"
+else bad "smoke-shaped call: exit $rc"; fi
+
+# 27. The published-reproducer gate still passes and now counts fuzz-reproduce.yml's upload.
+gate_rc=0; gate_out="$(python3 "$repo/tools/check-no-published-reproducers.py" 2>&1)" || gate_rc=$?
+if [ "$gate_rc" -eq 0 ] && grep -qE 'fuzz-reproduce.yml: [0-9]+ step\(s\), 1 upload' <<< "$gate_out"; then
+  ok "check-no-published-reproducers accepts the new uploads and counts fuzz-reproduce.yml's"
+else bad "reproducer gate (exit $gate_rc): $gate_out"; fi
+
+# 28. Privacy of the five new sealing steps themselves (3 in smoke, 2 in reproduce): none prints a log or traces.
+python3 - "$wfdir/ci.yml" "$wfdir/fuzz-reproduce.yml" <<'PY' && priv=1 || priv=0
+import sys, yaml, re
+n = 0
+for path, job in ((sys.argv[1], "fuzz"), (sys.argv[2], "reproduce")):
+    for st in yaml.safe_load(open(path))["jobs"][job]["steps"]:
+        if st.get("name") in ("Name the failing target", "Install the pinned age", "Encrypt the finding to the owner's key"):
+            r = str(st["run"]); n += 1
+            assert not re.search(r"\b(cat|tail|head|echo|printf)\b[^\n]*fuzz[-.\w]*\.log", r), f"{st['name']} prints a log"
+            assert "set -x" not in r and "::debug" not in r
+assert n == 5, f"examined {n} sealing steps, expected 5"
+PY
+[ "$priv" -eq 1 ] && ok "the five sealing steps examined never print a log or enable tracing" || bad "a new step prints a log or traces"
 
 echo "fuzz-seal-finding: $pass passed, $fail failed (expected $EXPECTED_CASES cases)"
 [ "$fail" -eq 0 ] && [ "$pass" -eq "$EXPECTED_CASES" ]

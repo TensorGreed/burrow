@@ -9,9 +9,11 @@ name: fuzz (reproduce on x86_64)
 #
 # It publishes exactly what the nightly publishes and nothing more: the redacted log, the
 # classifier's verdict and the crash's frame and input hash, through the same two scripts
-# (`tools/fuzz-classify.sh`, `tools/fuzz-describe.sh`). The crashing input stays on the runner and
-# dies with it; see the nightly's header for why. A reproducer that is needed goes private, never
-# through an artifact.
+# (`tools/fuzz-classify.sh`, `tools/fuzz-describe.sh`). The crashing input stays on the runner; see
+# the nightly's header for why. Like the nightly (owner decision (62)(1), extended here by (96)),
+# it also keeps the crash inputs and the UNREDACTED log as one age-encrypted artifact, sealed to
+# the committed public key by the same scripts, and nothing else: no plaintext reaches a log or
+# an artifact.
 #
 # `workflow_dispatch` only. It is a search a person asks for, not a gate.
 
@@ -161,3 +163,34 @@ jobs:
         env:
           TARGET: ${{ steps.fuzz.outputs.target }}
         run: tools/fuzz-describe.sh "$TARGET" "$RUNNER_TEMP/fuzz.log"
+
+      # THE FINDING IS KEPT, ENCRYPTED, exactly as fuzz-nightly.yml does it (same three steps, same
+      # scripts, same recipient). Every crash is sealed; a seal failure is a red step, and then no
+      # upload runs. `target` is written by the fuzz step only after validation, so an input that
+      # failed validation seals nothing. STEP OUTPUTS THROUGH `env`, never `${{ }}` inside `run:`.
+      - name: Install the pinned age
+        id: age
+        if: >-
+          always() && steps.fuzz.outputs.target != '' && (steps.fuzz.outputs.status != '0'
+          && steps.fuzz.outputs.status != '' || steps.fuzz.outcome == 'failure')
+        run: |
+          age_path="$(tools/install-age.sh "$RUNNER_TEMP/age-bin")"
+          echo "AGE=$age_path" >> "$GITHUB_ENV"
+
+      - name: Encrypt the finding to the owner's key
+        id: seal
+        if: always() && steps.age.outcome == 'success'
+        env:
+          TARGET: ${{ steps.fuzz.outputs.target }}
+        run: |
+          tools/fuzz-seal-finding.sh "$TARGET" "$RUNNER_TEMP/fuzz.log" \
+            .github/fuzz-findings.recipient "$RUNNER_TEMP/sealed" "fuzz/artifacts/$TARGET"
+
+      - name: Upload the encrypted finding (ciphertext only)
+        if: always() && steps.seal.outputs.sealed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sealed-finding-reproduce-${{ steps.fuzz.outputs.target }}
+          path: ${{ runner.temp }}/sealed/${{ steps.fuzz.outputs.target }}.age
+          retention-days: 7
+          if-no-files-found: error
