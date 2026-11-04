@@ -209,7 +209,8 @@ one is decided in an issue, with the same three parts.
     iOS offset-0 narrowing (lane 1e) are post-launch. Lane 1's queue after the Chrome split fix
     (1a) is #344 (1b), then the core ink half of #206 (1c), and nothing else. This narrows the
     launch plan above. Rule 19's principle is unchanged; its 2b instance now applies after launch.
-    The PDFium ink read-back still gates S9 via #206's ink half. *Decided:* owner, 2026-10-17.
+    The PDFium ink read-back still gates S9 via #206's ink half (since 2026-10-21, for v2 only: rule
+    19's amendment, the owner's independently of ADR 0031's status). *Decided:* owner, 2026-10-17.
     *Does not cover:* the final spec review, which still hunts the whole class, or whether any of
     the three comes back before a later milestone.
 
@@ -285,6 +286,35 @@ one is decided in an issue, with the same three parts.
     and the PDFium ink read-back (after #344) gates S9. *Does not cover:* a check that is already
     independent of the walk, such as the removed image's bytes being absent from the output, which
     stands on its own.
+
+    **Amended 2026-10-21: the S9 instances apply to v2 only.** Redaction v1 flattens the redacted
+    page ([ADR 0031](adr/0031-redaction-v1-flattens-the-redacted-page.md), Proposed). burrow does
+    not read that page's content stream, and uses no glyph box. **This amendment is the owner's,
+    decided independently of ADR 0031's status** (decision 57, item 9): it stands while 0031 is
+    Proposed, and if 0031 is rejected. Three instances now apply only to v2, ADR 0029's
+    content-stream rewriter:
+    - this rule's 2b instance: the PDFium ink read-back, after #344, gates S9;
+    - rule 17's 2026-10-17 sentence: the PDFium ink read-back still gates S9 via #206's ink half;
+    - #344's decision 4 (owner, 2026-10-15): #206's ink half asserts PDFium's tight character
+      boxes against the region, as an S9 gate on the web path, so that redaction does not un-hold
+      while the web relies on `/FontBBox` alone. Its public traces are the ROADMAP #344 row and
+      ADR 0029's 2026-10-17 `/FontBBox` amendment.
+
+    **The principle is unchanged, and it binds v1.** v1's same-source assertions are the closed
+    list in ADR 0031 §4 (*What it leaves undetectable*), kept current by that record's revisions
+    while it is Proposed and by its dated amendments once it is Accepted, and each needs an
+    independent reading before S9. On 2026-10-27, after rounds 1 and 2 (owner decisions 61, 66, 68
+    and 70), that list is: the set of objects the page used that the output keeps, which one walk
+    both decides and checks; page identity across the two engines, which rests on refusals that read
+    qpdf's page tree; the two engines reading the redacted page's content differently; and the
+    region-to-pixel arithmetic, only where the display frame that PDFium's transform (which paints)
+    and burrow's arithmetic (which checks) both start from is wrong in the same way. On 2026-10-28 the owner dropped the fifth item, a destination into the redacted page at a site ADR 0031 §3 does not list (decision 76), so the list is four. Also on 2026-10-28 (owner decision 74, which accepted ADR 0031)
+    v1 keeps every destination unchanged; the translation of destinations into the redacted page that
+    decisions 68 and 70 had added is post-launch. If ADR 0031 is rejected,
+    there is no v1 list, and this rule's instances are v2's alone. *Decided:* owner, 2026-10-21
+    (decisions 55 and 57). *Does not cover:* R10, which still gates S9 for v1 through #206's web
+    runtime digest; or what v1's independent readings are, which ADR 0031 proposes and its reviews
+    check.
 
 20. **When a deploy gate fails, compare the live site with the build run's own artifact first.**
     If it now matches, the failure was propagation lag, and the failed jobs get one re-run. If
