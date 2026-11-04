@@ -19,6 +19,7 @@ pub(crate) mod thread;
 pub(crate) mod read_back;
 
 // Redaction v1's render of page N, painted in PDFium's heap (ADR 0031 §1 steps 2 and 4).
+pub(crate) mod flatten_identity;
 pub(crate) mod flatten_render;
 
 use std::sync::Arc;

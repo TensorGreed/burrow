@@ -824,3 +824,69 @@ fn annotations_without_an_appearance_draw_as_measured_on_the_pinned_pdfium() {
     }
     assert_eq!(examined, 12);
 }
+
+/// ADR 0031 §5, page *N*'s rotation (S9b): PDFium's `FPDFPage_GetRotation` on the page the render
+/// loads equals qpdf's `/Rotate`, at every quarter turn, and is reported. The twin of the test
+/// below.
+///
+/// KILLS: MI8, a quarter turn mapped to the wrong degrees.
+#[test]
+fn page_n_s_rotation_agrees_with_qpdf_s_at_every_quarter_turn() {
+    for rotate in [0_u16, 90, 180, 270] {
+        let bytes = document(
+            &format!("/MediaBox [0 0 301 301] /Rotate {rotate}"),
+            "",
+            &[],
+            "",
+        );
+        let frame = qpdf_frame(&bytes);
+        assert_eq!(frame.rotate, rotate);
+        let painted = paint(
+            &bytes,
+            &region_in(301.0, 301.0),
+            Limits::DEFAULT,
+            super::honest,
+        )
+        .unwrap();
+        assert_eq!(painted.rotation, rotate);
+    }
+}
+
+/// ADR row: engines disagreeing on page *N*'s rotation. No real file was found on which they do
+/// (qpdf refuses every `/Rotate` shape the two read differently, ROUND0 finding 4), so the qpdf
+/// frame handed to the render lies, as a qpdf reading the other way would. A square page keeps
+/// the lie's display frame, and so its bitmap size, the page's own. Refused **before a bitmap is
+/// created**.
+///
+/// KILLS: MI5 (the render's rotation check deleted) and MI10 (the check moved after the bitmap
+/// is created).
+#[test]
+fn a_frame_whose_rotation_is_not_pdfium_s_is_refused_before_any_bitmap() {
+    let side = 313.3;
+    let pixels = pixels_for(side).unwrap();
+    for (page, told) in [(0_u16, 90_u16), (90, 0), (180, 0), (0, 180), (270, 90)] {
+        let bytes = document(
+            &format!("/MediaBox [0 0 {side} {side}] /Rotate {page}"),
+            "",
+            &[],
+            "",
+        );
+        let mut frame = qpdf_frame(&bytes);
+        frame.rotate = told;
+        let doc = open(&bytes, Limits::DEFAULT);
+        let options = options(Limits::DEFAULT);
+        let deadline = Deadline::start(options.clock.as_ref(), &options.limits);
+        let outcome = render_painted(&doc, 0, &frame, &region_in(side, side), &options, &deadline);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(crate::redact::flatten::identity::is_page_identity_mismatch),
+            "page {page}, told {told}: {outcome:?}"
+        );
+    }
+    let pixels = i32::try_from(pixels).unwrap();
+    assert!(
+        !created::any(pixels, pixels),
+        "a bitmap was made for a page whose rotation disagreed"
+    );
+}

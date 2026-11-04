@@ -110,6 +110,7 @@ pub fn pixels_for(points: f64) -> Result<u32> {
 }
 
 pub(crate) mod cross_check;
+pub(crate) mod identity;
 pub(crate) mod paint;
 
 // THE WRITE ITSELF, native only until the web's constructors are exported (a later slice of ADR
