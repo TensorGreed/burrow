@@ -26,8 +26,9 @@
 //!
 //! # What this does not do (later slices)
 //!
-//! Rule 7's record and digest (S9c); page identity across the two engines, the page count, every
-//! page's no-load size and page *N*'s rotation (S9b, §5); the web's render worker (S12). Natively,
+//! Rule 7's record and digest (S9c); the page count and every page's no-load size
+//! (`pdfium::flatten_identity`, S9b, §5: a pass of its own, before the render); the web's render
+//! worker (S12). **Page *N*'s rotation is checked here** (S9b), on the page this render loads. Natively,
 //! PDFium's heap is the process heap and is not wiped (§7, native posture is M3/M4's).
 //!
 //! # Limits
@@ -131,6 +132,9 @@ pub(crate) struct Painted {
     /// The rectangle the paint filled: reported for tests and the census, **never trusted** by
     /// the cross-check, which computes its own.
     pub painted: PixelRect,
+    /// Page *N*'s rotation as PDFium read it on the loaded page, in degrees: already held equal
+    /// to the frame's (ADR 0031 §5), and reported for the census.
+    pub rotation: u16,
 }
 
 impl Painted {
@@ -201,10 +205,14 @@ impl PageToDevice for Seen<'_> {
 /// in PDFium's heap, and return the painted picture as RGB.
 ///
 /// `frame` is page *N*'s frame **as qpdf read it** (`redact::frame::of`), the one the write and
-/// the cross-check use.
+/// the cross-check use. **Its `/Rotate` is held to PDFium's** (ADR 0031 §5, page *N*'s rotation):
+/// read by `FPDFPage_GetRotation` on the page this render loads, straight after the load and
+/// before the bitmap exists, so the identity check costs no second load.
 ///
 /// # Errors
 ///
+/// - The page-identity refusal (`redact::flatten::identity`) when PDFium's rotation of the page
+///   is not the frame's, before any bitmap is created.
 /// - [`Error::LimitExceeded`] for `max_pixels` or `MAX_FLATTEN_PIXELS` on *W*·*H* (until the
 ///   integration slice gives rule 6 its id), before any allocation; for `max_duration_ms`; and for
 ///   `max_memory_bytes`, detected, not bounded.
@@ -260,7 +268,7 @@ fn render_painted_through(
     let clock_in = Arc::clone(&clock);
     let (frame, region) = (*frame, *region);
 
-    let (rgb, painted) = thread::submit(move |registry| {
+    let (rgb, painted, rotation) = thread::submit(move |registry| {
         let handle = registry.handle(id)?;
         let before = crate::rss::resident_bytes();
 
@@ -272,7 +280,16 @@ fn render_painted_through(
 
         // Everything fallible is inside this closure, so the page is closed on every exit by the
         // single call after it.
-        let drawn = (|| -> Result<(Vec<u8>, PixelRect)> {
+        let drawn = (|| -> Result<(Vec<u8>, PixelRect, u16)> {
+            // PAGE N'S ROTATION, HELD TO QPDF'S (ADR 0031 §5), on the page loaded for the render
+            // and before anything is allocated for it: a disagreement means the page drawn may
+            // not be the page replaced.
+            //
+            // SAFETY: `page` is live (checked non-null above, closed after this closure) and from
+            // this document. Engine thread.
+            let rotation = unsafe { super::flatten_identity::rotation(page) }?;
+            crate::redact::flatten::identity::check_rotation(frame.rotate, rotation)?;
+
             // SAFETY: engine thread; plain integers; the ceilings were checked above.
             let bitmap = unsafe { ffi::create_bitmap(w, h, ffi::BITMAP_BGRA) };
             #[cfg(test)]
@@ -283,7 +300,7 @@ fn render_painted_through(
                 ));
             }
 
-            let filled = (|| -> Result<(Vec<u8>, PixelRect)> {
+            let filled = (|| -> Result<(Vec<u8>, PixelRect, u16)> {
                 // SAFETY: `bitmap` is live and `w`/`h` are its extent. A fresh bitmap is undefined.
                 unsafe { ffi::fill_bitmap(bitmap, w, h, ffi::OPAQUE_WHITE) };
                 render_progressively(
@@ -342,7 +359,7 @@ fn render_painted_through(
                     crate::rss::resident_bytes(),
                     &limits,
                 )?;
-                Ok((rgb, rect))
+                Ok((rgb, rect, rotation))
             })();
 
             // SAFETY: `bitmap` is live, this is its only destroy, and `copy_out` owns its bytes.
@@ -364,6 +381,7 @@ fn render_painted_through(
         height: high,
         rgb,
         painted,
+        rotation,
     })
 }
 
