@@ -486,6 +486,11 @@ JOBS: list[dict] = [
             "tools/test-check-known-crashes.sh",
             "tools/test-fuzz-report-steps.sh",
             "tools/test-fuzz-seal-finding.sh",
+            # The smoke job's sealing steps (owner (96)) call these two; the self-test above runs
+            # both for real, so they are covered here rather than run as bare commands (they need
+            # a crash and a recipient).
+            "tools/fuzz-seal-finding.sh",
+            "tools/install-age.sh",
             "tools/check-release-notes.py",
             "tools/test-check-release-notes.sh",
             "tools/check-fuzz-target-registration.sh",
