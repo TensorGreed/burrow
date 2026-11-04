@@ -163,6 +163,12 @@ sha256 = "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e"
 provenance = "tofu"
 provenance_note = "Upstream publishes a detached .sig signature; we record the hash ourselves."
 signature_url = "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz.sig"
+# The date every engine build is pinned to (UTC, YYYY-MM-DD): the mtime of the entries in the
+# pinned 3.2.0 tarball, i.e. its release. build-native.sh and build-wasm.sh derive both
+# libjpeg-turbo's -DBUILD=<YYYYMMDD> and SOURCE_DATE_EPOCH from it, so a rebuild on another day
+# yields the same bytes (owner (95)(1)). It moves only with a libjpeg-turbo bump, which moves the
+# artifacts anyway.
+build_date = "2026-06-30"
 
 # ---------------------------------------------------------------------------------
 # Emscripten SDK. A SHIPPED dependency, not just a tool: it contributes musl-derived

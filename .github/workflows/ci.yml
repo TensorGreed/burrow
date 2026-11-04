@@ -404,6 +404,9 @@ jobs:
           # vendor/native-* tree to fall back to, and `deny` fetches nothing. Same placement
           # rule as the drift comparison above, for the same reason.
           tools/test-check-engine-licences.sh
+          # The engine build-date checker's self-test also runs inside the build-web-payload
+          # action; it is repeated here so a job that does not use the action still runs it.
+          tools/test-check-engine-build-date.sh
 
       # The OTHER half of the qpdf exception audit. engines/build-wasm.sh already checks
       # the built module's export table against ffi.rs; this checks ffi.rs against qpdf's

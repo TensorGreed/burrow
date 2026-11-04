@@ -206,6 +206,16 @@ runs:
     # It runs HERE, immediately after both wasm-pack builds, because that is where the
     # generated `.d.ts` files exist. Placed anywhere earlier it would compare against a stale
     # `pkg/` or refuse for want of one -- the "where a check lives is load-bearing" rule.
+    # NO BUILD DATE IN THE ARTIFACTS BUT THE PINNED ONE (owner (95)(1)). Here, after the wasm-pack
+    # builds, because it reads qpdf.wasm, pdfium.wasm, libjpeg.a AND the three burrow_wasm_bg.wasm
+    # bindings (--require-bindings: all must exist) and prints which it examined. The self-test
+    # reads only committed files.
+    - name: The built engines carry no build date but the pinned one
+      shell: bash
+      run: |
+        tools/check-engine-build-date.sh --require-bindings
+        tools/test-check-engine-build-date.sh
+
     - name: The worker's declarations name only members the binding exports
       shell: bash
       run: |

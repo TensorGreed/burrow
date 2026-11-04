@@ -29,6 +29,16 @@ QPDF_VERSION="$(pins_get qpdf.version)" || { echo "$(basename "$0"): cannot read
 ZLIB_VERSION="$(pins_get zlib.version)" || { echo "$(basename "$0"): cannot read zlib.version from pins.toml" >&2; exit 1; }
 JPEG_VERSION="$(pins_get libjpeg-turbo.version)" || { echo "$(basename "$0"): cannot read libjpeg-turbo.version from pins.toml" >&2; exit 1; }
 
+# REPRODUCIBLE BUILD DATE (owner (95)(1), 2026-11-02). libjpeg-turbo's CMake stamps
+# `string(TIMESTAMP ... "%Y%m%d")` into the library as "build YYYYMMDD", so rebuilding on another
+# day changed 3 bytes of qpdf.wasm and moved its brotli size by hundreds of bytes. Pin the date
+# to a value derived from the pinned tarball (pins.toml [libjpeg-turbo] build_date), never from
+# the clock: -DBUILD for libjpeg-turbo, SOURCE_DATE_EPOCH for everything else that reads a date.
+BUILD_DATE="$(pins_get libjpeg-turbo.build_date)" || { echo "$(basename "$0"): cannot read libjpeg-turbo.build_date from pins.toml" >&2; exit 1; }
+JPEG_BUILD="$(date -u -d "$BUILD_DATE" +%Y%m%d)" || { echo "$(basename "$0"): bad build_date $BUILD_DATE" >&2; exit 1; }
+SOURCE_DATE_EPOCH="$(date -u -d "$BUILD_DATE 00:00:00" +%s)" || { echo "$(basename "$0"): bad build_date $BUILD_DATE" >&2; exit 1; }
+export SOURCE_DATE_EPOCH
+
 case "$arch" in
   aarch64) pdfium_pkg="pdfium-linux-arm64.tgz" ;;
   x86_64)  pdfium_pkg="pdfium-linux-x64.tgz" ;;
@@ -93,6 +103,7 @@ tar xzf "$vendor/libjpeg-turbo-$JPEG_VERSION.tar.gz" -C "$src"
 cmake -S "$src/libjpeg-turbo-$JPEG_VERSION" -B "$src/build-jpeg-$arch" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_TURBOJPEG=OFF \
+  -DBUILD="$JPEG_BUILD" \
   -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
 cmake --build "$src/build-jpeg-$arch" -j "$jobs" >/dev/null
 cmake --install "$src/build-jpeg-$arch" >/dev/null
