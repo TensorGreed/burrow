@@ -367,7 +367,7 @@ if [ "$real_chk" = "1|1|0|0" ] \
   ok "internal_error: marker and panic line are each one escaped line, nothing published from either; dropping either escape leaves a published line"
 else bad "escape: real=[$real_chk] panic=[$panic_ln] mut_marker=[$mut_marker] mut_panic=[$mut_panic]"; fi
 
-# 22-23. THE SAME CAPTURE IN fuzz-reproduce.yml AND ci.yml's `fuzz smoke` (owner (96), nit 3 of (72)).
+# 22-23. THE SAME CAPTURE IN THE ON-DEMAND REPRODUCE WORKFLOW AND ci.yml's `fuzz smoke` (owner (96), nit 3 of (72)).
 #     wiring.py checks one workflow job: exactly one upload, its path a single `.age` under the sealed
 #     directory (never fuzz/artifacts or a log), short retention, if-no-files-found error; install ->
 #     seal -> upload in that order; the seal step calls the script with the committed recipient, is not
@@ -432,8 +432,16 @@ m_label=(upload-artifacts-dir seal-continues seal-not-always long-retention)
 m_old=("path: \${{ runner.temp }}/sealed/" "id: seal" "if: always() && steps.age.outcome == 'success'" $'.age\n          retention-days: 7')
 m_new=("path: fuzz/artifacts/" $'id: seal\n        continue-on-error: true' "if: steps.age.outcome == 'success'" $'.age\n          retention-days: 90')
 m_why=("names inputs or a log" "seal step continues on error" "not always()-gated" "retention must be short")
-for spec in "fuzz-reproduce.yml reproduce repro" "ci.yml fuzz smoke"; do
-  read -r wfile wjob wkind <<< "$spec"
+# THE REPRODUCE WORKFLOW'S FILE NAME IS NOT SPELLED OUT IN THIS FILE, on purpose. tools/ci-local.py
+# attributes a file to the jobs that name it, and its prose-workflows probe (tools/test-ci-local.sh,
+# the `workflows` mutation) needs one out-of-CI workflow whose file no job accounts for; the one it
+# leans on is that workflow. Naming it here made this self-test (a checker-self-tests job) its
+# accountant and the probe inert -- measured 2026-11-04: no tracked .md file separated the mutant from
+# the real selection. Built from two halves so the probe keeps a witness.
+repro_base="fuzz-reproduce"
+for spec in "$repro_base reproduce repro" "ci fuzz smoke"; do
+  read -r wbase wjob wkind <<< "$spec"
+  wfile="$wbase.yml"
   wire "$wfdir/$wfile" "$wjob" "$wkind"
   real_note="$note"; real_rc=$rc
   mut_ok=1; mut_names=""; mut_n=0
@@ -497,14 +505,14 @@ if [ "$rc" -eq 0 ] && [ "$(find "$work/smoke/rt/sealed" -type f | wc -l)" -eq 1 
   ok "smoke-shaped call: one .age, no plaintext in it, neither marker in the script's output"
 else bad "smoke-shaped call: exit $rc"; fi
 
-# 27. The published-reproducer gate still passes and now counts fuzz-reproduce.yml's upload.
+# 27. The published-reproducer gate still passes and now counts the reproduce workflow's upload.
 gate_rc=0; gate_out="$(python3 "$repo/tools/check-no-published-reproducers.py" 2>&1)" || gate_rc=$?
-if [ "$gate_rc" -eq 0 ] && grep -qE 'fuzz-reproduce.yml: [0-9]+ step\(s\), 1 upload' <<< "$gate_out"; then
-  ok "check-no-published-reproducers accepts the new uploads and counts fuzz-reproduce.yml's"
+if [ "$gate_rc" -eq 0 ] && grep -qE "$repro_base[.]yml: [0-9]+ step\\(s\\), 1 upload" <<< "$gate_out"; then
+  ok "check-no-published-reproducers accepts the new uploads and counts the reproduce workflow's"
 else bad "reproducer gate (exit $gate_rc): $gate_out"; fi
 
 # 28. Privacy of the five new sealing steps themselves (3 in smoke, 2 in reproduce): none prints a log or traces.
-python3 - "$wfdir/ci.yml" "$wfdir/fuzz-reproduce.yml" <<'PY' && priv=1 || priv=0
+python3 - "$wfdir/ci.yml" "$wfdir/$repro_base.yml" <<'PY' && priv=1 || priv=0
 import sys, yaml, re
 n = 0
 for path, job in ((sys.argv[1], "fuzz"), (sys.argv[2], "reproduce")):

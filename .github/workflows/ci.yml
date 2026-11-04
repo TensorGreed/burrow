@@ -727,7 +727,7 @@ jobs:
       # fuzz-nightly.yml, same scripts, same recipient (.github/fuzz-findings.recipient, private key
       # owner-held): install -> seal -> upload one `<target>.age`. Nothing of the input or the
       # message reaches this job's log. A seal failure turns the step red (owner decision (66)(4)).
-      # tools/test-fuzz-seal-finding.sh holds the wiring (cases 22-23).
+      # tools/test-fuzz-seal-finding.sh holds the wiring (cases 22-28).
       - name: Name the failing target
         id: finding
         if: always()
