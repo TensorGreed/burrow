@@ -265,6 +265,40 @@ fn an_inherited_rotate_on_another_page_refuses_and_the_same_rotate_on_the_page_d
     assert_eq!(surveyed.examined, 2);
 }
 
+/// The same fixture with the inherited `/Rotate` on page 1 of 2 rather than page 0: an `Unframed`
+/// reading refuses wherever it falls, not only on the first page. The twin again carries the same
+/// `/Rotate` on the page's own dictionary.
+///
+/// KILLS: `Unframed` recorded only on page 0.
+#[test]
+fn an_inherited_rotate_on_a_later_page_refuses_and_the_same_rotate_on_the_page_does_not() {
+    let bodies: Vec<String> = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [4 0 R 3 0 R] /Count 2 >>",
+        "<< /Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Rotate 90 >>",
+        "<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 200 100] >>",
+        "<< /Type /Page /Parent 3 0 R /Resources << >> /MediaBox [0 0 200 100] >>",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let inherited = objects(&bodies);
+    let (surveyed, refused) = compare(&inherited);
+    assert!(refused);
+    assert_eq!(
+        surveyed.disagreements,
+        vec![Disagreement::Unframed { page: 1 }]
+    );
+
+    let mut on_the_page = bodies;
+    on_the_page[2] = "<< /Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 >>".to_owned();
+    on_the_page[4] =
+        "<< /Type /Page /Parent 3 0 R /Resources << >> /MediaBox [0 0 200 100] /Rotate 90 >>"
+            .to_owned();
+    let (surveyed, refused) = compare(&objects(&on_the_page));
+    assert!(!refused, "{surveyed:?}");
+    assert_eq!(surveyed.examined, 2);
+}
+
 /// The pass spends the operation's deadline: a spent one refuses before any page is read.
 #[test]
 fn a_spent_deadline_refuses_the_pass() {
