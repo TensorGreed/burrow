@@ -37,6 +37,10 @@
 //!   page, or 180 degrees. Only page *N* is loaded, so only page *N*'s rotation is read (ADR §5,
 //!   the route and its cost).
 //! - **A size equal in 32 bits and different in 64.** That is the rounding the rule states.
+//! - **A `/UserUnit` other than 1.** PDFium's no-load size ignores `/UserUnit`, so the size
+//!   comparison is sound only because qpdf's `[user-unit-not-one]` refuses those pages first:
+//!   their frame reading is refused, so they are `Unframed` here and never compared. Lifting that
+//!   refusal reopens this comparison.
 //!
 //! # What it refuses that both engines read alike
 //!
