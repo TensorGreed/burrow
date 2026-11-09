@@ -26,10 +26,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use burrow_engines::pdfsyntax::{references, top_level_keys};
 use flatten_fixtures::{
-    ANNOTATION_SHAPES, CATALOG, Case, Doc, ENCODINGS, FORM_SHAPES, FormShape, NOT_ZLIB, PAGE_N,
-    TREE_ENTRIES, ThumbnailShape, V, XFA_SHAPES, XMP_NS, XfaShape, annotation,
-    annotation_font_twin, claims_tags, form, metadata_thumbnail, structure_kept_by_another_page,
-    thumbnail_in_another_namespace, thumbnail_shapes, untyped_element_kept_by_outline, xfa,
+    ANNOTATION_SHAPES, AnnotationShape, CATALOG, Case, Doc, ENCODINGS, FORM_SHAPES, FormShape,
+    NOT_ZLIB, PAGE_N, TREE_ENTRIES, ThumbnailShape, TreeEntry, V, XFA_SHAPES, XMP_NS, XfaShape,
+    adler32, annotation, annotation_font_twin, claims_tags, form, metadata_thumbnail, packet,
+    structure_kept_by_another_page, thumbnail_in_another_namespace, thumbnail_shapes,
+    untyped_element_kept_by_outline, xfa,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -41,11 +42,17 @@ use flatten_fixtures::{
 /// `/Obj` or `/Stm`). With `by_type`, only those declaring a structure `/Type` -- the reading the
 /// ADR's mutation plants, and the one the untyped fixture exists to defeat.
 fn structure_members(doc: &Doc, by_type: bool) -> BTreeSet<u32> {
+    structure_members_omitting(doc, by_type, None)
+}
+
+/// [`structure_members`], by a walk that also does not follow `omit`, wherever it sits: the walk a
+/// slice would have if it left that entry out of its list.
+fn structure_members_omitting(doc: &Doc, by_type: bool, omit: Option<&str>) -> BTreeSet<u32> {
     let Some(V::Ref(root)) = doc.value(CATALOG).get("StructTreeRoot") else {
         return BTreeSet::new();
     };
     let members = doc.walk(&[*root], &|_, key| {
-        matches!(key, Some("Pg" | "Obj" | "Stm" | "StmOwn"))
+        matches!(key, Some("Pg" | "Obj" | "Stm" | "StmOwn")) || (omit.is_some() && key == omit)
     });
     if !by_type {
         return members;
@@ -62,11 +69,54 @@ fn structure_members(doc: &Doc, by_type: bool) -> BTreeSet<u32> {
 /// Rule 1's property: tree members the output still reaches once the catalogue loses
 /// `/StructTreeRoot` and `/MarkInfo` and page N is replaced.
 fn structure_kept(doc: &Doc, by_type: bool) -> BTreeSet<u32> {
+    structure_kept_omitting(doc, by_type, None)
+}
+
+/// [`structure_kept`], over [`structure_members_omitting`]`(omit)`.
+fn structure_kept_omitting(doc: &Doc, by_type: bool, omit: Option<&str>) -> BTreeSet<u32> {
     let kept = doc.kept(&["StructTreeRoot", "MarkInfo"]);
-    structure_members(doc, by_type)
+    structure_members_omitting(doc, by_type, omit)
         .intersection(&kept)
         .copied()
         .collect()
+}
+
+/// The key a [`TreeEntry`]'s member is reached through.
+fn entry_key(entry: TreeEntry) -> &'static str {
+    match entry {
+        TreeEntry::Kids => "K",
+        TreeEntry::ParentTree => "ParentTree",
+        TreeEntry::IdTree => "IDTree",
+        TreeEntry::RoleMap => "RoleMap",
+        TreeEntry::ClassMap => "ClassMap",
+        TreeEntry::Attributes => "A",
+        TreeEntry::Namespaces => "Namespaces",
+        TreeEntry::PronunciationLexicon => "PronunciationLexicon",
+    }
+}
+
+/// Rule 2a's keys: the `/AcroForm`'s `/XFA` value, and whether the catalogue has `/NeedsRendering`
+/// (the rule keys on presence, with any value).
+fn xfa_keys(doc: &Doc) -> (Option<V>, bool) {
+    let Some(V::Ref(acroform)) = doc.value(CATALOG).get("AcroForm") else {
+        panic!("no AcroForm");
+    };
+    (
+        doc.value(*acroform).get("XFA").cloned(),
+        doc.value(CATALOG).get("NeedsRendering").is_some(),
+    )
+}
+
+/// Every object a document reaches from its catalogue, following every reference.
+fn reachable(doc: &Doc) -> BTreeSet<u32> {
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![CATALOG];
+    while let Some(n) = todo.pop() {
+        if seen.insert(n) {
+            todo.extend(doc.value(n).refs());
+        }
+    }
+    seen
 }
 
 /// The annotations a page lists, through an indirect `/Annots` array or a direct one; and the
@@ -195,25 +245,57 @@ enum Unread {
     Unreadable,
 }
 
+/// A zlib stream's header passes its own check (RFC 1950, 2.2): deflate, and `CMF * 256 + FLG` a
+/// multiple of 31.
+fn zlib_header_ok(data: &[u8]) -> bool {
+    data.len() >= 2
+        && (u32::from(data[0]) * 256 + u32::from(data[1])).is_multiple_of(31)
+        && data[0] & 0x0f == 8
+}
+
+/// Inflate a zlib stream of stored deflate blocks, the only kind `flatten_fixtures::zlib_stored` writes, checking
+/// each block's length against its complement and the Adler-32 at the end.
+fn inflate_stored(data: &[u8]) -> Vec<u8> {
+    assert!(zlib_header_ok(data));
+    let mut out = Vec::new();
+    let mut at = 2;
+    loop {
+        let header = data[at];
+        assert_eq!(header & 0b110, 0, "a stored block");
+        let len = u16::from_le_bytes([data[at + 1], data[at + 2]]);
+        let nlen = u16::from_le_bytes([data[at + 3], data[at + 4]]);
+        assert_eq!(len, !nlen);
+        at += 5;
+        out.extend_from_slice(&data[at..at + usize::from(len)]);
+        at += usize::from(len);
+        if header & 1 == 1 {
+            break;
+        }
+    }
+    let check = u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
+    assert_eq!(check, adler32(&out));
+    assert_eq!(at + 4, data.len(), "nothing after the checksum");
+    out
+}
+
 /// The catalogue's metadata stream decoded to text: the encoding read from the first `<`, as XMP
-/// part 1, 7.3.2 and XML's appendix F do. The only filter a fixture writes is `/FlateDecode` on
-/// bytes whose zlib header fails its own check.
+/// part 1, 7.3.2 and XML's appendix F do. The only filter a fixture writes is `/FlateDecode`:
+/// over bytes whose zlib header fails its own check ([`Unread::Undecodable`]), or over a valid
+/// stream of stored blocks, which is inflated.
 fn metadata_text(doc: &Doc) -> Result<String, Unread> {
     let Some(V::Ref(n)) = doc.value(CATALOG).get("Metadata") else {
         panic!("no metadata stream");
     };
     let object = doc.object(*n);
-    let data = object.stream.as_deref().unwrap();
-    if object.value.get("Filter").is_some() {
-        let header_ok = data.len() >= 2
-            && (u32::from(data[0]) * 256 + u32::from(data[1])).is_multiple_of(31)
-            && data[0] & 0x0f == 8;
-        assert!(
-            !header_ok,
-            "the only filtered fixture is the undecodable one"
-        );
-        return Err(Unread::Undecodable);
+    let mut data = object.stream.clone().unwrap();
+    if let Some(filter) = object.value.get("Filter") {
+        assert_eq!(filter, &V::Name("FlateDecode".into()));
+        if !zlib_header_ok(&data) {
+            return Err(Unread::Undecodable);
+        }
+        data = inflate_stored(&data);
     }
+    let data = data.as_slice();
     let units = |width: usize, big: bool| -> Vec<u32> {
         data.chunks(width)
             .map(|c| {
@@ -366,10 +448,10 @@ fn every_case() -> Vec<Case> {
 }
 
 /// The number of cases [`every_case`] builds: rule 1, 8 entries and the untyped and drop pairs; rule
-/// 2, five shapes; rule 2a, four; rule 3, four and the font twin; rule 4, nine shapes and the
+/// 2, five shapes; rule 2a, five; rule 3, four and the font twin; rule 4, nine shapes and the
 /// other-namespace twin. Gated on exactly, so a case lost from the list is a failure rather than a
 /// smaller green.
-const CASES: usize = 2 * 8 + 2 * 2 + 2 * 5 + 2 * 4 + 2 * 4 + 1 + 2 * 9 + 1;
+const CASES: usize = 2 * 8 + 2 * 2 + 2 * 5 + 2 * 5 + 2 * 4 + 1 + 2 * 9 + 1;
 
 // ---------------------------------------------------------------------------------------------
 // The bytes say what the model says.
@@ -377,11 +459,16 @@ const CASES: usize = 2 * 8 + 2 * 2 + 2 * 5 + 2 * 4 + 2 * 4 + 1 + 2 * 9 + 1;
 
 /// Every object of every case, serialised, reads back through `pdfsyntax` with the model's keys and
 /// the model's references, and the whole file scans as regular with one declaration per object.
+/// The objects read back are counted, and that count is gated on the number the cases' catalogues
+/// reach, derived from the models: an object no catalogue reaches (a stray one a builder added) is
+/// a failure, not a larger total.
 #[test]
 fn every_fixture_reads_back_as_its_model() {
     let cases = every_case();
     assert_eq!(cases.len(), CASES, "cases built");
     let mut objects = 0;
+    let mut declared = 0;
+    let mut reached = 0;
     for case in &cases {
         let doc = &case.doc;
         let bytes = doc.bytes();
@@ -397,6 +484,15 @@ fn every_fixture_reads_back_as_its_model() {
             "{}: one declaration per object",
             case.name
         );
+        declared += file.declarations.len();
+        let reaches = reachable(doc).len();
+        assert_eq!(
+            reaches,
+            file.declarations.len(),
+            "{}: the catalogue reaches every object the file declares",
+            case.name
+        );
+        reached += reaches;
         for n in 1..=u32::try_from(doc.objects.len()).unwrap() {
             let value = &doc.object(n).value;
             let found = references::in_value(&value.text(), &mut || Ok(())).unwrap();
@@ -423,15 +519,58 @@ fn every_fixture_reads_back_as_its_model() {
             objects += 1;
         }
     }
-    eprintln!("read back {} cases, {objects} objects", cases.len());
+    assert_eq!(objects, declared, "every declared object was read back");
+    assert_eq!(
+        objects, reached,
+        "objects read back == objects the catalogues reach"
+    );
+    eprintln!(
+        "read back {} cases, {objects} objects ({reached} reached from the catalogues)",
+        cases.len()
+    );
+}
+
+/// Every case's `fires` flag is what its rule's witness says of it: the flags are the record the
+/// slices will assert refusals against, so they are held to the witnesses here rather than trusted.
+#[test]
+fn every_case_fires_as_its_rule_witness_says() {
+    let cases = every_case();
+    assert_eq!(cases.len(), CASES, "cases built");
+    let mut per_rule = BTreeMap::new();
+    let mut firing = 0;
+    for case in &cases {
+        let doc = &case.doc;
+        let mut parts = case.name.split('/');
+        let rule = parts.next().unwrap();
+        let witness = match (rule, parts.next()) {
+            ("rule1", Some("drop")) => doc.value(CATALOG).get("StructTreeRoot").is_some(),
+            ("rule1", _) => !structure_kept(doc, false).is_empty(),
+            ("rule2", _) => !form_clauses(doc, PAGE_N).is_empty(),
+            ("rule2a", _) => {
+                let (xfa_value, needs_rendering) = xfa_keys(doc);
+                xfa_value.is_some() || needs_rendering
+            }
+            ("rule3", _) => !annotation_kept(doc, false).is_empty(),
+            ("rule4", _) => metadata_fires(doc, false),
+            (other, _) => panic!("{}: no witness for {other}", case.name),
+        };
+        assert_eq!(case.fires, witness, "{}: fires", case.name);
+        *per_rule.entry(rule).or_insert(0) += 1;
+        firing += usize::from(case.fires);
+    }
+    let examined: usize = per_rule.values().sum();
+    assert_eq!(examined, CASES);
+    eprintln!("{examined} cases held to their witness, {firing} fire: {per_rule:?}");
 }
 
 // ---------------------------------------------------------------------------------------------
 // Rule 1.
 // ---------------------------------------------------------------------------------------------
 
-/// Each tree entry's fixture keeps its member (and so a tree member) reachable from the output,
-/// through another page; its twin is the same tree with no kept referrer, and keeps none.
+/// Each tree entry's fixture keeps its member reachable from the output, through another page, and
+/// keeps no other tree member; a walk that leaves the entry out does not reach the member, so it
+/// keeps nothing of that fixture's tree. Its twin is the same tree with no kept referrer, and keeps
+/// none.
 #[test]
 fn rule_1_each_tree_entry_fixture_keeps_a_member_and_its_twin_does_not() {
     let mut examined = 0;
@@ -448,8 +587,23 @@ fn rule_1_each_tree_entry_fixture_keeps_a_member_and_its_twin_does_not() {
         assert!(members.contains(&tree.element));
         assert!(!members.contains(&PAGE_N), "the walk stops at pages");
         assert!(
-            structure_kept(&fixture, false).contains(&tree.member),
-            "{entry:?}: the fixture keeps its member"
+            !structure_kept(&fixture, false).is_empty(),
+            "{entry:?}: the fixture keeps a tree member"
+        );
+        assert_eq!(
+            structure_kept(&fixture, false),
+            BTreeSet::from([tree.member]),
+            "{entry:?}: the member is the only tree member the fixture keeps"
+        );
+        let key = entry_key(entry);
+        assert!(
+            !structure_members_omitting(&fixture, false, Some(key)).contains(&tree.member),
+            "{entry:?}: /{key} is the only route to the member"
+        );
+        assert_eq!(
+            structure_kept_omitting(&fixture, false, Some(key)),
+            BTreeSet::new(),
+            "{entry:?}: a walk that leaves /{key} out keeps nothing of the fixture's tree"
         );
         assert_eq!(
             structure_kept(&twin, false),
@@ -568,26 +722,28 @@ fn rule_2_each_form_fixture_meets_its_own_clauses_and_its_twin_none() {
 // ---------------------------------------------------------------------------------------------
 
 /// Each XFA fixture has its key; the twin has neither key and the same `/AcroForm` otherwise. The
-/// three `/XFA` fixtures hold three different kinds of value, so a rule keyed on the parsed value
-/// misses at least one.
+/// three `/XFA` fixtures hold three different kinds of value, and the two `/NeedsRendering`
+/// fixtures both values, so a rule keyed on the parsed value misses at least one of each.
 #[test]
 fn rule_2a_each_xfa_fixture_has_its_key_and_the_twin_neither() {
-    let keys = |doc: &Doc| {
-        let Some(V::Ref(acroform)) = doc.value(CATALOG).get("AcroForm") else {
-            panic!("no AcroForm");
-        };
-        (
-            doc.value(*acroform).get("XFA").cloned(),
-            doc.value(CATALOG).get("NeedsRendering").is_some(),
-        )
-    };
     let mut kinds = BTreeSet::new();
+    let mut rendering_values = Vec::new();
     for shape in XFA_SHAPES {
-        let (xfa_value, needs_rendering) = keys(&xfa(shape, true));
-        assert_eq!(keys(&xfa(shape, false)), (None, false), "{shape:?}: twin");
+        let (xfa_value, needs_rendering) = xfa_keys(&xfa(shape, true));
+        assert_eq!(
+            xfa_keys(&xfa(shape, false)),
+            (None, false),
+            "{shape:?}: twin"
+        );
         match shape {
-            XfaShape::NeedsRendering => {
-                assert!(needs_rendering && xfa_value.is_none());
+            XfaShape::NeedsRendering | XfaShape::NeedsRenderingFalse => {
+                assert!(needs_rendering && xfa_value.is_none(), "{shape:?}");
+                rendering_values.push(
+                    xfa(shape, true)
+                        .value(CATALOG)
+                        .get("NeedsRendering")
+                        .cloned(),
+                );
             }
             _ => {
                 assert!(!needs_rendering);
@@ -602,6 +758,10 @@ fn rule_2a_each_xfa_fixture_has_its_key_and_the_twin_neither() {
         }
     }
     assert_eq!(kinds, ["array", "integer", "stream"].into());
+    assert_eq!(
+        rendering_values,
+        [Some(V::Bool(true)), Some(V::Bool(false))]
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -640,6 +800,17 @@ fn rule_3_each_annotation_fixture_keeps_a_member_of_a_and_its_twin_does_not() {
             "{shape:?}: only the widened rule sees it"
         );
     }
+    // The shared array holds no annotation, so the array is the only member of A it keeps: an A
+    // without page N's indirect /Annots array keeps nothing of this fixture.
+    let shared = annotation(AnnotationShape::SharedAnnotsArray, true);
+    let (on_n, array) = annots_of(&shared, PAGE_N);
+    let array = array.expect("an indirect /Annots array");
+    assert_eq!(on_n, Vec::<u32>::new(), "the shared array lists nothing");
+    assert_eq!(
+        annots_of(&shared, shared.page(1)),
+        (Vec::new(), Some(array))
+    );
+    assert_eq!(annotation_kept(&shared, false), BTreeSet::from([array]));
 }
 
 /// The font twin: page N's annotation appearance uses a font kept page 1 also uses. *A*, which
@@ -677,6 +848,22 @@ fn rule_4_each_thumbnail_fixture_fires_and_its_twin_does_not() {
                 let n = fixture.value(CATALOG).get("Metadata").unwrap().refs();
                 let n = *n.iter().next().unwrap();
                 assert_eq!(fixture.object(n).stream.as_deref(), Some(NOT_ZLIB));
+                // The twin is the same filter over a valid zlib stream of the plain packet: a
+                // reading that refuses on the filter, not on the failure to decode, fires on it.
+                let t = *twin
+                    .value(CATALOG)
+                    .get("Metadata")
+                    .unwrap()
+                    .refs()
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert_eq!(
+                    twin.object(t).value.get("Filter"),
+                    fixture.object(n).value.get("Filter")
+                );
+                assert!(zlib_header_ok(twin.object(t).stream.as_deref().unwrap()));
+                assert_eq!(metadata_text(&twin), Ok(packet("xmp", XMP_NS, false)));
             }
             ThumbnailShape::Unreadable => {
                 let text = metadata_text(&fixture).unwrap();

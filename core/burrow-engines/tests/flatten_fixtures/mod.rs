@@ -422,11 +422,11 @@ pub struct Case {
 /// fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeEntry {
-    /// `/StructTreeRoot /K`, a structure element.
+    /// `/K`: a marked-content reference, the kid of an element only `/StructTreeRoot /K` reaches.
     Kids,
-    /// `/StructTreeRoot /ParentTree`, a number tree node.
+    /// `/StructTreeRoot /ParentTree`: an empty leaf of the number tree.
     ParentTree,
-    /// `/StructTreeRoot /IDTree`, a name tree node.
+    /// `/StructTreeRoot /IDTree`: an empty leaf of the name tree.
     IdTree,
     /// `/StructTreeRoot /RoleMap`, an indirect role map.
     RoleMap,
@@ -464,7 +464,7 @@ pub struct Tree {
 
 /// A tagged two-page document: `/MarkInfo << /Marked true >>`, a `/StructTreeRoot` with one
 /// element on page N (`/Pg`, a marked-content kid, `/StructParents 0` on the page), and a member
-/// reached only through `entry`. `untyped` leaves `/Type` off the element **and the root**, so that
+/// reached only through `entry` that names nothing else in the tree. `untyped` leaves `/Type` off the element **and the root**, so that
 /// nothing a kept untyped element reaches back to (its `/P`) declares a structure type either.
 pub fn tagged(entry: TreeEntry, untyped: bool) -> (Doc, Tree) {
     let mut doc = Doc::with_pages(2);
@@ -483,21 +483,63 @@ pub fn tagged(entry: TreeEntry, untyped: bool) -> (Doc, Tree) {
         "Nums",
         V::Arr(vec![V::Int(0), V::Arr(vec![V::Ref(element)])]),
     )]));
-    let mut root_dict = vec![
-        ("K", V::Arr(vec![V::Ref(element)])),
-        ("ParentTree", V::Ref(parent_tree)),
-        ("ParentTreeNextKey", V::Int(1)),
-    ];
+    // Each member is reached through its own entry and no other, and names nothing else in the
+    // tree, so a fixture's kept tree members are exactly {member}: a walk that omits the entry
+    // keeps nothing of the fixture's tree, and would `Ok` it.
+    let mut kids = vec![V::Ref(element)];
+    let mut parent_tree_root = parent_tree;
+    let mut root_dict = Vec::new();
     let member = match entry {
-        TreeEntry::Kids => element,
-        TreeEntry::ParentTree => parent_tree,
+        TreeEntry::Kids => {
+            // A second element, in no parent tree (its content is a marked-content reference,
+            // not an MCID the page's `/StructParents` maps), reached only through `/K`; the member
+            // is its kid, which names only page N.
+            let reference = doc.add(dict(vec![
+                ("Type", name("MCR")),
+                ("Pg", V::Ref(PAGE_N)),
+                ("MCID", V::Int(1)),
+            ]));
+            let mut division = vec![
+                ("S", name("Div")),
+                ("P", V::Ref(root)),
+                ("K", V::Arr(vec![V::Ref(reference)])),
+            ];
+            if !untyped {
+                division.insert(0, ("Type", name("StructElem")));
+            }
+            let division = doc.add(dict(division));
+            kids.push(V::Ref(division));
+            reference
+        }
+        TreeEntry::ParentTree => {
+            // The number tree as a root over two leaves; the member is a leaf with no entries.
+            doc.put(parent_tree, "Limits", V::Arr(vec![V::Int(0), V::Int(0)]));
+            let empty = doc.add(dict(vec![("Nums", V::Arr(vec![]))]));
+            parent_tree_root = doc.add(dict(vec![(
+                "Kids",
+                V::Arr(vec![V::Ref(parent_tree), V::Ref(empty)]),
+            )]));
+            empty
+        }
         TreeEntry::IdTree => {
+            // The name tree as a root over two leaves; the member is a leaf with no entries.
+            let leaf = doc.add(dict(vec![
+                (
+                    "Limits",
+                    V::Arr(vec![V::Str(b"e1".to_vec()), V::Str(b"e1".to_vec())]),
+                ),
+                (
+                    "Names",
+                    V::Arr(vec![V::Str(b"e1".to_vec()), V::Ref(element)]),
+                ),
+            ]));
+            let empty = doc.add(dict(vec![("Names", V::Arr(vec![]))]));
             let ids = doc.add(dict(vec![(
-                "Names",
-                V::Arr(vec![V::Str(b"e1".to_vec()), V::Ref(element)]),
+                "Kids",
+                V::Arr(vec![V::Ref(leaf), V::Ref(empty)]),
             )]));
             root_dict.push(("IDTree", V::Ref(ids)));
-            ids
+            empty
         }
         TreeEntry::RoleMap => {
             let map = doc.add(dict(vec![("Para", name("P"))]));
@@ -537,9 +579,16 @@ pub fn tagged(entry: TreeEntry, untyped: bool) -> (Doc, Tree) {
             lexicon
         }
     };
+    let mut head = vec![
+        ("K", V::Arr(kids)),
+        ("ParentTree", V::Ref(parent_tree_root)),
+        ("ParentTreeNextKey", V::Int(1)),
+    ];
     if !untyped {
-        root_dict.insert(0, ("Type", name("StructTreeRoot")));
+        head.insert(0, ("Type", name("StructTreeRoot")));
     }
+    head.extend(root_dict);
+    let root_dict = head;
     doc.set(root, dict(root_dict));
     doc.put(CATALOG, "StructTreeRoot", V::Ref(root));
     doc.put(CATALOG, "MarkInfo", dict(vec![("Marked", V::Bool(true))]));
@@ -714,14 +763,18 @@ pub enum XfaShape {
     Integer,
     /// `/NeedsRendering true` on the catalogue, with no `/XFA`.
     NeedsRendering,
+    /// `/NeedsRendering false` on the catalogue, with no `/XFA`: the rule keys on the key's
+    /// presence, "with any value" (ADR 0031 rule 2a).
+    NeedsRenderingFalse,
 }
 
 /// Every [`XfaShape`].
-pub const XFA_SHAPES: [XfaShape; 4] = [
+pub const XFA_SHAPES: [XfaShape; 5] = [
     XfaShape::Array,
     XfaShape::Stream,
     XfaShape::Integer,
     XfaShape::NeedsRendering,
+    XfaShape::NeedsRenderingFalse,
 ];
 
 /// Rule 2a's fixture for `shape`, or (with `xfa_present` false) its twin: the same `/AcroForm`
@@ -747,6 +800,7 @@ pub fn xfa(shape: XfaShape, xfa_present: bool) -> Doc {
             }
             XfaShape::Integer => doc.put(acroform, "XFA", V::Int(7)),
             XfaShape::NeedsRendering => doc.put(CATALOG, "NeedsRendering", V::Bool(true)),
+            XfaShape::NeedsRenderingFalse => doc.put(CATALOG, "NeedsRendering", V::Bool(false)),
         }
     }
     doc
@@ -765,7 +819,8 @@ pub enum AnnotationShape {
     SharedAppearance,
     /// A link on one page whose `/Hide` action names an annotation on another.
     ActionNamesAnnotation,
-    /// One indirect `/Annots` array shared by two pages (#240).
+    /// One indirect `/Annots` array shared by two pages (#240), holding no annotation, so that the
+    /// array is the only thing kept.
     SharedAnnotsArray,
 }
 
@@ -804,13 +859,15 @@ fn appearance(doc: &mut Doc, resources: V) -> u32 {
     )
 }
 
-/// Rule 3's fixture for `shape` and its twin, on three pages. Page N always has an annotation of
-/// its own that nothing else names. The fixture builds `shape` between page N and page 1; the twin
+/// Rule 3's fixture for `shape` and its twin, on three pages. Page N has an annotation of its own
+/// that nothing else names, except in the shared-array fixture, where the shared array replaces it. The fixture builds `shape` between page N and page 1; the twin
 /// builds the same shape between pages 1 and 2, unrelated to page N.
 pub fn annotation(shape: AnnotationShape, between_page_n: bool) -> Doc {
     let mut doc = Doc::with_pages(3);
-    let own = square(&mut doc, PAGE_N);
-    doc.push_to(PAGE_N, "Annots", V::Ref(own));
+    if !(between_page_n && shape == AnnotationShape::SharedAnnotsArray) {
+        let own = square(&mut doc, PAGE_N);
+        doc.push_to(PAGE_N, "Annots", V::Ref(own));
+    }
     let (a, b) = if between_page_n {
         (PAGE_N, doc.page(1))
     } else {
@@ -852,14 +909,10 @@ pub fn annotation(shape: AnnotationShape, between_page_n: bool) -> Doc {
             doc.push_to(b, "Annots", V::Ref(link));
         }
         AnnotationShape::SharedAnnotsArray => {
-            let first = square(&mut doc, a);
-            // The page's own annotation stays in a's array; the shared array replaces it.
-            let mut items = match doc.value(a).get("Annots") {
-                Some(V::Arr(items)) => items.clone(),
-                _ => Vec::new(),
-            };
-            items.push(V::Ref(first));
-            let array = doc.add(V::Arr(items));
+            // The shared array holds no annotation, so nothing in it is "listed on two pages":
+            // the array itself is the only member of A the output keeps. It is page a's whole
+            // list, so in the fixture page N has no annotation of its own (none is built).
+            let array = doc.add(V::Arr(Vec::new()));
             doc.put(a, "Annots", V::Ref(array));
             doc.put(b, "Annots", V::Ref(array));
         }
@@ -1017,6 +1070,28 @@ pub fn thumbnail_shapes() -> Vec<ThumbnailShape> {
 /// start on them.
 pub const NOT_ZLIB: &[u8] = b"\x78\x00not a deflate stream";
 
+/// `data` as a valid zlib stream (RFC 1950) of one stored deflate block (RFC 1951, 3.2.4): header
+/// `78 01`, which passes the header check, then the block and the Adler-32 of `data`.
+pub fn zlib_stored(data: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(data.len()).expect("one stored block holds at most 65535 bytes");
+    let mut out = vec![0x78, 0x01, 0x01];
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(!len).to_le_bytes());
+    out.extend_from_slice(data);
+    out.extend_from_slice(&adler32(data).to_be_bytes());
+    out
+}
+
+/// Adler-32 (RFC 1950, 8.2).
+pub fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in data {
+        a = (a + u32::from(byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
 /// A two-page document whose catalogue `/Metadata` stream holds `data`, with `filter` if given.
 pub fn with_metadata(data: Vec<u8>, filter: Option<&str>) -> Doc {
     let mut doc = Doc::with_pages(2);
@@ -1030,8 +1105,9 @@ pub fn with_metadata(data: Vec<u8>, filter: Option<&str>) -> Doc {
 }
 
 /// Rule 4's fixture for `shape`, or with `thumbnail` false, its twin: the same packet in the same
-/// prefix, namespace and encoding, carrying `CreatorTool` instead of `Thumbnails`. For the two
-/// unreadable shapes the twin is a readable, plain packet without a thumbnail.
+/// prefix, namespace and encoding, carrying `CreatorTool` instead of `Thumbnails`. The undecodable
+/// shape's twin is the plain packet without a thumbnail under the same `/FlateDecode`, as a valid
+/// zlib stream; the unreadable shape's, that packet whole.
 pub fn metadata_thumbnail(shape: ThumbnailShape, thumbnail: bool) -> Doc {
     match shape {
         ThumbnailShape::Plain(encoding) => {
@@ -1051,7 +1127,11 @@ pub fn metadata_thumbnail(shape: ThumbnailShape, thumbnail: bool) -> Doc {
             let cut = whole.find("</rdf:Description>").unwrap();
             with_metadata(whole.as_bytes()[..cut].to_vec(), None)
         }
-        ThumbnailShape::Undecodable | ThumbnailShape::Unreadable => {
+        ThumbnailShape::Undecodable => with_metadata(
+            zlib_stored(packet("xmp", XMP_NS, false).as_bytes()),
+            Some("FlateDecode"),
+        ),
+        ThumbnailShape::Unreadable => {
             with_metadata(packet("xmp", XMP_NS, false).into_bytes(), None)
         }
     }
