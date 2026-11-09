@@ -425,3 +425,8 @@ mod created {
 #[cfg(test)]
 #[path = "flatten_render_tests.rs"]
 mod tests;
+
+/// The flatten census harness (ADR 0031 *Census*): ignored, run locally by its driver.
+#[cfg(test)]
+#[path = "flatten_census_tests.rs"]
+mod census;

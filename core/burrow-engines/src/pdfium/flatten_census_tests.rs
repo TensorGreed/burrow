@@ -7,19 +7,28 @@
 //! Every figure the ADR's census list names whose slice is not built is a column of its own, left
 //! empty and named in `COLUMNS`, so an absent figure is visible rather than silently missing.
 //!
-//! Slice 9a's paint and cross-check (`redact::flatten::paint`, `cross_check`, `pdfium::flatten_render`)
-//! are `pub(crate)`: an external test binary cannot call them, so the `s9a_*` columns stay empty and
-//! the harness says why in each row's legend (`columns.tsv` beside the output). Reaching them needs
-//! a visibility change in product code, which this harness does not make.
+//! Slice 9a's columns come from the crate's own `pub(crate)` items, which is why this harness is
+//! an in-crate `#[cfg(test)]` module rather than a `tests/` binary (owner (103), 2026-11-09): page
+//! N's frame as qpdf reads it (`redact::frame::of`), the paint in PDFium's heap
+//! (`pdfium::flatten_render::render_painted`), and the cross-check on the painted picture
+//! (`redact::flatten::cross_check::check_paint`). The region painted on every page is fixed and
+//! named in `columns.tsv`: [`census_region`]. No product item's visibility changes for this.
 //!
-//! Ignored, and driven by `~/burrow-census/flatten-census/run.sh` (the script that lists the sets and gates the
-//! counts); see `~/burrow-census/flatten-census/DESIGN.md`.
+//! Ignored, and driven by `~/burrow-census/flatten-census/run.sh` (the script that lists the sets
+//! and gates the counts) with `cargo test -p burrow-engines --lib --features native-engines --
+//! --ignored census`; see `~/burrow-census/rounds/flatten-census-harness/DESIGN.md`.
 //!
 //! Inputs: `BURROW_FLATTEN_CENSUS_LIST`, one `<set>\t<path>` per line. Output:
 //! `BURROW_FLATTEN_CENSUS_OUT`, one row per page (or one row per document the frame reader refuses
 //! whole, page column `-`), beside `<out>.docs` with one line per document.
-#![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test-only census harness"
+)]
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
@@ -27,11 +36,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use burrow_engines::qpdf::Qpdf;
-use burrow_engines::redact::flatten::{MAX_FLATTEN_PIXELS, Picture, pixels_for};
-use burrow_engines::redact::frames::PageFrameReading;
-use burrow_engines::{OpenOptions, PageFlattener, PageFrameReader};
 use burrow_types::{Clock, Deadline, Limits, SystemClock};
+
+use super::render_painted;
+use crate::pdfium::{Pdfium, PdfiumDocument};
+use crate::pdfsyntax::region::Region;
+use crate::qpdf::Qpdf;
+use crate::redact::flatten::cross_check::check_paint;
+use crate::redact::flatten::{MAX_FLATTEN_PIXELS, Picture, pixels_for};
+use crate::redact::frames::PageFrameReading;
+use crate::redact::graph::{OpensForRedaction, PdfDocument};
+use crate::{DocumentEngine, OpenOptions, PageFlattener, PageFrameReader};
 
 /// The web's pixel ceiling (`max_pixels` on the web build; ADR 0031 decision 7).
 const WEB_PIXELS: u64 = 4_194_304;
@@ -85,12 +100,12 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     (
         "s9a_paint",
         "S9a",
-        "EMPTY: paint_rectangle is pub(crate), unreachable from an external test",
+        "render_painted under the native ceiling, region census_region (left 0.31w+0.137, top 0.23h+0.211, 0.2w x 0.1h display points): ok:<l>,<t>,<r>,<b> (the painted pixel rectangle), the [tag] / err:<kind>, frame:<outcome> when redact::frame::of refuses page N, or open:<outcome> when PDFium refuses the document",
     ),
     (
         "s9a_cross_check",
         "S9a",
-        "EMPTY: cross_check is pub(crate), unreachable from an external test",
+        "check_paint on that picture under the native ceiling: ok or the [tag] / err:<kind>; - when there was no picture",
     ),
     ("render_ms", "S9", "EMPTY: render time per page"),
     (
@@ -146,13 +161,16 @@ const COLUMNS: &[(&str, &str, &str)] = &[
 fn outcome<T>(result: &burrow_types::Result<T>) -> String {
     match result {
         Ok(_) => "ok".to_owned(),
-        Err(error) => {
-            let text = error.to_string();
-            match (text.find('['), text.find(']')) {
-                (Some(a), Some(b)) if b > a => text[a..=b].to_owned(),
-                _ => format!("err:{}", text.split(':').next().unwrap_or("?").trim()),
-            }
-        }
+        Err(error) => refusal(error),
+    }
+}
+
+/// A refusal's `[tag]`, or `err:<kind>` when it carries none.
+fn refusal(error: &burrow_types::Error) -> String {
+    let text = error.to_string();
+    match (text.find('['), text.find(']')) {
+        (Some(a), Some(b)) if b > a => text[a..=b].to_owned(),
+        _ => format!("err:{}", text.split(':').next().unwrap_or("?").trim()),
     }
 }
 
@@ -184,7 +202,57 @@ fn flatten(
 }
 
 /// Cells a row fills; `row_of` pads the rest with empty cells, one per unbuilt figure.
-const FILLED: usize = 15;
+const FILLED: usize = 17;
+
+/// The region the census paints on every page: inside the display frame `dw` x `dh`, off every
+/// centre line, edges between pixels (the shape `flatten_render_tests::region_in` uses).
+fn census_region(dw: f64, dh: f64) -> Region {
+    Region {
+        left: dw * 0.31 + 0.137,
+        top: dh * 0.23 + 0.211,
+        width: dw * 0.2,
+        height: dh * 0.1,
+    }
+}
+
+/// Slice 9a's two cells for page `page`: the paint, then the cross-check.
+fn s9a<D: PdfDocument>(
+    page: usize,
+    redaction: &burrow_types::Result<D>,
+    pdfium: &burrow_types::Result<PdfiumDocument>,
+) -> [String; 2] {
+    let no_picture = "-".to_owned();
+    let document = match redaction {
+        Ok(document) => document,
+        Err(error) => return [format!("frame:{}", refusal(error)), no_picture],
+    };
+    let frame = match document
+        .page(page)
+        .and_then(|object| crate::redact::frame::of(&object))
+    {
+        Ok(frame) => frame,
+        Err(error) => return [format!("frame:{}", refusal(&error)), no_picture],
+    };
+    let source = match pdfium {
+        Ok(source) => source,
+        Err(error) => return [format!("open:{}", refusal(error)), no_picture],
+    };
+    let (dw, dh) = frame.displayed_size();
+    let region = census_region(dw, dh);
+    let options = options(MAX_FLATTEN_PIXELS);
+    let deadline = Deadline::start(options.clock.as_ref(), &options.limits);
+    let painted = match render_painted(source, page as u64, &frame, &region, &options, &deadline) {
+        Ok(painted) => painted,
+        Err(error) => return [refusal(&error), no_picture],
+    };
+    let rect = painted.painted;
+    let paint = format!(
+        "ok:{},{},{},{}",
+        rect.left, rect.top, rect.right, rect.bottom
+    );
+    let check = check_paint((dw, dh), &painted.picture(), &region, &options.limits);
+    [paint, outcome(&check)]
+}
 
 fn row_of(mut cells: Vec<String>) -> String {
     assert!(cells.len() <= FILLED);
@@ -193,8 +261,8 @@ fn row_of(mut cells: Vec<String>) -> String {
 }
 
 #[test]
-#[ignore = "local census harness"]
-fn census() {
+#[ignore = "local census harness: run.sh drives it with `-- --ignored census`"]
+fn flatten_census() {
     let list = std::env::var("BURROW_FLATTEN_CENSUS_LIST").unwrap();
     let out_path = std::env::var("BURROW_FLATTEN_CENSUS_OUT").unwrap();
     let mut inputs: Vec<(String, PathBuf)> = Vec::new();
@@ -239,6 +307,15 @@ fn census() {
             }
         };
         writeln!(docs, "{set}\t{name}\t{}\topen:ok", frames.pages).unwrap();
+        // Opened once per document for slice 9a: qpdf's graph (page N's frame as the write and
+        // the cross-check read it) and PDFium's document (the paint).
+        let redaction = Qpdf
+            .open_for_redaction(&bytes, &options(MAX_FLATTEN_PIXELS))
+            .map(|(document, _)| document);
+        let pdfium = Pdfium::new().open(
+            bytes.clone().into_boxed_slice(),
+            &options(MAX_FLATTEN_PIXELS),
+        );
         for (page, reading) in frames.readings.iter().enumerate() {
             let mut cells = vec![
                 set.clone(),
@@ -286,9 +363,9 @@ fn census() {
                             Err(_) => cells.extend([String::new(), String::new()]),
                         }
                         cells.push(ms.to_string());
+                        cells.extend(s9a(page, &redaction, &pdfium));
                     }
                 }
-                _ => cells.push("reading:unknown".to_owned()),
             }
             writeln!(out, "{}", row_of(cells)).unwrap();
             rows += 1;
