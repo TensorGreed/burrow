@@ -19,6 +19,8 @@ and **one final spec-review round finds no new leak**. After that bar is met, a 
 result that looks redacted over a secret still present), which returns it to this table. The focus
 until launch is redaction only.
 
+Final spec review targeted for the week of 2026-12-14; launch follows its findings.
+
 **Redaction v1 is "flatten the redacted page"** (owner, 2026-10-21): PDFium renders the page, the
 region is painted in PDFium's heap (widened to whole pixels), and qpdf replaces the page with one
 Flate image and a one-line content stream; other pages are untouched. [ADR 0031](adr/0031-redaction-v1-flattens-the-redacted-page.md)
