@@ -112,8 +112,16 @@ test("positive control: with no wipe, the planted text and pixels are found in P
   page,
 }) => {
   const scan = await drawAndScan(page, "planted");
+  // WHY THE TEXT IS IN PDFIUM'S HEAP: the render worker hands PDFium the input document's bytes,
+  // so the content stream's literal text sits in that heap as input, not as rendered output. The
+  // pixel needle is the rendered evidence (PDFium's BGRA bitmap).
   const text = hits(scan, "planted:text");
   const pixels = hits(scan, "planted:pixels-bgra");
+  // BURROW-RENDER IS EXAMINED BY NAME AND SIZE ONLY. Measured on chromium, firefox and webkit
+  // (2026-11-09): after a draw, burrow-render's memory holds none of the text, BGRA or RGBA
+  // needles (0 hits each, 5.1 MB examined). The bitmap is not resident there in a form these
+  // needles match, so no positive hit is asserted for that heap; the first assertion that it
+  // is absent after a flatten op must come with a needle measured to be present there first.
   expect(
     text.pdfium ?? 0,
     `the text was not found in pdfium.wasm's memory: ${describe(scan)}`,
