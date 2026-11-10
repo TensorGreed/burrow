@@ -16,7 +16,7 @@
 //!
 //! Ignored, and driven by `~/burrow-census/flatten-census/run.sh` (the script that lists the sets
 //! and gates the counts) with `cargo test -p burrow-engines --lib --features native-engines --
-//! --ignored census`; see `~/burrow-census/rounds/flatten-census-harness/DESIGN.md`.
+//! --ignored --exact pdfium::flatten_render::census::flatten_census`; see `~/burrow-census/rounds/flatten-census-harness/DESIGN.md`.
 //!
 //! Inputs: `BURROW_FLATTEN_CENSUS_LIST`, one `<set>\t<path>` per line. Output:
 //! `BURROW_FLATTEN_CENSUS_OUT`, one row per page (or one row per document the frame reader refuses
@@ -100,12 +100,12 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     (
         "s9a_paint",
         "S9a",
-        "render_painted under the native ceiling, region census_region (left 0.31w+0.137, top 0.23h+0.211, 0.2w x 0.1h display points): ok:<l>,<t>,<r>,<b> (the painted pixel rectangle), the [tag] / err:<kind>, frame:<outcome> when redact::frame::of refuses page N, or open:<outcome> when PDFium refuses the document",
+        "render_painted under the native ceiling, region census_region (left 0.31w+0.137, top 0.23h+0.211, 0.2w x 0.1h display points): ok:<l>,<t>,<r>,<b> (the painted pixel rectangle), the [tag] / err:<kind>, frame:<outcome> when redact::frame::of refuses page N, or open:<outcome> when PDFium refuses the document. EMPTY when the frame is refused: or when pixels_for fails for either dimension",
     ),
     (
         "s9a_cross_check",
         "S9a",
-        "check_paint on that picture under the native ceiling: ok or the [tag] / err:<kind>; - when there was no picture",
+        "check_paint on that picture under the native ceiling: ok or the [tag] / err:<kind>; - when there was no picture. Both s9a cells are EMPTY when the frame is refused: (no frame, no paint) or when pixels_for fails for either dimension (no picture size to paint at)",
     ),
     ("render_ms", "S9", "EMPTY: render time per page"),
     (
@@ -261,15 +261,23 @@ fn row_of(mut cells: Vec<String>) -> String {
 }
 
 #[test]
-#[ignore = "local census harness: run.sh drives it with `-- --ignored census`"]
+#[ignore = "local census harness: run.sh drives it with `-- --ignored --exact pdfium::flatten_render::census::flatten_census`"]
 fn flatten_census() {
     let list = std::env::var("BURROW_FLATTEN_CENSUS_LIST").unwrap();
     let out_path = std::env::var("BURROW_FLATTEN_CENSUS_OUT").unwrap();
     let mut inputs: Vec<(String, PathBuf)> = Vec::new();
+    let mut seen = BTreeSet::new();
     for line in std::fs::read_to_string(list).unwrap().lines() {
-        if let Some((set, path)) = line.split_once('\t') {
-            inputs.push((set.to_owned(), PathBuf::from(path)));
-        }
+        // A malformed or repeated line is a harness bug: refuse it rather than drop it, so the
+        // examined count below is compared against every line the list carried.
+        let (set, path) = line
+            .split_once('\t')
+            .unwrap_or_else(|| panic!("census list line without a tab: {line:?}"));
+        assert!(
+            seen.insert((set.to_owned(), path.to_owned())),
+            "census list repeats a document: {line:?}"
+        );
+        inputs.push((set.to_owned(), PathBuf::from(path)));
     }
     let mut out = std::fs::File::create(&out_path).unwrap();
     let mut docs = std::fs::File::create(format!("{out_path}.docs")).unwrap();
@@ -280,13 +288,10 @@ fn flatten_census() {
     let header: Vec<&str> = COLUMNS.iter().map(|(name, _, _)| *name).collect();
     writeln!(out, "{}", header.join("\t")).unwrap();
 
-    let mut seen = BTreeSet::new();
-    let (mut examined, mut rows) = (0_u64, 0_u64);
+    let (mut examined, mut rows) = (0_usize, 0_u64);
     for (set, path) in &inputs {
-        if !seen.insert((set.clone(), path.clone())) {
-            continue;
-        }
         examined += 1;
+        let rows_before = rows;
         let bytes = std::fs::read(path).unwrap();
         let name = path.display().to_string();
         let frames = match Qpdf.page_frames(&bytes, &options(Limits::DEFAULT.max_pixels)) {
@@ -296,13 +301,18 @@ fn flatten_census() {
                 writeln!(docs, "{set}\t{name}\t0\topen:{verdict}").unwrap();
                 let cells = vec![
                     set.clone(),
-                    name,
+                    name.clone(),
                     "0".into(),
                     "-".into(),
                     format!("doc:{verdict}"),
                 ];
                 writeln!(out, "{}", row_of(cells)).unwrap();
                 rows += 1;
+                assert_eq!(
+                    rows - rows_before,
+                    1,
+                    "{name}: a refused document is one row"
+                );
                 continue;
             }
         };
@@ -370,6 +380,62 @@ fn flatten_census() {
             writeln!(out, "{}", row_of(cells)).unwrap();
             rows += 1;
         }
+        assert_eq!(
+            rows - rows_before,
+            u64::try_from(frames.pages).unwrap(),
+            "{name}: rows written differ from the page count the document declared"
+        );
     }
+    assert_eq!(
+        examined,
+        inputs.len(),
+        "documents examined differ from documents listed"
+    );
     eprintln!("flatten census: {examined} documents examined, {rows} rows written");
+}
+
+/// Negative control for slice 9a's cross-check cell: a picture that is NOT the paint must not
+/// read `ok`. Uses only the items the census itself uses (`check_paint`, `Picture`, `pixels_for`,
+/// `census_region`, `outcome`). The driver selects each test with `--exact`: a bare `census` filter
+/// also matches this one, because the module path contains it.
+#[test]
+#[ignore = "local census harness negative control: run.sh runs it with `-- --ignored --exact pdfium::flatten_render::census::flatten_check_paint_negative_control`"]
+fn flatten_check_paint_negative_control() {
+    let (dw, dh) = (612.0_f64, 792.0_f64);
+    let (w, h) = (pixels_for(dw).unwrap(), pixels_for(dh).unwrap());
+    let region = census_region(dw, dh);
+    let limits = Limits::with(|limits| limits.max_pixels = MAX_FLATTEN_PIXELS);
+    let pixels = usize::try_from(u64::from(w) * u64::from(h) * 3).unwrap();
+    // All white: nothing was painted, so the rectangle the check computes is not black.
+    let white = vec![255_u8; pixels];
+    let verdict = outcome(&check_paint(
+        (dw, dh),
+        &Picture::new(w, h, &white),
+        &region,
+        &limits,
+    ));
+    assert_ne!(
+        verdict, "ok",
+        "an unpainted picture read as a correct paint"
+    );
+    // All black: every pixel of any rectangle is the paint, so the same call reads ok. This
+    // shows the white picture above is refused for its pixels and not for another reason.
+    let black = vec![0_u8; pixels];
+    let verdict = outcome(&check_paint(
+        (dw, dh),
+        &Picture::new(w, h, &black),
+        &region,
+        &limits,
+    ));
+    assert_eq!(verdict, "ok");
+    // A picture of the wrong size is refused too.
+    let short = vec![0_u8; pixels - 3];
+    let verdict = outcome(&check_paint(
+        (dw, dh),
+        &Picture::new(w, h, &short),
+        &region,
+        &limits,
+    ));
+    assert_ne!(verdict, "ok", "a short buffer read as a correct paint");
+    eprintln!("flatten census negative control: white and short pictures refused, black accepted");
 }
