@@ -279,3 +279,11 @@ The flatten write's frame sides (ADR 0031 §3). Native only until the web flatte
 name = "qpdf_oh_append_item"
 reason = """\
 The flatten write's box arrays (ADR 0031 §3). Native only until the web flatten write."""
+
+[[function]]
+name = "burrow_qpdf_fixed_dangling_refs"
+reason = """\
+burrow's shim, not qpdf's C API: the flatten write's reading of qpdf's resolved-once flag \
+(ADR 0031 §1, flatten slice 2). Compiled into the wasm libqpdf.a by engines/build-wasm.sh and \
+deliberately not exported until the web flatten write (flatten slice 11, owner decision (89)), \
+which removes this entry in the change that adds the export."""

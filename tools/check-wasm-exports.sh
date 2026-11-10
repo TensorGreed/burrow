@@ -69,12 +69,25 @@ fi
 # parse cannot see is one the module gets refused for having. Noisy beats silent, and it is
 # still wrong.
 parse_decls() { sed -n 's/^\s*pub(super) fn \(qpdf[A-Za-z_0-9]*\)\s*(.*/\1/p'; }
+# BURROW'S SHIM (ADR 0031 §1; flatten slice 2): `burrow_qpdf_*`, declared in the same block and
+# compiled into the same libqpdf.a (engines/build-*.sh, `write_qpdf_shim`). A parse of its own,
+# so the qpdf parse above and its probes stay exactly what they were; without it a shim
+# declaration would be invisible here, and an export of it would read as undeclared.
+parse_shim_decls() { sed -n 's/^\s*pub(super) fn \(burrow_qpdf[A-Za-z_0-9]*\)\s*(.*/\1/p'; }
 
 probe_fail=0
 [ "$(printf '    pub(super) fn qpdf_read_memory(\n' | parse_decls)" = "qpdf_read_memory" ] \
   || { echo "check-wasm-exports: the ffi.rs parse does not match its own fixture" >&2; probe_fail=1; }
 [ "$(printf '    pub(super) fn qpdf_set_deterministic_ID(\n' | parse_decls)" = "qpdf_set_deterministic_ID" ] \
   || { echo "check-wasm-exports: the ffi.rs parse cannot see a name with a capital letter" >&2; probe_fail=1; }
+[ "$(printf '    pub(super) fn burrow_qpdf_fixed_dangling_refs(qpdf: QpdfData) -> c_int;\n' | parse_shim_decls)" = "burrow_qpdf_fixed_dangling_refs" ] \
+  || { echo "check-wasm-exports: the shim parse does not match its own fixture" >&2; probe_fail=1; }
+for bad in '    pub(super) fn qpdf_read_memory(' \
+           '    // pub(super) fn burrow_qpdf_fixed_dangling_refs(' \
+           '    pub(super) fn burrow_pdfium_selftest(' ; do
+  [ -z "$(printf '%s\n' "$bad" | parse_shim_decls)" ] \
+    || { echo "check-wasm-exports: the shim parse matches a near-miss it must reject: $bad" >&2; probe_fail=1; }
+done
 for bad in '    // pub(super) fn qpdf_is_linearized(' \
            '    /// `qpdf_is_linearized` is deliberately absent' \
            '    pub fn qpdf_is_linearized(' \
@@ -87,14 +100,16 @@ done
   exit 1
 }
 
-declared="$(parse_decls <"$ffi_rs" | sort -u)"
+declared="$( { parse_decls <"$ffi_rs"; parse_shim_decls <"$ffi_rs"; } | sort -u)"
+shims="$(parse_shim_decls <"$ffi_rs" | grep -c . || true)"
 [ -n "$declared" ] || {
   echo "check-wasm-exports: parsed ZERO functions out of ffi.rs -- the check would be vacuous" >&2
   exit 1
 }
 
 # The argued absences. Parsed with the same shape as the file: one `name = "..."` per entry.
-absent="$(sed -n 's/^name = "\(qpdf[A-Za-z_0-9]*\)".*/\1/p' "$not_exported" | sort -u)"
+absent="$(sed -n -e 's/^name = "\(qpdf[A-Za-z_0-9]*\)".*/\1/p' \
+  -e 's/^name = "\(burrow_qpdf[A-Za-z_0-9]*\)".*/\1/p' "$not_exported" | sort -u)"
 entries="$(grep -c '^\[\[function\]\]' "$not_exported" || true)"
 names="$(printf '%s\n' "$absent" | grep -c . || true)"
 [ "$entries" = "$names" ] || {
@@ -181,4 +196,4 @@ stale="$(printf '%s\n' "$absent" | grep -vxF -f <(printf '%s\n' "$declared") || 
   exit 1
 }
 
-echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l | tr -d ' ') qpdf functions (parse verified against 2 fixtures and 4 near-misses)"
+echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l | tr -d ' ') functions, $shims of them burrow's shim (parses verified against 3 fixtures and 7 near-misses)"

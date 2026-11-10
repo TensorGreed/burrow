@@ -9,6 +9,7 @@
 #   lib/libpdfium.so   (extracted from the prebuilt; NOT built here)
 #   lib/libz.a, lib/libjpeg.a, lib/libqpdf.a
 #   lib/fuzz/libqpdf.a (ASan+fuzzer instrumented, for M1 PR 2's fuzz targets)
+#   (each libqpdf.a also holds burrow's shim, burrow_qpdf_fixed_dangling_refs; see write_qpdf_shim)
 #   include/           headers for all of the above
 #
 # Requires engines/fetch.sh to have run: every input is checksum-verified there, and
@@ -172,7 +173,88 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
   grep -q "Native crypto enabled: ON"    "$log" || { echo "build-native: native crypto not enabled" >&2; exit 1; }
 
   cmake --build "$b" --target libqpdf -j "$jobs" >/dev/null
+
+  # BURROW'S SHIM, compiled with this variant's own flags and qpdf's (the C++ standard, the
+  # define and the visibility its CMake sets for libqpdf), against this build's generated
+  # `qpdf-config.h` and the source tree's private headers -- the same layout of
+  # `QPDF::Members` libqpdf was compiled with. Added to libqpdf.a, so every link that has
+  # qpdf has the shim and BUILD_MANIFEST.sha256 covers it with no new entry.
+  write_qpdf_shim "$b/burrow_qpdf_shim.cpp"
+  # shellcheck disable=SC2086 # the variant's flags are a word list on purpose
+  clang++ $cxxflags -O3 -DNDEBUG -std=c++20 -fvisibility=hidden -fPIC -DQPDF_DISABLE_QTC=1 \
+    -Wall -Wextra -Wconversion -Wsign-conversion -Wold-style-cast -Werror \
+    -I "$prefix/include" -I "$src/qpdf-$QPDF_VERSION/include" \
+    -I "$src/qpdf-$QPDF_VERSION/libqpdf" -I "$b/libqpdf" \
+    -c "$b/burrow_qpdf_shim.cpp" -o "$b/burrow_qpdf_shim.o"
+  local ar_tool
+  ar_tool="$(sed -n 's/^CMAKE_AR:FILEPATH=//p' "$b/CMakeCache.txt")"
+  "${ar_tool:-ar}" rcs "$b/libqpdf/libqpdf.a" "$b/burrow_qpdf_shim.o"
+  # FAIL CLOSED ON THE SHIM BEING IN THE ARCHIVE, defined, not merely referenced.
+  nm --defined-only "$b/libqpdf/libqpdf.a" 2>/dev/null \
+    | grep -q ' T burrow_qpdf_fixed_dangling_refs$' || {
+      echo "build-native: qpdf ($variant): burrow_qpdf_fixed_dangling_refs is not defined in libqpdf.a" >&2
+      exit 1
+    }
+  echo "   shim ($variant): burrow_qpdf_fixed_dangling_refs defined in libqpdf.a"
   cp "$b/libqpdf/libqpdf.a" "$outdir/"
+}
+
+# BURROW'S QPDF SHIM (ADR 0031 §1, *Resolution at open*; owner decision (89)). burrow's own
+# code, MIT OR Apache-2.0, not qpdf's: it edits nothing in qpdf's source and reads one private
+# member. It is inline here and in engines/build-wasm.sh, so the CI cache keys and the wasm
+# build stamp that hash these scripts change whenever it does. Keep the two copies identical.
+write_qpdf_shim() { # path
+  cat > "$1" <<'CPP'
+// burrow_qpdf_fixed_dangling_refs: 1 if qpdf's whole-file resolution has run to the end since
+// the last cross-reference reconstruction (QPDF::Members::fixed_dangling_refs, set at the end of
+// QPDF::fixDanglingReferences and cleared by reconstruct_xref), 0 if not, -1 for a null handle.
+// It reads one bool: it parses nothing, resolves nothing, allocates nothing and cannot throw.
+#include <qpdf/DLL.h>
+#include <qpdf/qpdf-c.h>
+
+#include "qpdf/QPDF_private.hh"
+#include "qpdf/qpdf-c_impl.hh"
+
+namespace
+{
+    // THE STANDARD'S ROUTE TO A PRIVATE MEMBER WITHOUT EDITING THE CLASS: access is not checked
+    // in the arguments of an explicit instantiation ([temp.spec.general]/6). Each name is still
+    // looked up, so a qpdf that renames or removes either member, or `QPDF::m`, fails to
+    // compile here rather than reading the wrong thing. The member-pointer types are deduced.
+    template <typename Tag, auto Member>
+    struct Steal
+    {
+        friend constexpr auto
+        get(Tag)
+        {
+            return Member;
+        }
+    };
+    struct MembersTag
+    {
+        friend constexpr auto get(MembersTag);
+    };
+    struct FlagTag
+    {
+        friend constexpr auto get(FlagTag);
+    };
+    template struct Steal<MembersTag, &QPDF::m>;
+    template struct Steal<FlagTag, &QPDF::Members::fixed_dangling_refs>;
+} // namespace
+
+extern "C" QPDF_DLL int
+burrow_qpdf_fixed_dangling_refs(qpdf_data qpdf) noexcept
+{
+    if (qpdf == nullptr || !qpdf->qpdf) {
+        return -1;
+    }
+    auto const& members = (*qpdf->qpdf).*get(MembersTag{});
+    if (!members) {
+        return -1;
+    }
+    return (*members).*get(FlagTag{}) ? 1 : 0;
+}
+CPP
 }
 
 say "qpdf $QPDF_VERSION (static, native crypto only)"

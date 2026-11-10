@@ -269,6 +269,77 @@ grep -q "OpenSSL crypto enabled: OFF"  "$src/qpdf-wasm-configure.log" || { echo 
 grep -q "Native crypto enabled: ON"    "$src/qpdf-wasm-configure.log" || { echo "build-wasm: native crypto not enabled" >&2; exit 1; }
 
 cmake --build "$b" --target libqpdf -j "$jobs" >>"$src/qpdf-wasm-configure.log" 2>&1
+
+# BURROW'S QPDF SHIM (ADR 0031 §1, *Resolution at open*; owner decision (89)): COMPILED HERE,
+# NOT EXPORTED. The same source as engines/build-native.sh's `write_qpdf_shim`, inline in both
+# so the cache keys and the engines-wasm stamp that hash these scripts follow it; keep the two
+# copies identical. It goes into libqpdf.a, where nothing references it and EXPORTED_FUNCTIONS
+# does not name it, so wasm-ld leaves the member out and qpdf.wasm is unchanged. The web gets it
+# in flatten slice 11, with its export and the engines/qpdf-not-exported.toml entry removed.
+# burrow's own code, MIT OR Apache-2.0; it edits nothing in qpdf and reads one private member.
+cat > "$b/burrow_qpdf_shim.cpp" <<'CPP'
+// burrow_qpdf_fixed_dangling_refs: 1 if qpdf's whole-file resolution has run to the end since
+// the last cross-reference reconstruction (QPDF::Members::fixed_dangling_refs, set at the end of
+// QPDF::fixDanglingReferences and cleared by reconstruct_xref), 0 if not, -1 for a null handle.
+// It reads one bool: it parses nothing, resolves nothing, allocates nothing and cannot throw.
+#include <qpdf/DLL.h>
+#include <qpdf/qpdf-c.h>
+
+#include "qpdf/QPDF_private.hh"
+#include "qpdf/qpdf-c_impl.hh"
+
+namespace
+{
+    // THE STANDARD'S ROUTE TO A PRIVATE MEMBER WITHOUT EDITING THE CLASS: access is not checked
+    // in the arguments of an explicit instantiation ([temp.spec.general]/6). Each name is still
+    // looked up, so a qpdf that renames or removes either member, or `QPDF::m`, fails to
+    // compile here rather than reading the wrong thing. The member-pointer types are deduced.
+    template <typename Tag, auto Member>
+    struct Steal
+    {
+        friend constexpr auto
+        get(Tag)
+        {
+            return Member;
+        }
+    };
+    struct MembersTag
+    {
+        friend constexpr auto get(MembersTag);
+    };
+    struct FlagTag
+    {
+        friend constexpr auto get(FlagTag);
+    };
+    template struct Steal<MembersTag, &QPDF::m>;
+    template struct Steal<FlagTag, &QPDF::Members::fixed_dangling_refs>;
+} // namespace
+
+extern "C" QPDF_DLL int
+burrow_qpdf_fixed_dangling_refs(qpdf_data qpdf) noexcept
+{
+    if (qpdf == nullptr || !qpdf->qpdf) {
+        return -1;
+    }
+    auto const& members = (*qpdf->qpdf).*get(MembersTag{});
+    if (!members) {
+        return -1;
+    }
+    return (*members).*get(FlagTag{}) ? 1 : 0;
+}
+CPP
+em++ -fexceptions -O3 -DNDEBUG -std=c++20 -fvisibility=hidden -DQPDF_DISABLE_QTC=1 \
+  -Wall -Wextra -Wconversion -Wsign-conversion -Wold-style-cast -Werror \
+  -I "$prefix/include" -I "$src/qpdf-$QPDF_VERSION/include" \
+  -I "$src/qpdf-$QPDF_VERSION/libqpdf" -I "$b/libqpdf" \
+  -c "$b/burrow_qpdf_shim.cpp" -o "$b/burrow_qpdf_shim.o" 2>>"$src/qpdf-wasm-configure.log"
+emar rcs "$b/libqpdf/libqpdf.a" "$b/burrow_qpdf_shim.o"
+emnm --defined-only "$b/libqpdf/libqpdf.a" 2>/dev/null \
+  | grep -q ' T burrow_qpdf_fixed_dangling_refs$' || {
+    echo "build-wasm: burrow_qpdf_fixed_dangling_refs is not defined in libqpdf.a" >&2
+    exit 1
+  }
+echo "   shim: burrow_qpdf_fixed_dangling_refs defined in libqpdf.a (not exported)"
 cp "$b/libqpdf/libqpdf.a" "$prefix/lib/"
 cp -R "$src/qpdf-$QPDF_VERSION/include/qpdf" "$prefix/include/"
 echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"

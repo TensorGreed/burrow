@@ -128,6 +128,20 @@ Redaction calls it once after the open to learn whether qpdf repaired the input 
 `qpdf_next_warning` is deliberately not declared: only whether is read, never what."""
 
 [[function]]
+name = "burrow_qpdf_fixed_dangling_refs"
+reason = """\
+BURROW'S SHIM, not qpdf's C API: `write_qpdf_shim` in engines/build-native.sh, the same text in \
+engines/build-wasm.sh, compiled into libqpdf.a against qpdf's private headers \
+(tools/check-qpdf-trapped.py checks the two copies are identical and define exactly what ffi.rs \
+declares). It reads one `bool`, `QPDF::Members::fixed_dangling_refs`, through two member \
+pointers named in an explicit template instantiation, after checking the handle, the `QPDF` \
+and its `Members` are non-null. It parses nothing, resolves nothing, allocates nothing and \
+converts no file-derived number; it is declared `noexcept`, so even a throw it cannot make \
+would terminate rather than cross the boundary. The flatten write reads it at three points \
+beside the repair check (ADR 0031 §1, *Resolution at open*). The trapped resolution itself stays \
+`qpdf_make_indirect_object`: the shim only reads."""
+
+[[function]]
 name = "qpdf_get_error_code"
 reason = """\
 Reads the integer code off a stored error. `qpdf_error_code_e`'s numbering is guaranteed \
@@ -403,8 +417,9 @@ Used by redaction alone, to ask whether each reference the file writes resolves 
 # ---------------------------------------------------------------------------------
 # Flattening's constructors (ADR 0031 §1 step 7, §8). Native only so far; see
 # engines/qpdf-not-exported.toml. The open forces qpdf's whole-file resolution inside the
-# trap first (`qpdf_make_indirect_object`, which is trapped), and the repair refusal is read
-# again after these run, so each argument below is checked at run time, not only assumed.
+# trap first (`qpdf_make_indirect_object`, which is trapped), asserts it by qpdf's own flag
+# (`burrow_qpdf_fixed_dangling_refs`, above), and reads the flag and the repair refusal again
+# after these run, so each argument below is checked at run time, not only assumed.
 # ---------------------------------------------------------------------------------
 
 [[function]]
@@ -463,10 +478,11 @@ forces that resolution at the open through `qpdf_make_indirect_object`, which re
 same `nextObjGen` INSIDE `trap_oh_errors`; `fixed_dangling_refs` is then set (it is cleared \
 only by a reconstruction, QPDF_objects.cc:332, which the resolution itself would have run \
 and the open refuses as `[engine-repaired-input]`), so this call finds the table resolved \
-and touches only the object cache. Reading that flag directly, rather than relying on the \
-trapped call having run, is ADR 0031's next slice (security L-6); until then the argument is \
-also checked after the fact: the repair refusal is read again after the constructors and \
-after the write. The range check in `nextObjGen` throws only when the highest object NUMBER \
+and touches only the object cache. The flag is read directly, through burrow's shim \
+(`burrow_qpdf_fixed_dangling_refs`), after the forced resolution, after the constructors and \
+after the write, each beside the repair refusal, so the argument is checked at run time: a \
+clear flag at the open refuses as burrow's own failure, and at either later point as a \
+repair. The range check in `nextObjGen` throws only when the highest object NUMBER \
 is INT_MAX, and qpdf caps the numbers it reads at a third of the file's length \
 (QPDF_objects.cc:239), which `max_input_bytes` keeps far below INT_MAX on every platform. \
 Fails otherwise only by allocation, or the `QTC::TC` \

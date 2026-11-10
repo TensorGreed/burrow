@@ -228,6 +228,18 @@ unsafe extern "C" {
     /// file-derived content -- can be reached.
     pub(super) fn qpdf_more_warnings(qpdf: QpdfData) -> QpdfBool;
 
+    /// `int burrow_qpdf_fixed_dangling_refs(qpdf_data) noexcept` — **burrow's shim, not qpdf's
+    /// C API** (ADR 0031 §1, *Resolution at open*). Its source is `write_qpdf_shim` in
+    /// `engines/build-native.sh` (and the same text in `engines/build-wasm.sh`), compiled into
+    /// `libqpdf.a` against qpdf's own private headers.
+    ///
+    /// 1 if qpdf's whole-file resolution (`QPDF::fixDanglingReferences`) has run to the end
+    /// since the last cross-reference reconstruction, 0 if not, -1 for a null handle. It reads
+    /// one private `bool`, `QPDF::Members::fixed_dangling_refs`, through the explicit-template
+    /// route, so a qpdf that renames or removes it fails to compile. Untrapped and argued in
+    /// `engines/qpdf-untrapped-accepted.toml`: it parses nothing and is `noexcept`.
+    pub(super) fn burrow_qpdf_fixed_dangling_refs(qpdf: QpdfData) -> c_int;
+
     // `qpdf_is_encrypted` (`qpdf-c.h:355`) and `qpdf_is_linearized` (`qpdf-c.h:351`) are
     // deliberately NOT declared. See "Which functions are safe to call" above: neither
     // goes through `trap_errors`, and `qpdf_is_linearized` demonstrably aborts the process

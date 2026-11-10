@@ -25,10 +25,15 @@
 //! 3. **The open forces qpdf's whole-file resolution inside the trap** (§1, *Resolution at
 //!    open*), by making one null indirect: the first object number qpdf hands out resolves every
 //!    cross-reference entry. A repair there refuses, `[engine-repaired-input]`. After it,
-//!    `qpdf_oh_new_stream` finds the table resolved. **This slice asserts that the trapped call
-//!    ran, not qpdf's `fixed_dangling_refs` flag**; reading the flag is the next slice (security
-//!    L-6), and until then the repair refusal is read again after the constructors and after
-//!    the write, so a resolution that slipped past the open is still refused.
+//!    `qpdf_oh_new_stream` finds the table resolved. **That it ran is asserted by qpdf's own
+//!    flag, `fixed_dangling_refs`**, read through burrow's shim (flatten slice 2), not by the
+//!    trapped call having returned: clear after the open's resolution is burrow's route failing,
+//!    [`burrow_types::Error::Internal`]. The flag is read again after the constructors and after
+//!    the write, each beside the repair refusal read there, and clear at either is
+//!    `[engine-repaired-input]`: only a reconstruction of the table clears it once set. On the
+//!    pinned qpdf (12.4.1) **those two readings are shadowed** -- a reconstruction always warns,
+//!    so the repair refusal before each refuses first -- and are defence in depth that only the
+//!    fake engine's tests reach.
 //! 4. **Page *N* is rewritten in place** (§3): its dictionary keeps its object identity, every
 //!    key but `/Type` and `/Parent` is removed, and `/Rotate 0`, `/MediaBox` and `/CropBox`
 //!    `[0 0 dw dh]`, `/Resources` naming one image and `/Contents` holding one line are written.

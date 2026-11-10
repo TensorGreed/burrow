@@ -6,7 +6,9 @@ use std::ffi::CString;
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
 use super::super::frames::{PageFrameReading, PageFrames};
-use super::super::graph::{BuildsObjects, OpensForRedaction, PdfDocument, PdfObject};
+use super::super::graph::{
+    BuildsObjects, OpensForRedaction, PdfDocument, PdfObject, ReportsResolution,
+};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 
@@ -224,7 +226,10 @@ struct Promise {
 /// - [`Error::Internal`] for a picture whose size is not the frame's at 150 dpi, or whose buffer
 ///   is not exactly *W*·*H*·3 bytes: the drawing side is burrow's, so either is a bug.
 /// - `[engine-repaired-input]` for a repair at the open's resolution, after the constructors, or
-///   in the write.
+///   in the write; and for qpdf's resolved-once flag found clear after the constructors or after
+///   the write, which only a reconstruction of the cross-reference table does.
+/// - [`Error::Internal`] for the flag found clear after the open's forced resolution returned:
+///   the route that should have resolved the table did not.
 /// - [`Error::OutputRejected`] for an output that does not read back as promised.
 /// - [`Error::LimitExceeded`] for `max_memory_bytes`, **detected, not bounded**: the resident set
 ///   is read before the open and compared after the write and again during the read-back, with its
@@ -245,6 +250,7 @@ pub(crate) fn flatten<E, F>(
 ) -> Result<Vec<u8>>
 where
     E: OpensForRedaction,
+    E::Document: ReportsResolution,
     for<'d> <E::Document as PdfDocument>::Object<'d>: BuildsObjects,
     F: Fn(&[u8]) -> Result<PageFrames>,
 {
@@ -257,13 +263,14 @@ where
     // THE MEMORY READING the write and the read-back are measured against.
     let rss_before = crate::rss::resident_bytes();
 
-    // 3. THE OPEN, AND THE RESOLUTION INSIDE THE TRAP.
+    // 3. THE OPEN, AND THE RESOLUTION INSIDE THE TRAP, asserted by qpdf's own flag.
     let (document, _) = engine.open_for_redaction(bytes, options)?;
     let trailer = document.trailer()?;
-    let resolved = trailer.null_beside().made_indirect()?;
+    let resolved = force_resolution(&trailer)?;
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Open)?;
     deadline.checkpoint(clock)?;
 
     // 4. THE REPLACEMENT, with page N's place in the tree read first, from the input.
@@ -280,17 +287,19 @@ where
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Constructors)?;
     deadline.checkpoint(clock)?;
 
     let output = document.write()?;
     if document.repaired() {
         return Err(super::super::repaired_by_the_engine());
     }
+    still_resolved(&document, Reading::Write)?;
     // WHAT THE OPEN, THE EDIT AND THE WRITE COST, read while the document is still held: detected,
     // not bounded (ADR 0007's 2026-09-12 amendment).
     crate::estimate::check_measured_memory(
         rss_before,
-        crate::rss::resident_bytes(),
+        resident_bytes(Reading::Write),
         &options.limits,
     )?;
     // EVERY HANDLE, AND THE DOCUMENT, released before the read-back opens its own.
@@ -308,6 +317,104 @@ where
     check_output(engine, &output, &expected, options, deadline, &frames)?;
     deadline.checkpoint(clock)?;
     Ok(output)
+}
+
+/// Where the flatten reads qpdf's resolved-once flag, and, for the two memory readings, where it
+/// reads the resident set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reading {
+    /// After the open's forced resolution, beside the repair check there.
+    Open,
+    /// After the replacement's constructors, beside the repair check there.
+    Constructors,
+    /// After the write, beside the repair check there.
+    Write,
+    /// During the read-back, with its document and decoded pixels held (memory only).
+    ReadBack,
+}
+
+/// §1's forced resolution: a trapped call that reaches qpdf's whole-file resolution of the
+/// cross-reference table (`qpdf_make_indirect_object` on a new null, which asks qpdf for the
+/// next object number, which resolves the table first). Returns the handle it made, which the
+/// caller holds until the document is released.
+///
+/// # Errors
+///
+/// Whatever the engine latched during the resolution.
+fn force_resolution<O: BuildsObjects>(trailer: &O) -> Result<O> {
+    // THE RESOLUTION-SKIPPED HOOK: a call that returns Ok and resolves nothing, so that the
+    // flag, not the call's return, is shown to be what the open asserts.
+    #[cfg(test)]
+    if hooks::RESOLUTION_SKIPPED.with(|once| once.replace(false)) {
+        return Ok(trailer.null_beside());
+    }
+    trailer.null_beside().made_indirect()
+}
+
+/// The flag says the forced resolution ran and nothing has undone it since (ADR 0031 §1:
+/// "asserts that it ran" means reading `fixed_dangling_refs`). Read at each of [`Reading`]'s
+/// three engine points, after the repair check there, which it does not replace: the flag says
+/// a resolution ran, not that it repaired nothing.
+///
+/// **The later two readings are defence in depth, shadowed on the pinned qpdf.** On qpdf 12.4.1
+/// only a reconstruction of the cross-reference table clears the flag once set, and qpdf always
+/// warns that the file is damaged when it reconstructs, so the repair check just before each of
+/// those readings refuses first: no input reaches a clear flag at [`Reading::Constructors`] or
+/// [`Reading::Write`] on the real engine, and only the fake engine's tests do. They are kept for a
+/// qpdf that reconstructs without warning. The open's reading is not shadowed: a forced
+/// resolution that returned without resolving reports no repair.
+///
+/// # Errors
+///
+/// - At [`Reading::Open`], [`Error::Internal`] for a clear flag: the call that should have
+///   resolved returned without resolving, which is burrow's route failing, not the input.
+/// - At the later two, `[engine-repaired-input]` for a clear flag: only qpdf's reconstruction of
+///   the cross-reference table clears it once set, so the input changed under the edit.
+/// - Whatever reading the flag reports.
+fn still_resolved<D: ReportsResolution>(document: &D, at: Reading) -> Result<()> {
+    let resolved = document.resolved()?;
+    #[cfg(test)]
+    hooks::FLAG_READINGS.with(|readings| readings.borrow_mut().push((at, resolved)));
+    match (resolved, at) {
+        (true, _) => Ok(()),
+        (false, Reading::Open) => Err(Error::Internal(
+            "pdf flatten: the open's forced resolution did not run".to_owned(),
+        )),
+        (false, _) => Err(super::super::repaired_by_the_engine()),
+    }
+}
+
+/// The resident set, for the measured-memory check at `at`.
+fn resident_bytes(at: Reading) -> Option<u64> {
+    // THE MEMORY HOOK: a reading as large as it can be, at one point only, so that each of the
+    // two checks is shown to be there. The open reads the resident set too, so a hook in
+    // `crate::rss` itself could not say which reading it was answering.
+    #[cfg(test)]
+    if hooks::MEMORY_GROWS_AT.with(|point| point.get() == Some(at)) {
+        hooks::MEMORY_GROWS_AT.with(|point| point.set(None));
+        return Some(u64::MAX);
+    }
+    #[cfg(not(test))]
+    let _ = at;
+    crate::rss::resident_bytes()
+}
+
+/// Test-only switches, each spent by the flatten that reads it, on this thread.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use core::cell::{Cell, RefCell};
+
+    use super::Reading;
+
+    thread_local! {
+        /// The next flatten's forced resolution returns Ok without resolving.
+        pub(crate) static RESOLUTION_SKIPPED: Cell<bool> = const { Cell::new(false) };
+        /// The next flatten's resident-set reading at this point is `u64::MAX`.
+        pub(crate) static MEMORY_GROWS_AT: Cell<Option<Reading>> = const { Cell::new(None) };
+        /// Every flag reading, in order, with what it read. Cleared by the test that reads it.
+        pub(crate) static FLAG_READINGS: RefCell<Vec<(Reading, bool)>> =
+            const { RefCell::new(Vec::new()) };
+    }
 }
 
 /// Read the input's frames into what the output must hold, and hold the picture to page *N*'s.
@@ -572,9 +679,17 @@ where
     // that differs is a frame that differs. It is kept as the statement of what was written.
     box_is(&page.key(&MEDIA_BOX), promise, "/MediaBox")?;
     box_is(&page.key(&CROP_BOX), promise, "/CropBox")?;
-    // `/Parent`, KEPT VERBATIM BY THE WRITE: page N is where the input had it in the tree.
-    let output_place = place(&trailer, &page, options.clock.as_ref(), deadline)
-        .map_err(|error| rejected("its page tree cannot be read back", &error))?;
+    // `/Parent`, KEPT VERBATIM BY THE WRITE: page N is where the input had it in the tree. The
+    // climb's own deadline is the operation's limit, not a fault in the output, and is passed
+    // through as one (S1 round 2, L-7).
+    let output_place =
+        place(&trailer, &page, options.clock.as_ref(), deadline).map_err(|error| {
+            if matches!(error, Error::LimitExceeded { .. }) {
+                error
+            } else {
+                rejected("its page tree cannot be read back", &error)
+            }
+        })?;
     if output_place != *input_place {
         return Err(reject("/Parent is not the input's place in the page tree"));
     }
@@ -629,7 +744,7 @@ where
     // pixels are still held, so the measurement sees them. Detected, not bounded.
     crate::estimate::check_measured_memory(
         rss_before,
-        crate::rss::resident_bytes(),
+        resident_bytes(Reading::ReadBack),
         &options.limits,
     )?;
     match pixels {
@@ -779,6 +894,26 @@ pub(crate) mod lie {
         ImageTypeOther,
         ImageSubtypeOther,
         ImageUndecodable,
+        // ONE PER WAY THE PAGE-TREE CLIMB CAN END (S1 round 2, L-6), each written so that only
+        // [`super::Place`]'s comparison stands between it and a returned document: none changes
+        // what qpdf enumerates from the catalogue's `/Pages`, so V1 and the page's own keys pass.
+        /// Page *N*'s `/Parent` becomes an indirect `/Pages` node whose `/Kids` is empty:
+        /// `Unlisted` at the first step, through the `/Kids` search rather than the direct-parent
+        /// clause [`Lie::ParentReplaced`] reaches.
+        ParentUnlisting,
+        /// Page *N*'s `/Parent` loses its own `/Parent`: `Detached` one step up.
+        AncestorDetached,
+        /// Page *N*'s `/Parent` gets a `/Parent` that does not list it: `Unlisted` one step up.
+        AncestorUnlisted,
+        /// Page *N*'s `/Parent` gets a `/Parent` that lists it and has no `/Parent` of its own:
+        /// the **same steps** as the input's, ending `Detached` rather than at the catalogue's
+        /// `/Pages`. Only the end tells them apart.
+        AncestorEndsElsewhere,
+        /// An empty `/Pages` node is put before page *N*'s `/Parent` in the root's `/Kids`: the
+        /// same pages in the same order, the **same end**, one step different.
+        AncestorShifted,
+        /// Page *N*'s `/Parent` climbs into two nodes that list each other: `TooDeep`.
+        AncestorLoops,
     }
 
     thread_local! {
@@ -792,7 +927,11 @@ pub(crate) mod lie {
 
     const FOO: Name = Name::literal(b"/BurrowLie\0");
 
-    pub(super) fn apply<D>(document: &D, page: &D::Object<'_>, promise: &Promise) -> Result<()>
+    pub(super) fn apply<'a, D>(
+        document: &'a D,
+        page: &D::Object<'a>,
+        promise: &Promise,
+    ) -> Result<()>
     where
         D: PdfDocument,
         for<'d> D::Object<'d>: BuildsObjects,
@@ -823,7 +962,54 @@ pub(crate) mod lie {
                 .key(&super::IMAGE)
         };
         let name = |name: &Name| page.name_beside(name);
+        // A `/Pages` node listing `kids`, made indirect: a direct one would end the climb by the
+        // direct-parent clause instead of the clause each lie below is about.
+        let node = |kids: &[&D::Object<'a>]| -> Result<D::Object<'a>> {
+            let node = page.dictionary_beside();
+            node.replace_key(&super::TYPE, &name(&Name::literal(b"/Pages\0")))?;
+            let array = page.array_beside();
+            for kid in kids {
+                array.append_item(kid)?;
+            }
+            node.replace_key(&super::KIDS, &array)?;
+            node.made_indirect()
+        };
+        let parent = || page.key(&super::PARENT);
         match lie {
+            Lie::ParentUnlisting => page.replace_key(&super::PARENT, &node(&[])?),
+            Lie::AncestorDetached => {
+                parent().remove_key(&super::PARENT);
+                Ok(())
+            }
+            Lie::AncestorUnlisted => parent().replace_key(&super::PARENT, &node(&[])?),
+            Lie::AncestorEndsElsewhere => {
+                let above = parent();
+                above.replace_key(&super::PARENT, &node(&[&above])?)
+            }
+            Lie::AncestorShifted => {
+                let pages = document.trailer()?.key(&super::ROOT).key(&super::PAGES);
+                let empty = node(&[])?;
+                empty.replace_key(&super::PARENT, &pages)?;
+                empty.replace_key(&Name::literal(b"/Count\0"), &page.integer_beside(0))?;
+                let kids = page.array_beside();
+                kids.append_item(&empty)?;
+                let old = pages.key(&super::KIDS);
+                for at in 0..old.array_len() {
+                    kids.append_item(&old.array_item(at))?;
+                }
+                pages.replace_key(&super::KIDS, &kids)
+            }
+            Lie::AncestorLoops => {
+                // `/Parent` -> Y, Y lists it and Z, Y's `/Parent` is Z, Z lists Y and has Y as its
+                // `/Parent`: the climb goes round Y and Z until its depth bound.
+                let above = parent();
+                let y = node(&[&above])?;
+                let z = node(&[&y])?;
+                y.key(&super::KIDS).append_item(&z)?;
+                y.replace_key(&super::PARENT, &z)?;
+                z.replace_key(&super::PARENT, &y)?;
+                above.replace_key(&super::PARENT, &y)
+            }
             Lie::ParentReplaced => {
                 let parent = page.dictionary_beside();
                 parent.replace_key(&super::TYPE, &name(&Name::literal(b"/Pages\0")))?;
