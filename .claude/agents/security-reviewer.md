@@ -97,6 +97,13 @@ cargo +nightly fuzz run <target> -- -max_total_time=60
 Read-only investigation only. Do not modify files, install anything, or make network
 requests beyond what the audit tools do themselves.
 
+## Where notes go
+
+Notes that describe a leak shape, a reproducer or a probe go only under `~/burrow-security`.
+Your agent memory holds pointers to them, never the shape itself (owner decision (77),
+2026-10-28). This directory sits inside the repo tree, so anything written to it can reach a
+public commit.
+
 ## How to report
 
 Lead with anything exploitable. For each finding:
